@@ -164,12 +164,38 @@ def lines_of(geom):
 
 # ------------------------------------------------------------------ roads (ported from export_world.py)
 
+def legal_limit(p):
+    """French speed limit (km/h) for a BD TOPO road: motorway 130, dual carriageway 110, built-up areas 50, other roads 80, tracks and roundabouts 30-50, slip roads 70."""
+    nat = p.get("nature"); urban = str(p.get("urbain")).lower() == "true"
+    if nat == "Type autoroutier": return 130
+    if nat == "Route à 2 chaussées": return 110 if not urban else 70
+    if nat == "Bretelle": return 70
+    if nat in ("Chemin", "Route empierrée", "Sentier", "Escalier"): return 30
+    if nat == "Rond-point": return 30 if urban else 50
+    return 50 if urban else 80
+
+def road_flow(p):
+    """BD TOPO average speed of light vehicles (km/h), 0 when unknown: reflects how winding / narrow the road is."""
+    try: return int(min(255, max(0, float(p.get("vitesse_moyenne_vl") or 0))))
+    except (TypeError, ValueError): return 0
+
+ROAD_KIND = {"Rond-point": 1, "Route à 2 chaussées": 2, "Type autoroutier": 3, "Bretelle": 4, "Chemin": 5, "Route empierrée": 5}    # 0 = ordinary road
+
+def road_lanes(p):
+    try: return int(min(15, max(0, float(p.get("nombre_de_voies") or 0))))
+    except (TypeError, ValueError): return 0
+
+ONEWAY = {"Sens direct": 1, "Sens inverse": 2}          # 0 = both ways; 1 = along the digitised direction; 2 = against it
+
 HW_BY_NATURE = {"Rond-point": 3.0, "Chemin": 1.8, "Route empierrée": 1.9, "Sentier": 0.7}
 HW_BY_IMPORTANCE = {"1": 3.6, "2": 3.5, "3": 3.1, "4": 2.9, "5": 2.4, "6": 2.2}
 
 def road_halfwidth(p):
     w = p.get("largeur_de_chaussee")
     if isinstance(w, (int, float)) and w > 0: return max(w, 2.5) / 2
+    lanes = p.get("nombre_de_voies")
+    if isinstance(lanes, (int, float)) and lanes > 0 and p["nature"] not in HW_BY_NATURE:            # no surveyed width: a lane is ~3 m on a single-track road, ~2.5 m each on a two-lane one
+        return {1: 3.0, 2: 5.0}.get(int(lanes), 2.8 * int(lanes)) / 2
     if p["nature"] in HW_BY_NATURE: return HW_BY_NATURE[p["nature"]]
     return HW_BY_IMPORTANCE.get(str(p.get("importance")), 2.6)
 
@@ -224,6 +250,7 @@ def process_roads(win, wbox, feats):
             raw.append(dict(xy=xy, y=y, bridge=bridge, hw=hw0, dirt=p["nature"] in ("Chemin", "Route empierrée"),
                             name=next((p[k] for k in ("nom_1_gauche", "nom_1_droite") if p.get(k)), ""), imp=str(p.get("importance")),
                             fid=zlib.crc32(p["cleabs"].encode()) & 0x7FFFFFFF, t0=(0.0, 0.0), t1=(0.0, 0.0),
+                            limit=legal_limit(p), avg=road_flow(p), lanes=road_lanes(p), kind=ROAD_KIND.get(p.get("nature"), 0), oneway=ONEWAY.get(p.get("sens_de_circulation"), 0),
                             pri=hw0 + (0.0 if p["nature"] in ("Chemin", "Route empierrée") else 1.0) + min(g.length, 20000.0) / 1e5))      # asphalt beats dirt, then wider, then longer
     if not raw: return raw
     ends = []
@@ -685,7 +712,7 @@ def process_sector(args):
             th = H[r0:r0 + CV, c0:c0 + CV]; tc = C[r0:r0 + CV, c0:c0 + CV]
             base = float(th.min()); step = max(0.005, math.ceil((float(th.max()) - base) / 65535 * 1000 - 1e-9) / 1000)
             q = np.clip(np.round((th - base) / step), 0, 65535).astype("<u2")
-            buf = bytearray(b"BM02"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
+            buf = bytearray(b"BM04"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
             buf += q.tobytes(); buf += tc.astype(np.uint8).tobytes()
             buf += np.clip(low_col[r0:r0 + CV:4, c0:c0 + CV:4], 0, 255).astype(np.uint8).tobytes()
             def put_roads(items, ctx=False):
@@ -693,7 +720,7 @@ def process_sector(args):
                 for it in items:
                     r, seg = it[0], it[1]
                     wf(buf, r["hw"]); buf.append((1 if r["dirt"] else 0) | (2 if r["bridge"] else 0)); buf.append(int(r["imp"]) if r["imp"].isdigit() else 0)
-                    buf.append(it[2]); buf.append(it[3]); wi(buf, r["fid"]); wf(buf, r["pri"])
+                    buf.append(it[2]); buf.append(it[3]); buf.append(r["limit"]); buf.append(r["avg"]); buf.append(r["oneway"]); buf.append(r["lanes"]); buf.append(r["kind"]); wi(buf, r["fid"]); wf(buf, r["pri"])
                     wf(buf, *(r["t0"] if it[2] == 0 else (0.0, 0.0)), *(r["t1"] if it[3] == 0 else (0.0, 0.0)))
                     wstr(buf, "" if ctx else r["name"]); wi(buf, len(seg)); wfa(buf, np.c_[seg[:, 0], np.round(seg[:, 1], 4), seg[:, 2]].ravel())
             put_roads(road_b.get(key, [])); put_roads(ctx_b.get(key, []), True)

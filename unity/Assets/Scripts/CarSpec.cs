@@ -40,6 +40,7 @@ public class CarSpec
     public float TyreWidth(int i) => i < 2 ? TyreWidthF : TyreWidthR;
 
     public static readonly CarSpec[] All = { Hatch(), Peugeot406(), Porsche992GT3() };
+    public CarSpec WithPaint(Color32 paint) { var c = (CarSpec)MemberwiseClone(); c.Paint = paint; return c; }
 
     static CarSpec Hatch() => new CarSpec
     {

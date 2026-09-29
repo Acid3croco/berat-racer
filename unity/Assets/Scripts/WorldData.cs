@@ -6,10 +6,33 @@ using UnityEngine;
 
 public class RoadData
 {
-    public float hw; public bool dirt, bridge; public int lead, trail, fid; public float pri; public Vector2 t0, t1;   // fid: source feature; t0/t1: shared tangent at a joint with the next road (zero = none)
+    public float hw; public bool dirt, bridge; public int lead, trail, fid, limit, avg, oneway, lanes, kind; public float pri;      // limit: legal speed km/h, avg: BD TOPO average km/h, oneway: 0 both ways, 1 along the line, 2 against it (0 for old data)
+    public Vector2 t0, t1;   // fid: source feature; t0/t1: shared tangent at a joint with the next road (zero = none)
     // owned segments k satisfy lead <= k < n-1-trail (the rest overlap the neighbours for a seamless ribbon)
     public string name = ""; public string imp = "0"; public float[] pts;
     Vector2[] xz; public Vector2 Min, Max;
+
+    // ---- the owned polyline as 3D points with cumulative length (traffic follows it)
+    Vector3[] own; float[] cum;
+    void EnsureOwned()
+    {
+        if (own != null) return;
+        int n = pts.Length / 3, first = lead, last = Mathf.Max(n - 1 - trail, first + 1);
+        own = new Vector3[last - first + 1]; cum = new float[own.Length];
+        for (int i = 0; i < own.Length; i++) { int k = first + i; own[i] = new Vector3(pts[k * 3], pts[k * 3 + 1], pts[k * 3 + 2]); if (i > 0) cum[i] = cum[i - 1] + Vector2.Distance(new Vector2(own[i].x, own[i].z), new Vector2(own[i - 1].x, own[i - 1].z)); }
+    }
+    public float Length { get { EnsureOwned(); return cum[cum.Length - 1]; } }
+    public Vector3 StartPoint { get { EnsureOwned(); return own[0]; } }
+    public Vector3 EndPoint { get { EnsureOwned(); return own[own.Length - 1]; } }
+    /// <summary>Point at distance s along the owned polyline (clamped) and the unit travel direction (x,z) of the segment there, in the direction of increasing s.</summary>
+    public Vector3 At(float s, out Vector2 dir)
+    {
+        EnsureOwned(); s = Mathf.Clamp(s, 0f, cum[cum.Length - 1]);
+        int i = System.Array.BinarySearch(cum, s); if (i < 0) i = ~i; i = Mathf.Clamp(i, 1, cum.Length - 1);
+        float seg = Mathf.Max(cum[i] - cum[i - 1], 1e-4f), t = (s - cum[i - 1]) / seg;
+        dir = new Vector2(own[i].x - own[i - 1].x, own[i].z - own[i - 1].z); dir = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector2.up;
+        return Vector3.Lerp(own[i - 1], own[i], t);
+    }
     /// <summary>Ground-plane polyline (x, z) of the OWNED part of the road (the overlap points that only shape the ribbon at chunk joins are left out), cached; also fills Min / Max.</summary>
     public Vector2[] XZ
     {
@@ -73,7 +96,8 @@ public class ChunkData
     {
         using (var br = Open(path))
         {
-            if (new string(br.ReadChars(4)) != "BM02") throw new InvalidDataException(path);
+            string magic = new string(br.ReadChars(4)); if (magic != "BM02" && magic != "BM03" && magic != "BM04") throw new InvalidDataException(path);
+            bool v3 = magic != "BM02", v4 = magic == "BM04";
             var d = new ChunkData { ci = br.ReadInt32(), cj = br.ReadInt32() };
             d.key = d.cj * WorldData.NCX + d.ci; d.x0 = WorldData.X0 + d.ci * WorldData.ChunkSize; d.z0 = WorldData.Z0 + d.cj * WorldData.ChunkSize;
             int cv = br.ReadInt32(); if (cv != CV) throw new InvalidDataException("terrain size " + cv);
@@ -81,7 +105,7 @@ public class ChunkData
             d.H = new float[CV * CV]; var q = br.ReadBytes(CV * CV * 2);
             for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * step;
             d.Col = br.ReadBytes(CV * CV * 3); d.LowCol = br.ReadBytes(LV * LV * 3);
-            d.Roads = ReadRoads(br, false); d.Ctx = ReadRoads(br, true);
+            d.Roads = ReadRoads(br, v3, v4); d.Ctx = ReadRoads(br, v3, v4);
             int na = br.ReadInt32(); d.Areas = new WaterArea[na];
             for (int i = 0; i < na; i++)
             {
@@ -106,12 +130,12 @@ public class ChunkData
         }
     }
 
-    static RoadData[] ReadRoads(BinaryReader br, bool ctx)
+    static RoadData[] ReadRoads(BinaryReader br, bool v3, bool v4)
     {
         int n = br.ReadInt32(); var a = new RoadData[n];
         for (int i = 0; i < n; i++)
         {
-            var r = new RoadData { hw = br.ReadSingle() * WorldData.RoadWidthScale }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte(); r.fid = br.ReadInt32(); r.pri = br.ReadSingle(); r.t0 = new Vector2(br.ReadSingle(), br.ReadSingle()); r.t1 = new Vector2(br.ReadSingle(), br.ReadSingle());
+            var r = new RoadData { hw = br.ReadSingle() * WorldData.RoadWidthScale }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte(); if (v3) { r.limit = br.ReadByte(); r.avg = br.ReadByte(); r.oneway = br.ReadByte(); if (v4) { r.lanes = br.ReadByte(); r.kind = br.ReadByte(); } } r.fid = br.ReadInt32(); r.pri = br.ReadSingle(); r.t0 = new Vector2(br.ReadSingle(), br.ReadSingle()); r.t1 = new Vector2(br.ReadSingle(), br.ReadSingle());
             r.name = Str(br); r.pts = Floats(br, br.ReadInt32() * 3); a[i] = r;
         }
         return a;

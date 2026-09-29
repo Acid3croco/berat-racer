@@ -4,7 +4,7 @@ Resumable: re-run the same command; finished departements are skipped quickly.""
 import json, shutil, subprocess, sys
 from pathlib import Path
 
-ORDER = ["32", "81", "82", "65", "09", "12", "46"]
+ORDER = sys.argv[1:] or ["32", "81", "82", "65", "09", "12", "46"]
 MIN_FREE = 14 * 2**30
 MB_PER_SECTOR = 4.5 * 2**20            # measured 759 MB/1000 km2 raw, ~55 % less with gzip vectors, +margin; 10.24 km2 per sector
 BIG = Path("data/big")

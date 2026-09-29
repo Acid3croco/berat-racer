@@ -10,7 +10,7 @@ Vectors: data/big/vec/{layer}_{si}_{sj}.json.gz (gzip level 6; older ones .json,
 Usage: uv run python fetch_hg.py [data/big/hg_sectors{_09_12}.json]   (default: Haute-Garonne; other departements: run hg_sectors.py 09 12 first).
 Existing files are skipped: re-running resumes. Stops if free disk < 15 GB.
 """
-import gzip, io, json, shutil, sys, threading, time
+import gzip, io, json, os, shutil, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import numpy as np, rasterio, requests
@@ -24,7 +24,7 @@ OUT = Path("data/big/hg"); OUT.mkdir(parents=True, exist_ok=True)
 VEC = Path("data/big/vec"); VEC.mkdir(parents=True, exist_ok=True)
 LID = {"mnt": "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93", "mnh": "IGNF_LIDAR-HD_MNH_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"}
 RGE = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES"
-MIN_FREE = 13 * 2**30                                                      # hard floor; the region driver gates whole departements at 14 GB
+MIN_FREE = int(float(os.environ.get("HG_MIN_FREE_GB", 13)) * 2**30)                                                     # hard floor; the region driver gates whole departements at 14 GB
 COV = "coverage_region.jsonl"                                                # region runs must not touch the old coverage.jsonl
 lock, stop = threading.Lock(), threading.Event()
 

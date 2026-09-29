@@ -42,6 +42,7 @@ public class GameBootstrap : MonoBehaviour
         LogSystem();
         SetupInput();
 
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-mute") >= 0) { AudioListener.volume = 0f; Log.I("audio", "-mute: all sound off"); }
         SetupEnvironment();
 
         var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
@@ -76,6 +77,7 @@ public class GameBootstrap : MonoBehaviour
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
         { var la2 = System.Environment.GetCommandLineArgs(); int si2 = System.Array.IndexOf(la2, "-shotat"); if (si2 >= 0 && si2 + 2 < la2.Length && float.TryParse(la2[si2 + 1], out float sx2) && float.TryParse(la2[si2 + 2], out float sz2)) StartCoroutine(ShotAt(sx2, sz2)); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-mapshots") >= 0) StartCoroutine(MapShots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-trafficshots") >= 0) StartCoroutine(TrafficShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-minimapshot") >= 0) StartCoroutine(MinimapShot());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-sparkletest") >= 0) StartCoroutine(SparkleTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
@@ -160,7 +162,7 @@ public class GameBootstrap : MonoBehaviour
     }
 
     // ------------------------------------------------------------ cars
-    MiniMap minimap;
+    MiniMap minimap; Traffic traffic;
     int carIndex; CarVisualRefs carVisual; Material carMat;
 
     /// <summary>Creates (or replaces) the player's car at a ground position. Everything that hangs off the car is rebuilt with it.</summary>
@@ -179,6 +181,8 @@ public class GameBootstrap : MonoBehaviour
         car.Impact += v => rumbleImpact = Mathf.Max(rumbleImpact, Mathf.Clamp01(v / 10f));
         cam.SetCar(car);
         map.Init(world, car, cam, mainCam);
+        if (traffic == null && System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-notraffic") < 0 && !scriptedTest && !smoke) traffic = gameObject.AddComponent<Traffic>();
+        if (traffic != null) traffic.Init(world, car);
         if (minimap == null) minimap = gameObject.AddComponent<MiniMap>();
         minimap.Init(world, car, map);
         audio = carGo.AddComponent<CarAudio>(); audio.Car = car;
@@ -238,6 +242,7 @@ public class GameBootstrap : MonoBehaviour
             hand |= kb.spaceKey.isPressed; reset |= kb.rKey.wasPressedThisFrame;
             if (kb.hKey.wasPressedThisFrame) showHelp = !showHelp;
             if (kb.fKey.wasPressedThisFrame) CycleCar();
+            if (kb.yKey.wasPressedThisFrame && traffic != null) traffic.SetEnabled(!traffic.Enabled);
             if (kb.vKey.wasPressedThisFrame) { QualitySettings.vSyncCount = 1 - QualitySettings.vSyncCount; Log.I("gfx", "vsync " + (QualitySettings.vSyncCount == 1 ? "ON" : "OFF")); copiedNote = "vsync " + (QualitySettings.vSyncCount == 1 ? "on" : "off"); copiedAt = Time.unscaledTime; }
             if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 4); Log.I("car", "assist mode " + car.AssistMode); }
             if (audio != null && (kb.leftBracketKey.wasPressedThisFrame || kb.rightBracketKey.wasPressedThisFrame))
@@ -532,6 +537,20 @@ public class GameBootstrap : MonoBehaviour
             yield return new WaitForSecondsRealtime(0.6f);
         }
         Log.I("mapshots", "done"); Application.Quit();
+    }
+
+    /// <summary>Lets the traffic spawn, then saves the game window (the game's own framebuffer only) a few times to docs/shots/traffic_*.png.</summary>
+    IEnumerator TrafficShots()
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
+        yield return new WaitForSecondsRealtime(28f);
+        for (int i = 0; i < 4; i++)
+        {
+            ScreenCapture.CaptureScreenshot(Path.Combine(dir, $"traffic_{i}.png"));
+            Log.I("trafficshots", $"shot {i}: {traffic?.Count} cars, mean {traffic?.MeanSpeedKmh:F0} km/h");
+            yield return new WaitForSecondsRealtime(6f);
+        }
+        Application.Quit();
     }
 
     IEnumerator MinimapShot()
@@ -890,7 +909,7 @@ public class GameBootstrap : MonoBehaviour
         if (minimap != null) minimap.DrawGUI();
         if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
         DrawPositionBox();
-        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
+        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
             GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)

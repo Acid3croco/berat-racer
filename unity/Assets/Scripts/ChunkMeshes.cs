@@ -334,34 +334,51 @@ public class ChunkMeshes
             }
     }
 
+    /// <summary>
+    /// Road markings by French practice, from the real data (carriageway width, lane count, one-way, road kind):
+    ///   - two-way roads: dashed centre line (one lane each way when the data counts one or two lanes; without a lane count, from 5.5 m wide); 4 lanes or more: dashed centre plus a dashed line per lane
+    ///   - one-way roads and dual carriageways: a dashed line between each pair of lanes, no centre line
+    ///   - edge lines: thin dashed from ~5.5 m, solid from ~6.5 m and on dual carriageways / motorways
+    ///   - roundabouts: lane lines only when the ring has two lanes or more
+    /// </summary>
     void BuildMarks(ChunkData d, Corridors cor)
     {
         var mb = Marks; Vector3 lift = Vector3.up * 0.03f;
         for (int ri = 0; ri < d.Roads.Length; ri++)
         {
-            var r = d.Roads[ri]; if (r.dirt || r.bridge) continue;
+            var r = d.Roads[ri]; if (r.dirt || r.bridge || r.kind == 5) continue;
             Ribbon(r, ri, cor, joints, false, out var left, out var right); int last = left.Length - 1 - r.trail;
-            if (r.hw >= 2.3f)
-                for (int k = r.lead; k < last; k += 3)                    // dashes: ~2 m painted, ~4 m gap (points are 2 m apart)
+            float width = 2f * r.hw / WorldData.RoadWidthScale; int lanes = r.lanes; bool oneWay = r.oneway != 0, dual = r.kind == 2 || r.kind == 3;
+            bool centre = false; int dividers = 0;
+            if (r.kind == 1) { if (lanes >= 2) dividers = lanes - 1; }
+            else if (oneWay || dual) { if (lanes >= 2) dividers = lanes - 1; else if (lanes == 0 && width >= 6.5f) dividers = 1; }
+            else if (lanes >= 4) { centre = true; dividers = 2; }
+            else if (lanes == 1) centre = true;                                                                        // a two-way road with one lane counted: one lane each way, so a centre line
+            else if (width >= (lanes == 0 ? 5.5f : 5f)) centre = true;
+            bool edgeThin = r.kind != 1 && width >= 5.5f, edgeSolid = r.kind != 1 && (width >= 6.5f || dual);
+            if (!centre && dividers == 0 && !edgeThin) continue;
+            Vector3 At(int k, float u) { Vector3 across = right[k] - left[k]; float w = across.magnitude; return left[k] + across / Mathf.Max(w, 1e-3f) * Mathf.Clamp(u, 0f, w); }
+            void Stripe(int k0, int k1, float u0, float uFrac, bool fromRight, float half)
+            {   // a stripe between ribbon points k0 and k1 at across-position u (metres from an edge, or as a fraction of the width when uFrac > 0)
+                Vector3 a0 = fromRight ? At(k0, (right[k0] - left[k0]).magnitude - u0) : At(k0, uFrac > 0f ? (right[k0] - left[k0]).magnitude * uFrac : u0);
+                Vector3 a1 = fromRight ? At(k1, (right[k1] - left[k1]).magnitude - u0) : At(k1, uFrac > 0f ? (right[k1] - left[k1]).magnitude * uFrac : u0);
+                Vector3 dv = a1 - a0; if (dv.sqrMagnitude < 1e-4f) return;
+                Vector3 mid = (a0 + a1) * 0.5f; if (cor.UnderRanking(mid.x, mid.z, r.pri, r.fid)) return;             // never across a higher-ranking road
+                Vector3 side = Vector3.Cross(Vector3.up, dv.normalized) * half;
+                mb.Quad(mb.Vertex(a0 - side + lift, Paint), mb.Vertex(a0 + side + lift, Paint), mb.Vertex(a1 + side + lift, Paint), mb.Vertex(a1 - side + lift, Paint));
+            }
+            for (int k = r.lead; k < last; k++)
+            {
+                int k1 = k + 1;
+                if (centre && (k - r.lead) % 3 == 0) Stripe(k, Mathf.Min(k + 1, last), 0f, 0.5f, false, 0.09f);                          // 2 m painted, 4 m gap (points are 2 m apart)
+                for (int dvd = 1; dvd <= dividers; dvd++)
+                    if (((k - r.lead) & 1) == 0 || dual) Stripe(k, k1, 0f, dvd / (float)(dividers + 1), false, 0.075f);                     // lane lines: 2 m painted, 2 m gap
+                if (edgeThin || edgeSolid)
                 {
-                    int k2 = Mathf.Min(k + 1, left.Length - 1);
-                    Vector3 c0 = (left[k] + right[k]) * 0.5f, c1 = (left[k2] + right[k2]) * 0.5f, dv = c1 - c0; if (dv.sqrMagnitude < 1e-4f) continue;
-                    if (cor.UnderRanking(c0.x, c0.z, r.pri, r.fid) || cor.UnderRanking(c1.x, c1.z, r.pri, r.fid)) continue;              // no centre dash inside a junction
-                    Vector3 side = Vector3.Cross(Vector3.up, dv.normalized) * 0.09f;
-                    mb.Quad(mb.Vertex(c0 - side + lift, Paint), mb.Vertex(c0 + side + lift, Paint), mb.Vertex(c1 + side + lift, Paint), mb.Vertex(c1 - side + lift, Paint));
+                    bool paint = edgeSolid || ((k - r.lead) & 1) == 0;
+                    if (paint) { Stripe(k, k1, 0.20f, 0f, false, edgeSolid ? 0.055f : 0.045f); Stripe(k, k1, 0.20f, 0f, true, edgeSolid ? 0.055f : 0.045f); }
                 }
-            if (r.hw >= 2.6f)                                              // solid white edge lines on wider roads
-                for (int k = r.lead; k < last; k++)
-                {
-                    Vector3 wl0 = (left[k] - right[k]).normalized, wl1 = (left[k + 1] - right[k + 1]).normalized;
-                    for (int side = 0; side < 2; side++)
-                    {
-                        Vector3 e0 = side == 0 ? left[k] : right[k], e1 = side == 0 ? left[k + 1] : right[k + 1];
-                        Vector3 in0 = side == 0 ? -wl0 : wl0, in1 = side == 0 ? -wl1 : wl1;
-                        Vector3 em = (e0 + e1) * 0.5f; if (cor.UnderRanking(em.x, em.z, r.pri, r.fid)) continue;             // edge lines stop at a side road's mouth and never run across the main road
-                        mb.Quad(mb.Vertex(e0 + in0 * 0.14f + lift, Paint), mb.Vertex(e1 + in1 * 0.14f + lift, Paint), mb.Vertex(e1 + in1 * 0.25f + lift, Paint), mb.Vertex(e0 + in0 * 0.25f + lift, Paint));
-                    }
-                }
+            }
         }
     }
 
