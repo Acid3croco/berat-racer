@@ -12,7 +12,8 @@ Shader "Hidden/Berat/PostFx"
     fixed4 fragPrefilter (v2f_img i) : SV_Target
     {   // 2x2 box downsample + soft threshold on brightness
         float2 t = _MainTex_TexelSize.xy;
-        float3 c = (tex2D(_MainTex, i.uv + t * float2(-1, -1)).rgb + tex2D(_MainTex, i.uv + t * float2(1, -1)).rgb + tex2D(_MainTex, i.uv + t * float2(-1, 1)).rgb + tex2D(_MainTex, i.uv + t * float2(1, 1)).rgb) * 0.25;
+        // each tap is clamped first: one over-bright sub-pixel (a pale far field, a roof edge) must not light up the whole bloom kernel and flicker as the camera moves
+        float3 c = (min(tex2D(_MainTex, i.uv + t * float2(-1, -1)).rgb, 2.2) + min(tex2D(_MainTex, i.uv + t * float2(1, -1)).rgb, 2.2) + min(tex2D(_MainTex, i.uv + t * float2(-1, 1)).rgb, 2.2) + min(tex2D(_MainTex, i.uv + t * float2(1, 1)).rgb, 2.2)) * 0.25;
         float b = max(c.r, max(c.g, c.b));
         float w = saturate((b - _Threshold) / max(_Threshold, 1e-3));
         return fixed4(c * w * w * (3.0 - 2.0 * w) , 1);

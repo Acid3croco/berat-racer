@@ -24,6 +24,7 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 - **Speed feel** (`docs/speed-feel-research.md`): FOV 70 -> 100 deg with speed, look-ahead, acceleration pull-back, shake, radial blur + vignette, procedural engine / wind / tyre audio, tyre smoke and skid marks, controller rumble.
 - **Cameras**: chase, close chase, hood, bumper, far chase; free look that orbits the car; rear view.
 - **Map mode**: 10 m ... 10 km zoom (3 steps per decade), pan with WASD / stick or by dragging with the mouse (a quick click that does not move teleports; holding still does nothing), pan clamped to the map border, 5 m grid overlay when zoomed in, teleport to the exact terrain height under the crosshair.
+- **Minimap** (bottom-left, heading-up, roads and buildings without tree canopy, north marker): `Z` cycles the range 120 m / 250 m / 500 m / 1 km.
 - **Bug-report coordinates**: the top-right box shows the 5 x 5 m cell, local metres, elevation and Lambert-93. `K` copies the spot, `J` jumps to coordinates on the clipboard, `-goto x,z` starts there.
 - **Autopilot** that follows the real road network (demo and test driver).
 

@@ -9,7 +9,7 @@ public class SpeedFx : MonoBehaviour
 {
     public CarController Car;
     public float StartKmh = 90f, FullKmh = 260f, MaxBlur = 1.0f, MaxVignette = 0.45f;
-    public float Exposure = 0.94f, Saturation = 1.0f, Contrast = 1.02f, BloomIntensity = 0.32f, BloomThreshold = 1.05f, BaseVignette = 0.18f;
+    public float Exposure = 0.94f, Saturation = 1.0f, Contrast = 1.02f, BloomIntensity = 0.32f, BloomThreshold = 1.35f, BaseVignette = 0.18f;
     public float Strength { get; private set; }
     Material mat;
 

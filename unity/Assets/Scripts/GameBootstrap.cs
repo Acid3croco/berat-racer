@@ -74,6 +74,8 @@ public class GameBootstrap : MonoBehaviour
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-minimapshot") >= 0) StartCoroutine(MinimapShot());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-sparkletest") >= 0) StartCoroutine(SparkleTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0) StartCoroutine(PhysTest.HullRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audit") >= 0) { world.AuditObstacles(new Vector2(1037.5f, 1062.5f)); Application.Quit(); }
@@ -155,6 +157,7 @@ public class GameBootstrap : MonoBehaviour
     }
 
     // ------------------------------------------------------------ cars
+    MiniMap minimap;
     int carIndex; CarVisualRefs carVisual; Material carMat;
 
     /// <summary>Creates (or replaces) the player's car at a ground position. Everything that hangs off the car is rebuilt with it.</summary>
@@ -173,6 +176,8 @@ public class GameBootstrap : MonoBehaviour
         car.Impact += v => rumbleImpact = Mathf.Max(rumbleImpact, Mathf.Clamp01(v / 10f));
         cam.SetCar(car);
         map.Init(world, car, cam, mainCam);
+        if (minimap == null) minimap = gameObject.AddComponent<MiniMap>();
+        minimap.Init(world, car, map);
         audio = carGo.AddComponent<CarAudio>(); audio.Car = car;
         if (fx == null) fx = mainCam.gameObject.AddComponent<SpeedFx>();
         fx.Car = car;
@@ -466,6 +471,39 @@ public class GameBootstrap : MonoBehaviour
         Application.Quit();
     }
     void nextForce() { world.ForceStream(); }
+
+    IEnumerator MinimapShot()
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
+        yield return new WaitForSecondsRealtime(2f);
+        minimap.SaveSnapshot(Path.Combine(dir, "minimap.png"));
+        Log.I("minimapshot", "done"); Application.Quit();
+    }
+
+    /// <summary>Renders the horizon twice, 0.5 m apart, with one layer hidden at a time, so the flicker between the two frames can be measured per layer.</summary>
+    IEnumerator SparkleTest()
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "sparkle")); Directory.CreateDirectory(dir);
+        var camera = mainCam; cam.enabled = false; map.enabled = false;
+        var rt = new RenderTexture(1600, 900, 24); camera.targetTexture = rt; camera.fieldOfView = 60f;
+        var tex = new Texture2D(1600, 900, TextureFormat.RGB24, false);
+        Vector3 at = new Vector3(350f, 280f, -426f);      // open field south-east of the village: an unobstructed view to the horizon
+        shotFocus = at; yield return world.LoadAround(new Vector3(at.x, 0, at.z), 1500f, 5000f);
+        foreach (string cfg in new[] { "none", "buildings", "water", "far", "roads", "terrainlow", "buildings,water,roads" })
+            for (int dirIdx = 0; dirIdx < 2; dirIdx++)
+                for (int frame = 0; frame < 2; frame++)
+                {
+                    world.DebugHide = cfg; world.ForceStream();
+                    Quaternion look = Quaternion.Euler(dirIdx == 0 ? 25f : 22f, dirIdx == 0 ? 0f : 60f, 0f);
+                    camera.transform.position = at + look * Vector3.right * (0.5f * frame); camera.transform.rotation = look;
+                    world.UpdateStreaming(at); yield return null; yield return null;
+                    camera.Render();
+                    RenderTexture.active = rt; tex.ReadPixels(new Rect(0, 0, 1600, 900), 0, 0); tex.Apply(); RenderTexture.active = null;
+                    File.WriteAllBytes(Path.Combine(dir, $"{cfg.Replace(',', '+')}_{dirIdx}_{frame}.png"), tex.EncodeToPNG());
+                }
+        world.DebugHide = "";
+        Log.I("sparkle", "done"); Application.Quit();
+    }
 
     /// <summary>Streaming showcase: chase view, long view over mid + far terrain, 8 km overview, and the nearest water. Renders to docs/shots/world_*.png.</summary>
     IEnumerator WorldShots()
@@ -787,6 +825,7 @@ public class GameBootstrap : MonoBehaviour
         float camAge = Time.unscaledTime - cam.ModeShownAt;
         if (camAge < 2.2f) { if (stCamName == null) stCamName = new GUIStyle(big) { fontSize = 26, alignment = TextAnchor.LowerCenter }; stCamName.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(2.2f - camAge)); GUI.Label(new Rect(0, Screen.height - 90, Screen.width, 60), "Camera: " + cam.ModeName, stCamName); }
         DrawGauges();
+        if (minimap != null) minimap.DrawGUI();
         if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
         DrawPositionBox();
         GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
@@ -799,7 +838,7 @@ public class GameBootstrap : MonoBehaviour
             sb.AppendLine($"pos {p.x:F1},{p.y:F1},{p.z:F1}   cell {Grid.CellLabel(p.x, p.z)}   surf {car.CurrentSurface}   wheels {car.WheelsOnGround}/4");
             sb.AppendLine($"input steer {steerIn:F2} thr {thrIn:F2} brk {brkIn:F2} hand {handIn}");
             sb.AppendLine($"log: {Log.Path_}");
-            GUI.Label(new Rect(16, Screen.height - 90, 900, 80), sb.ToString(), mono);
+            GUI.Label(new Rect(minimap != null ? minimap.Area.xMax + 16f : 16f, Screen.height - 90, 900, 80), sb.ToString(), mono);
         }
     }
 }

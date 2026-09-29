@@ -267,6 +267,8 @@ public class WorldBuilder : MonoBehaviour
         }
         if (!m.Trees.Empty) c.trees = MakeObject("trees", c.root, m.Trees.ToMesh("trees"), treeMat, true, true);
         if (!m.Street.Empty) c.street = MakeObject("street", c.root, m.Street.ToMesh("street"), flatMat, true, true);
+        if (c.trees != null) c.trees.layer = MiniMap.HiddenLayer;                          // the minimap looks straight down: canopies would hide the roads
+        if (c.street != null) c.street.layer = MiniMap.HiddenLayer;
         foreach (var o in m.Obstacles)
         {
             long k = HashKey(o.pos.x, o.pos.z);
@@ -321,6 +323,8 @@ public class WorldBuilder : MonoBehaviour
     // ------------------------------------------------------------------ runtime
     float nextCull; Vector3 lastFocus;
     public bool HideTrees; public int LastToggleFrame;
+    /// <summary>Debug: comma list of layers to hide (buildings, water, roads, far, terrainlow, trees) to find what sparkles.</summary>
+    public string DebugHide = "";
     /// <summary>Test mode: a perfectly flat asphalt plane at FlatY instead of the real terrain (physics test harness).</summary>
     public bool Flat; public float FlatY;
     public bool TerrainPhysicsOnly = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-terrainphys") >= 0;
@@ -340,13 +344,15 @@ public class WorldBuilder : MonoBehaviour
         nextCull = Time.unscaledTime + 0.35f; lastFocus = focus;
         Stream(focus, MidRadius * MidScale, NearRadius, MidKeep * MidScale, NearKeep, false);
 
+        if (DebugHide.Contains("far")) { foreach (var t in farTiles) t.SetActive(false); }
         var f2 = new Vector2(focus.x, focus.z);
         foreach (var c in chunks.Values)
         {
             if (c.state < State.Mid) continue;
             float d = Vector2.Distance(c.center, f2) - WorldData.ChunkSize * 0.7f;
             bool full = c.terrain != null && d < 1150f;
-            Toggle(c.terrain, full); Toggle(c.terrainLow, !full);
+            Toggle(c.terrain, full && !DebugHide.Contains("terrainlow")); Toggle(c.terrainLow, !full && !DebugHide.Contains("terrainlow"));
+            Toggle(c.buildings, !DebugHide.Contains("buildings")); Toggle(c.water, !DebugHide.Contains("water")); Toggle(c.roads, !DebugHide.Contains("roads"));
             Toggle(c.marks, d < 1000f);
             Toggle(c.facades, d < 1300f);
             Toggle(c.trees, d < 900f && !HideTrees);
