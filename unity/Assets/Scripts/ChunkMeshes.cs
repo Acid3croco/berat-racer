@@ -16,6 +16,9 @@ public class ChunkMeshes
     public readonly List<Obstacle> Obstacles = new List<Obstacle>();
 
     struct BoxSpec { public Vector3 c, size; public float yaw; }
+    RoadIndex roadsHere;
+
+    float CutToRoad(float x, float z, float y) => roadsHere != null ? roadsHere.CutTerrain(x, z, y) : y;
 
     /// <summary>All road centrelines around this chunk (own + neighbours) in a coarse grid: is a point on ANOTHER road's carriageway?</summary>
     class Corridors
@@ -78,12 +81,13 @@ public class ChunkMeshes
     static Color32 Tint(Color32 c, float f) => new Color32((byte)Mathf.Clamp(c.r * f, 0, 255), (byte)Mathf.Clamp(c.g * f, 0, 255), (byte)Mathf.Clamp(c.b * f, 0, 255), 255);
     static readonly Color32 Asphalt = new Color32(94, 94, 98, 255), Shoulder = new Color32(108, 102, 84, 255), Dirt = new Color32(158, 132, 96, 255),
         Concrete = new Color32(170, 168, 160, 255), Paint = new Color32(236, 232, 214, 255), WaterCol = new Color32(52, 96, 112, 255);
-    public const float RoadLift = 0.05f;
+    public const float RoadLift = 0.012f;                                  // the drawn road sits a hair above the road height; the terrain is cut away instead of the road being raised
 
     // ------------------------------------------------------------------ mid tier
     public static ChunkMeshes BuildMid(ChunkData d)
     {
         var m = new ChunkMeshes();
+        m.roadsHere = new RoadIndex(d.Roads); m.roadsHere.Add(-1, d.Ctx);
         m.BuildTerrainLow(d);
         m.BuildRoads(d, new Corridors(d.Roads, d.Ctx));
         m.BuildBuildingShells(d);
@@ -107,7 +111,7 @@ public class ChunkMeshes
                         hs += d.H[sz * CV + sx]; cnt++;
                     }
                 int ci = (z * n + x) * 3;
-                mb.Vertex(new Vector3(d.x0 + x * 16f, hs / cnt, d.z0 + z * 16f), new Color32(d.LowCol[ci], d.LowCol[ci + 1], d.LowCol[ci + 2], 255));
+                mb.Vertex(new Vector3(d.x0 + x * 16f, CutToRoad(d.x0 + x * 16f, d.z0 + z * 16f, hs / cnt), d.z0 + z * 16f), new Color32(d.LowCol[ci], d.LowCol[ci + 1], d.LowCol[ci + 2], 255));
             }
         for (int z = 0; z < q; z++)
             for (int x = 0; x < q; x++)
@@ -256,6 +260,7 @@ public class ChunkMeshes
     // ------------------------------------------------------------------ near tier
     public static ChunkMeshes BuildNear(ChunkData d, ChunkMeshes m)
     {
+        m.roadsHere = new RoadIndex(d.Roads); m.roadsHere.Add(-1, d.Ctx);
         m.BuildTerrainFull(d);
         m.BuildMarks(d, new Corridors(d.Roads, d.Ctx));
         var local = new RoadIndex(d.Roads); local.Add(-1, d.Ctx);                       // own + neighbouring roads: clearance for everything solid
@@ -273,7 +278,7 @@ public class ChunkMeshes
             for (int x = 0; x < CV; x++)
             {
                 int gi = z * CV + x;
-                mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, d.H[gi], d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
+                mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, CutToRoad(d.x0 + x * WorldData.Cell, d.z0 + z * WorldData.Cell, d.H[gi]), d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
             }
         for (int z = 0; z < CV - 1; z++)
             for (int x = 0; x < CV - 1; x++)

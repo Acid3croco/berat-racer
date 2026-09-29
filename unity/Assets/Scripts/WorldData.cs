@@ -111,7 +111,7 @@ public class ChunkData
         int n = br.ReadInt32(); var a = new RoadData[n];
         for (int i = 0; i < n; i++)
         {
-            var r = new RoadData { hw = br.ReadSingle() }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte(); r.fid = br.ReadInt32(); r.pri = br.ReadSingle(); r.t0 = new Vector2(br.ReadSingle(), br.ReadSingle()); r.t1 = new Vector2(br.ReadSingle(), br.ReadSingle());
+            var r = new RoadData { hw = br.ReadSingle() * WorldData.RoadWidthScale }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte(); r.fid = br.ReadInt32(); r.pri = br.ReadSingle(); r.t0 = new Vector2(br.ReadSingle(), br.ReadSingle()); r.t1 = new Vector2(br.ReadSingle(), br.ReadSingle());
             r.name = Str(br); r.pts = Floats(br, br.ReadInt32() * 3); a[i] = r;
         }
         return a;
@@ -132,6 +132,8 @@ public class ChunkData
 public class WorldData
 {
     public const float Cell = 4f;
+    /// <summary>Roads are drawn, driven and cleared at 115% of their real (BD TOPO) width: easier cruising in a game whose cars are wider than they look.</summary>
+    public const float RoadWidthScale = 1.15f;
     public const int ChunkSize = 400, CV = 101;
     // world extents come from world.json; without one it is the original 32 x 32 km block (legacy format)
     public static float X0 = -16000f, Z0 = -16000f; public static int NCX = 80, NCZ = 80; public static bool Legacy = true;

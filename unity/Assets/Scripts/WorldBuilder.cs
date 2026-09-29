@@ -418,11 +418,11 @@ public class WorldBuilder : MonoBehaviour
     }
 
     /// <summary>Ground height for the car: terrain, or a bridge deck if one is within reach of refY. Water is reported as a surface when the bed is below its level.</summary>
-    public const float RoadLift = 0.05f;
+    public const float RoadLift = ChunkMeshes.RoadLift;
     public float GroundHeight(float x, float z, float refY, out Surface surface)
     {
         if (Flat) { surface = Surface.Asphalt; return FlatY; }
-        float terrain = Data.TerrainHeight(x, z);
+        float terrain = Roads.CutTerrain(x, z, Data.TerrainHeight(x, z));      // same cut as the drawn terrain: the ground beside a road never stands above it
         surface = Roads.Query(x, z, refY, out float deck, out float roadY, out float wgt);
         if (TerrainPhysicsOnly) { return float.IsNaN(deck) ? terrain : deck + RoadLift; }        // old behaviour (benchmark comparison)
         if (!float.IsNaN(deck)) return deck + RoadLift;

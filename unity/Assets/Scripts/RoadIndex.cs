@@ -109,6 +109,34 @@ public class RoadIndex
         return best;
     }
 
+    /// <summary>Nearest ground road (bridges excluded) within `reach` metres of its edge: its surface height there and the distance from (x,z) to its edge (negative on the carriageway).</summary>
+    public bool NearestEdge(float x, float z, float reach, out float roadY, out float edgeDist)
+    {
+        roadY = 0f; edgeDist = 1e9f; var p = new Vector2(x, z);
+        int cx = Mathf.FloorToInt(x / CellSize), cz = Mathf.FloorToInt(z / CellSize);
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++)
+                if (grid.TryGetValue(Key(cx + dx, cz + dz), out var list))
+                    foreach (var s in list)
+                    {
+                        if (s.bridge) continue;
+                        Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+                        float e = (p - (s.a + ab * t)).magnitude - s.hw;
+                        if (e < edgeDist) { edgeDist = e; roadY = Mathf.Lerp(s.ya, s.yb, t); }
+                    }
+        return edgeDist < reach;
+    }
+
+    /// <summary>
+    /// The road is the top level: terrain is never above it. Within 5.7 m of a road edge (any terrain triangle touching the ribbon has all its corners that close)
+    /// the ground is cut down to just below the road surface; beyond that it may climb at most 50% back to its natural height. Used for the terrain mesh AND for physics.
+    /// </summary>
+    public float CutTerrain(float x, float z, float y)
+    {
+        if (!NearestEdge(x, z, 12f, out float ry, out float e)) return y;
+        return Mathf.Min(y, ry - 0.03f + Mathf.Max(0f, e - 5.7f) * 0.5f);
+    }
+
     /// <summary>Nearest non-bridge road within maxDist: returns its travel direction (unit vector in x,z).</summary>
     public bool NearestRoad(float x, float z, float maxDist, out Vector2 dir)
     {
