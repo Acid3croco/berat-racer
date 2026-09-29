@@ -72,7 +72,7 @@ public class FollowCamera : MonoBehaviour
             Vector3 p = Car.transform.TransformPoint(rig.local);
             Quaternion r = Car.transform.rotation * Quaternion.Euler(rig.pitch + pitchOff * -0.6f, yaw, 0f);
             transform.position = p;
-            transform.rotation = Quaternion.Slerp(transform.rotation, r, 1f - Mathf.Exp(-28f * dt));
+            transform.rotation = Quaternion.Slerp(transform.rotation, r, 1f - Mathf.Exp(-12f * dt));      // cockpit views filter the suspension jitter
         }
         else
         {
@@ -90,11 +90,11 @@ public class FollowCamera : MonoBehaviour
         }
 
         // shake: gentle low-frequency rumble (speed^2, slip) + decaying impact kicks
-        float amp = (0.002f + 0.010f * spN * spN + 0.008f * Car.SlipAmount) * rig.shake + 0.30f * impact;
+        float amp = (0.0004f + 0.0022f * spN * spN + 0.0015f * Car.SlipAmount) * rig.shake + 0.07f * impact;
         impact = Mathf.Max(0f, impact - 2.5f * dt);
         float tt = Time.time * 16f;
         transform.position += transform.right * ((Mathf.PerlinNoise(tt, 0.3f) - 0.5f) * 2f * amp) + transform.up * ((Mathf.PerlinNoise(0.7f, tt) - 0.5f) * 2f * amp);
-        transform.rotation *= Quaternion.Euler(0, 0, (Mathf.PerlinNoise(5.1f, tt * 0.5f) - 0.5f) * 2f * amp * 18f);
+        transform.rotation *= Quaternion.Euler(0, 0, (Mathf.PerlinNoise(5.1f, tt * 0.5f) - 0.5f) * 2f * amp * 6f);
 
         if (cam != null)
         {
