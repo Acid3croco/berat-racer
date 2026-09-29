@@ -16,3 +16,4 @@ data/
 tools/data/
 world/
 .DS_Store
+dist/
