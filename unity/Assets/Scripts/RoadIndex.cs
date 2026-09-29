@@ -137,6 +137,23 @@ public class RoadIndex
         return Mathf.Min(y, ry - 0.03f + Mathf.Max(0f, e - 5.7f) * 0.5f);
     }
 
+    /// <summary>Is there a bridge deck within `radius` metres (horizontally, measured from the deck edge) of (x,z)? Gives the deck height there.</summary>
+    public bool BridgeDeckNear(float x, float z, float radius, out float deckY)
+    {
+        deckY = 0f; var p = new Vector2(x, z);
+        int cx = Mathf.FloorToInt(x / CellSize), cz = Mathf.FloorToInt(z / CellSize);
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++)
+                if (grid.TryGetValue(Key(cx + dx, cz + dz), out var list))
+                    foreach (var s in list)
+                    {
+                        if (!s.bridge) continue;
+                        Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+                        if ((p - (s.a + ab * t)).magnitude - s.hw < radius) { deckY = Mathf.Lerp(s.ya, s.yb, t); return true; }
+                    }
+        return false;
+    }
+
     /// <summary>Nearest non-bridge road within maxDist: returns its travel direction (unit vector in x,z).</summary>
     public bool NearestRoad(float x, float z, float maxDist, out Vector2 dir)
     {

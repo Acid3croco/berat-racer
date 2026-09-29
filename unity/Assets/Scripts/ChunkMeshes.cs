@@ -529,6 +529,7 @@ public class ChunkMeshes
         {
             float x = d.Trees[i * 4], y = d.Trees[i * 4 + 1], z = d.Trees[i * 4 + 2], h = d.Trees[i * 4 + 3];
             if (Water_(d, new Vector3(x, y, z))) continue;
+            if (TouchesBridge(local, x, y, z, Mathf.Clamp(h * 0.28f, 0.9f, 4f), h)) continue;                  // nothing grows through a bridge deck
             uint hash = (uint)((i + d.key * 7919) * 2654435761u); float rnd = (hash >> 8 & 255) / 255f;
             var leaf = rnd < 0.12f ? C(150, 150, 60) : C((int)(58 + 34 * rnd), (int)(112 + 44 * rnd), (int)(56 + 22 * rnd));
             var trunk = C(96, 70, 48);
@@ -573,6 +574,13 @@ public class ChunkMeshes
         }
     }
 
+    /// <summary>A plant whose crown (radius `rad`, top at y + h) would reach a bridge deck above it, or stand on it, is dropped: the bridge is a road, and nothing is rendered on a road.</summary>
+    static bool TouchesBridge(RoadIndex local, float x, float y, float z, float rad, float h)
+    {
+        if (!local.BridgeDeckNear(x, z, rad + 0.4f, out float deck)) return false;
+        return y + h > deck - 2f && y < deck + 3f;
+    }
+
     void BuildShrubs(ChunkData d, RoadIndex local)
     {
         if (d.Shrubs == null) return;
@@ -581,6 +589,7 @@ public class ChunkMeshes
         {
             float x = d.Shrubs[i * 4], y = d.Shrubs[i * 4 + 1], z = d.Shrubs[i * 4 + 2], h = d.Shrubs[i * 4 + 3];
             if (Water_(d, new Vector3(x, y, z))) continue;
+            if (TouchesBridge(local, x, y, z, 1.4f, h)) continue;
             uint hash = (uint)((i + d.key * 6007) * 2246822519u); float rnd = (hash >> 9 & 255) / 255f;
             var leaf = C((int)(46 + 40 * rnd), (int)(96 + 46 * rnd), (int)(44 + 22 * rnd));
             float rad = Mathf.Clamp(h * 0.62f, 0.55f, 1.4f), hh = Mathf.Clamp(h, 0.9f, 2.4f);

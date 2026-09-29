@@ -17,3 +17,6 @@ tools/data/
 world/
 .DS_Store
 dist/
+world_hg/
+world_*/
+tools/data/
