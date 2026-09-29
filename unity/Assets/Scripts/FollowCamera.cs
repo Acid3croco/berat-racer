@@ -41,7 +41,7 @@ public class FollowCamera : MonoBehaviour
         gSm = Vector3.Lerp(gSm, loc, k);
     }
 
-    Vector3 heading = Vector3.forward, offSm;
+    Vector3 heading = Vector3.forward, offSm; float spHold;
     float impact, accelSm, yawOff, pitchOff, lastLook;
     bool hooked, lookBack;
     Camera cam;
@@ -109,9 +109,13 @@ public class FollowCamera : MonoBehaviour
         }
 
         // g-force feel: the camera moves like the driver's head. Cornering slides it to the outside and leans it, bumps and compressions push it down, crests float it up, braking dives it.
-        float gScale = rig.rigid ? 0.3f : 1f, gk = Mathf.Clamp01(sp / 25f);                        // stationary: no sway from small jitters
+        spHold = Mathf.Max(sp, spHold - 150f * dt);                                            // remembers the speed just before a sudden stop so the stop is still felt
+        float gScale = rig.rigid ? 0.3f : 1f, gk = Mathf.Clamp01(spHold / 25f);
         Vector3 gs = gSm;
-        Vector3 head = transform.right * Mathf.Clamp(-gs.x * 0.004f, -0.10f, 0.10f) * gk + Vector3.up * Mathf.Clamp(-gs.y * 0.010f, -0.22f, 0.22f) * gk;
+        Vector3 hdgH = new Vector3(heading.x, 0, heading.z).normalized;
+        Vector3 head = transform.right * Mathf.Clamp(-gs.x * 0.004f, -0.10f, 0.10f) * gk                                  // cornering: at most a few cm to the outside
+                     + Vector3.down * Mathf.Clamp(gs.y * 0.030f, -0.15f, 0.40f) * gk                                      // compression (bottom of a hill, bumps): squashed down; crest: floats up a little
+                     + hdgH * (Mathf.Clamp(-gs.z * 0.018f, -0.25f, 0.55f) * gk + impact * 0.5f);                          // braking / hitting a wall: the camera rushes toward the car
         transform.position += head * gScale;
         float pitchG = Mathf.Clamp(-gs.z * 0.10f - gs.y * 0.03f, -2.5f, 3.5f) * gk;
         transform.rotation = Quaternion.AngleAxis(pitchG * gScale, transform.right) * transform.rotation;
@@ -125,8 +129,9 @@ public class FollowCamera : MonoBehaviour
 
         if (cam != null)
         {
-            float fov = Mathf.Lerp(RestFov, MaxFov, Mathf.Pow(spN, 0.8f)) + rig.fov;
-            cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, fov, 1f - Mathf.Exp(-4f * dt));
+            float fov = Mathf.Lerp(RestFov, MaxFov, Mathf.Pow(spN, 0.8f)) + rig.fov + impact * 9f;                 // an impact punches the FOV wider, then it settles at the new (lower) speed
+            float rate = impact > 0.05f ? 14f : (fov > cam.fieldOfView ? 4f : 8f);
+            cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, fov, 1f - Mathf.Exp(-rate * dt));
         }
     }
 
