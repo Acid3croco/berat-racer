@@ -183,7 +183,8 @@ def process_roads(win, wbox, feats):
             else: y = smooth_free(y)
             raw.append(dict(xy=xy, y=y, bridge=bridge, hw=hw0, dirt=p["nature"] in ("Chemin", "Route empierrée"),
                             name=next((p[k] for k in ("nom_1_gauche", "nom_1_droite") if p.get(k)), ""), imp=str(p.get("importance")),
-                            fid=zlib.crc32(p["cleabs"].encode()) & 0x7FFFFFFF, t0=(0.0, 0.0), t1=(0.0, 0.0)))
+                            fid=zlib.crc32(p["cleabs"].encode()) & 0x7FFFFFFF, t0=(0.0, 0.0), t1=(0.0, 0.0),
+                            pri=hw0 + (0.0 if p["nature"] in ("Chemin", "Route empierrée") else 1.0) + min(g.length, 20000.0) / 1e5))      # asphalt beats dirt, then wider, then longer
     if not raw: return raw
     ends = []
     for i, r in enumerate(raw):
@@ -647,7 +648,7 @@ def process_sector(args):
                 for it in items:
                     r, seg = it[0], it[1]
                     wf(buf, r["hw"]); buf.append((1 if r["dirt"] else 0) | (2 if r["bridge"] else 0)); buf.append(int(r["imp"]) if r["imp"].isdigit() else 0)
-                    buf.append(it[2]); buf.append(it[3]); wi(buf, r["fid"])
+                    buf.append(it[2]); buf.append(it[3]); wi(buf, r["fid"]); wf(buf, r["pri"])
                     wf(buf, *(r["t0"] if it[2] == 0 else (0.0, 0.0)), *(r["t1"] if it[3] == 0 else (0.0, 0.0)))
                     wstr(buf, "" if ctx else r["name"]); wi(buf, len(seg)); wfa(buf, np.c_[seg[:, 0], np.round(seg[:, 1], 4), seg[:, 2]].ravel())
             put_roads(road_b.get(key, [])); put_roads(ctx_b.get(key, []), True)

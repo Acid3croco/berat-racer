@@ -20,7 +20,7 @@ public class ChunkMeshes
     /// <summary>All road centrelines around this chunk (own + neighbours) in a coarse grid: is a point on ANOTHER road's carriageway?</summary>
     class Corridors
     {
-        struct Seg { public Vector2 a, b; public float hw; public int fid; }
+        struct Seg { public Vector2 a, b; public float hw, pri; public int fid; }
         readonly Dictionary<long, List<Seg>> grid = new Dictionary<long, List<Seg>>();
         const float Cell = 16f;
         static long Key(int x, int z) => ((long)x << 32) ^ (uint)z;
@@ -32,7 +32,7 @@ public class ChunkMeshes
                     if (r.bridge) continue;
                     for (int i = 0; i + 5 < r.pts.Length; i += 3)
                     {
-                        var s = new Seg { a = new Vector2(r.pts[i], r.pts[i + 2]), b = new Vector2(r.pts[i + 3], r.pts[i + 5]), hw = r.hw, fid = r.fid };
+                        var s = new Seg { a = new Vector2(r.pts[i], r.pts[i + 2]), b = new Vector2(r.pts[i + 3], r.pts[i + 5]), hw = r.hw, pri = r.pri, fid = r.fid };
                         float m = s.hw + 1f;
                         int x0 = Mathf.FloorToInt((Mathf.Min(s.a.x, s.b.x) - m) / Cell), x1 = Mathf.FloorToInt((Mathf.Max(s.a.x, s.b.x) + m) / Cell);
                         int z0 = Mathf.FloorToInt((Mathf.Min(s.a.y, s.b.y) - m) / Cell), z1 = Mathf.FloorToInt((Mathf.Max(s.a.y, s.b.y) + m) / Cell);
@@ -45,6 +45,20 @@ public class ChunkMeshes
                     }
                 }
         }
+        /// <summary>True if (x,z) is on the carriageway of a road that outranks priority `pri` (asphalt over dirt, then wider, then longer).</summary>
+        public bool UnderRanking(float x, float z, float pri, int self)
+        {
+            if (!grid.TryGetValue(Key(Mathf.FloorToInt(x / Cell), Mathf.FloorToInt(z / Cell)), out var list)) return false;
+            var p = new Vector2(x, z);
+            foreach (var s in list)
+            {
+                if (s.fid == self || s.pri <= pri) continue;
+                Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+                if ((p - (s.a + ab * t)).magnitude < s.hw - 0.1f) return true;
+            }
+            return false;
+        }
+
         /// <summary>True if (x,z) lies within `inset` metres inside the carriageway of a road that is not feature `self`.</summary>
         public bool OnOther(float x, float z, int self, float inset = 0f)
         {
@@ -109,7 +123,7 @@ public class ChunkMeshes
         for (int i = 0; i < q; i++) { Skirt(i, i + 1); Skirt(q * n + i, q * n + i + 1); Skirt(i * n, (i + 1) * n); Skirt(i * n + q, (i + 1) * n + q); }
     }
 
-    static void Ribbon(RoadData r, int ri, out Vector3[] left, out Vector3[] right)
+    static void Ribbon(RoadData r, int ri, Corridors cor, out Vector3[] left, out Vector3[] right)
     {
         int n = r.pts.Length / 3; left = new Vector3[n]; right = new Vector3[n];
         for (int i = 0; i < n; i++)
@@ -123,6 +137,11 @@ public class ChunkMeshes
             Vector3 side = new Vector3(dir.z, 0, -dir.x) * r.hw;
             p.y += RoadLift + (ri % 6) * 0.0009f;                  // tiny per-road bias so overlapping ribbons never z-fight
             left[i] = p - side; right[i] = p + side;
+            if (cor != null && !r.bridge)
+            {   // where this ribbon runs under a higher-ranking road, dip it just below that road's surface: the better road stays visually on top
+                if (cor.UnderRanking(left[i].x, left[i].z, r.pri, r.fid)) left[i].y -= 0.03f;
+                if (cor.UnderRanking(right[i].x, right[i].z, r.pri, r.fid)) right[i].y -= 0.03f;
+            }
         }
     }
 
@@ -131,7 +150,7 @@ public class ChunkMeshes
         var mb = Roads;
         for (int ri = 0; ri < d.Roads.Length; ri++)
         {
-            var r = d.Roads[ri]; Ribbon(r, ri, out var left, out var right);
+            var r = d.Roads[ri]; Ribbon(r, ri, cor, out var left, out var right);
             int n = left.Length, last = n - 1 - r.trail;
             var col = r.dirt ? Dirt : Asphalt;
             for (int k = r.lead; k < last; k++)
@@ -270,7 +289,7 @@ public class ChunkMeshes
         for (int ri = 0; ri < d.Roads.Length; ri++)
         {
             var r = d.Roads[ri]; if (r.dirt || r.bridge) continue;
-            Ribbon(r, ri, out var left, out var right); int last = left.Length - 1 - r.trail;
+            Ribbon(r, ri, cor, out var left, out var right); int last = left.Length - 1 - r.trail;
             if (r.hw >= 2.3f)
                 for (int k = r.lead; k < last; k += 3)                    // dashes: ~2 m painted, ~4 m gap (points are 2 m apart)
                 {

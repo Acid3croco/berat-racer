@@ -83,6 +83,13 @@ def raster(kind, i, j):
     save_npz(f, q)
     log_cov(dict(kind=kind, i=i, j=j, status=status, nan_frac=round(left, 4), fallback_frac=round(frac, 4)))
 
+def du(d):
+    n = 0
+    for p in list(d.glob("*")):
+        try: n += p.stat().st_size
+        except FileNotFoundError: pass                                     # tmp file renamed meanwhile
+    return n
+
 def disk_ok():
     if shutil.disk_usage(".").free < MIN_FREE:
         if not stop.is_set(): print("LOW DISK: stopping", flush=True)
@@ -150,7 +157,7 @@ if __name__ == "__main__":
                 except Exception as e: fails.append((label, futs[f], str(e)[:120]))
                 done += 1
                 if done % 25 == 0 or done == len(jobs):
-                    gb = sum(p.stat().st_size for p in list(OUT.glob("*")) ) / 2**20
+                    gb = du(OUT) / 2**20
                     print(f"{label} {done}/{len(jobs)}  {time.time()-t0:.0f}s  failures {len(fails)}  hg MB {gb:.0f}  free GB {shutil.disk_usage('.').free/2**30:.1f}", flush=True)
     th = threading.Thread(target=run, args=(2, vjob, vj, "vec")); th.start()
     osm_err = None
