@@ -67,20 +67,63 @@ public static class CarVisual
     static float Z(CarSpec sp, float t) => sp.ZFront - t * (sp.ZFront - sp.ZRear);
     static float Y(CarSpec sp, float h) => sp.GroundY + h;
 
-    /// <summary>Hull outline: upper edge (nose -> tail), flat underside with a real wheel-arch cut-out around each axle.</summary>
-    static List<Vector3> Hull(CarSpec sp, List<Vector3> top, float clearance, float hwBottom)
+    /// <summary>
+    /// Lofted body shell. `top` is the side silhouette (x = z position, y = height above ground, z = half width); at every station the body has a flat floor, a sill,
+    /// a shoulder at full width, a chamfer that tucks in to the roof line (tumblehome) and a slightly crowned top. Wheel arches are cut into the sides as extra stations.
+    /// </summary>
+    static void Loft(MeshBuilder mb, CarSpec sp, List<Vector3> top, float clearance, float hwBottom, Color32 paint, float drop, float tumble)
     {
-        var pts = new List<Vector3>(top);
-        float yb = Y(sp, clearance), yc = Y(sp, sp.WheelR), ra = sp.WheelR + 0.055f;
-        pts.Add(new Vector3(sp.ZRear, yb, hwBottom));
+        Color32 dark = new Color32(16, 16, 18, 255);
+        float yb = Y(sp, clearance), yc = Y(sp, sp.WheelR), ra = sp.WheelR + 0.055f, yLow = Y(sp, clearance + 0.10f);
+        var zs = new List<float>();
+        foreach (var p in top) zs.Add(p.x);
         foreach (float zax in new[] { -sp.B, sp.A })
         {
-            pts.Add(new Vector3(zax - ra, yb, hwBottom)); pts.Add(new Vector3(zax - ra, yc, hwBottom));
-            for (int k = 5; k >= 1; k--) { float a = k * 30f * Mathf.Deg2Rad; pts.Add(new Vector3(zax + ra * Mathf.Cos(a), yc + ra * Mathf.Sin(a), hwBottom)); }
-            pts.Add(new Vector3(zax + ra, yc, hwBottom)); pts.Add(new Vector3(zax + ra, yb, hwBottom));
+            zs.Add(zax + ra + 0.003f); zs.Add(zax + ra); zs.Add(zax - ra); zs.Add(zax - ra - 0.003f);
+            for (int k = 1; k <= 5; k++) zs.Add(zax + ra * Mathf.Cos(k * 30f * Mathf.Deg2Rad));
         }
-        pts.Add(new Vector3(sp.ZFront, yb, hwBottom));
-        return pts;
+        zs.Sort((a, b) => b.CompareTo(a));                                                  // nose first
+        var rings = new List<Vector3[]>();
+        foreach (float z in zs)
+        {
+            // silhouette height and half width at this z
+            float h = top[top.Count - 1].y, hw = top[top.Count - 1].z;
+            for (int i = 0; i + 1 < top.Count; i++)
+                if (z <= top[i].x && z >= top[i + 1].x)
+                {
+                    float f = Mathf.Approximately(top[i].x, top[i + 1].x) ? 0f : (top[i].x - z) / (top[i].x - top[i + 1].x);
+                    h = Mathf.Lerp(top[i].y, top[i + 1].y, f); hw = Mathf.Lerp(top[i].z, top[i + 1].z, f); break;
+                }
+            float yTop = h, yS = yTop - drop, lift = yLow;
+            foreach (float zax in new[] { -sp.B, sp.A })
+            {
+                float dz = z - zax;
+                if (Mathf.Abs(dz) <= ra + 0.0005f) lift = Mathf.Max(lift, yc + Mathf.Sqrt(Mathf.Max(0f, ra * ra - dz * dz)));
+            }
+            lift = Mathf.Min(lift, yS - 0.02f);
+            rings.Add(new[] { new Vector3(0, yb, z), new Vector3(hwBottom * 0.86f, yb, z), new Vector3(hwBottom, lift, z), new Vector3(hw, Mathf.Max(yS, lift + 0.02f), z),
+                              new Vector3(hw * tumble, yTop, z), new Vector3(0, yTop + 0.03f, z) });
+        }
+        for (int i = 0; i + 1 < rings.Count; i++)
+            for (int j = 0; j < 5; j++)
+            {
+                Color32 col = j < 2 ? dark : paint;
+                foreach (float sd in new[] { 1f, -1f })
+                {
+                    Vector3 a = rings[i][j], b = rings[i][j + 1], c = rings[i + 1][j + 1], d = rings[i + 1][j];
+                    a.x *= sd; b.x *= sd; c.x *= sd; d.x *= sd;
+                    mb.Quad(mb.Vertex(a, col), mb.Vertex(b, col), mb.Vertex(c, col), mb.Vertex(d, col));
+                }
+            }
+        foreach (var ring in new[] { rings[0], rings[rings.Count - 1] })
+        {   // nose and tail caps
+            var pts = new List<Vector3>();
+            for (int j = 0; j < 6; j++) pts.Add(ring[j]);
+            for (int j = 4; j >= 1; j--) pts.Add(new Vector3(-ring[j].x, ring[j].y, ring[j].z));
+            Vector3 mid = Vector3.zero; foreach (var q in pts) mid += q; mid /= pts.Count;
+            int m = mb.Vertex(mid, paint);
+            for (int j = 0; j < pts.Count; j++) mb.Tri(m, mb.Vertex(pts[j], paint), mb.Vertex(pts[(j + 1) % pts.Count], paint));
+        }
     }
 
 
@@ -128,7 +171,7 @@ public static class CarVisual
         var top = new List<Vector3> {
             P(sp,0.000f,0.60f,hw*0.94f), P(sp,0.012f,0.76f,hw*0.97f), P(sp,0.060f,0.81f,hw*0.99f), P(sp,0.290f,0.93f,hw*1.00f), P(sp,0.640f,0.98f,hw*1.00f),
             P(sp,0.800f,1.00f,hw*1.00f), P(sp,0.960f,0.99f,hw*0.98f), P(sp,0.992f,0.87f,hw*0.96f), P(sp,1.000f,0.72f,hw*0.95f) };
-        mb.Prism(Hull(sp, top, 0.17f, hw * 0.93f), paint);
+        Loft(mb, sp, top, 0.17f, hw * 0.93f, paint, 0.12f, 0.90f);
         // greenhouse (tinted glass) and painted roof
         mb.Prism(new List<Vector3> { P(sp,0.300f,0.94f,hw*0.90f), P(sp,0.400f,1.33f,hw*0.75f), P(sp,0.580f,1.37f,hw*0.75f), P(sp,0.745f,1.00f,hw*0.88f) }, Glass);
         mb.Prism(new List<Vector3> { P(sp,0.398f,1.325f,hw*0.76f), P(sp,0.412f,1.385f,hw*0.72f), P(sp,0.575f,1.392f,hw*0.72f), P(sp,0.585f,1.325f,hw*0.76f) }, paint);
@@ -158,7 +201,7 @@ public static class CarVisual
         var top = new List<Vector3> {
             P(sp,0.000f,0.58f,hw*0.94f), P(sp,0.015f,0.74f,hw*0.97f), P(sp,0.075f,0.79f,hw*0.99f), P(sp,0.265f,0.91f,hw*1.00f), P(sp,0.700f,0.97f,hw*1.00f),
             P(sp,0.940f,1.00f,hw*0.98f), P(sp,0.990f,0.90f,hw*0.96f), P(sp,1.000f,0.70f,hw*0.95f) };
-        mb.Prism(Hull(sp, top, 0.16f, hw * 0.93f), paint);
+        Loft(mb, sp, top, 0.16f, hw * 0.93f, paint, 0.12f, 0.90f);
         mb.Prism(new List<Vector3> { P(sp,0.255f,0.93f,hw*0.90f), P(sp,0.370f,1.36f,hw*0.75f), P(sp,0.690f,1.40f,hw*0.75f), P(sp,0.925f,1.03f,hw*0.86f) }, Glass);
         mb.Prism(new List<Vector3> { P(sp,0.368f,1.355f,hw*0.76f), P(sp,0.385f,1.425f,hw*0.72f), P(sp,0.700f,1.43f,hw*0.72f), P(sp,0.715f,1.355f,hw*0.76f) }, paint);
         Pillars(mb, sp, paint, P(sp,0.255f,0.93f,hw*0.90f), P(sp,0.370f,1.36f,hw*0.75f), P(sp,0.925f,1.03f,hw*0.86f), P(sp,0.690f,1.40f,hw*0.75f), 0.53f, 1.00f, 1.36f, hw*0.80f);
@@ -184,7 +227,7 @@ public static class CarVisual
         var top = new List<Vector3> {
             P(sp,0.000f,0.44f,hw*0.84f), P(sp,0.010f,0.55f,hw*0.92f), P(sp,0.045f,0.63f,hw*0.97f), P(sp,0.150f,0.70f,hw*0.99f), P(sp,0.305f,0.78f,hw*1.00f),
             P(sp,0.560f,0.86f,hw*1.00f), P(sp,0.770f,0.90f,hw*1.02f), P(sp,0.905f,0.92f,hw*0.99f), P(sp,0.960f,0.88f,hw*0.94f), P(sp,0.992f,0.78f,hw*0.86f), P(sp,1.000f,0.64f,hw*0.80f) };
-        mb.Prism(Hull(sp, top, 0.12f, hw * 0.90f), paint);
+        Loft(mb, sp, top, 0.12f, hw * 0.90f, paint, 0.10f, 0.88f);
         // fastback greenhouse: the roof peaks over the driver and the rear window sweeps down almost to the tail
         mb.Prism(new List<Vector3> { P(sp,0.305f,0.80f,hw*0.90f), P(sp,0.420f,1.20f,hw*0.72f), P(sp,0.550f,1.279f,hw*0.70f), P(sp,0.680f,1.22f,hw*0.74f), P(sp,0.900f,0.93f,hw*0.90f) }, Glass);
         mb.Prism(new List<Vector3> { P(sp,0.420f,1.195f,hw*0.735f), P(sp,0.44f,1.28f,hw*0.70f), P(sp,0.560f,1.283f,hw*0.70f), P(sp,0.640f,1.235f,hw*0.735f) }, carbon);   // carbon roof
