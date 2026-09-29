@@ -8,8 +8,8 @@ using UnityEngine.InputSystem;
 /// </summary>
 public class MapView : MonoBehaviour
 {
-    // zoom levels: 3 per decade on a log scale, 10 m .. 10 km  (10, 21.5, 46.4, 100, 215, 464, 1000, 2154, 4642, 10000)
-    static readonly float[] Levels = { 10f, 21.5443f, 46.4159f, 100f, 215.443f, 464.159f, 1000f, 2154.43f, 4641.59f, 10000f };
+    // zoom levels: 3 per decade on a log scale, 10 m .. 100 km  (10, 21.5, 46.4, 100, 215, 464, 1 km, 2.2, 4.6, 10, 21.5, 46.4, 100 km)
+    static readonly float[] Levels = { 10f, 21.5443f, 46.4159f, 100f, 215.443f, 464.159f, 1000f, 2154.43f, 4641.59f, 10000f, 21544.3f, 46415.9f, 100000f };
     const int StartLevel = 3;
     int level = StartLevel; float lastStep; int openedFrame = -1;
     const double OriginE = 551972, OriginN = 6254819;          // Lambert-93 of local (0,0), see tools/fetch.py
@@ -26,7 +26,7 @@ public class MapView : MonoBehaviour
     // mouse drag: hold + move pans the map; only a quick click that never moved teleports
     Vector2 lastMousePrev; bool held, dragging; Vector2 pressScreen; float pressTime; Vector2 dragDelta;
     const float ClickMaxSeconds = 0.35f, DragPixels = 6f;
-    GameObject carMarker, pin; float prevFov, prevFar, prevTimeScale = 1f; bool prevFog;
+    GameObject carMarker, pin; float prevFov, prevFar, prevNear, prevTimeScale = 1f; bool prevFog;
     GUIStyle label, title, gridLab;
 
     public void Init(WorldBuilder w, CarController c, FollowCamera f, Camera camera)
@@ -54,6 +54,8 @@ public class MapView : MonoBehaviour
     }
 
     public void Toggle() { if (Active) Close("toggle"); else Open(); }
+    /// <summary>Test helper: jump straight to a zoom level (index into Levels) without the glide.</summary>
+    public void TestZoom(int lvl, Vector2? at = null) { level = Mathf.Clamp(lvl, 0, Levels.Length - 1); alt = Levels[level]; if (at.HasValue) pos = at.Value; groundSmooth = world.Data.TerrainHeight(pos.x, pos.y); }
 
     void Open()
     {
@@ -61,8 +63,8 @@ public class MapView : MonoBehaviour
         pos = new Vector2(car.transform.position.x, car.transform.position.z);
         level = StartLevel; alt = Levels[level]; groundSmooth = world.Data.TerrainHeight(pos.x, pos.y);
         follow.enabled = false;
-        prevFov = cam.fieldOfView; prevFar = cam.farClipPlane; prevFog = RenderSettings.fog;
-        cam.fieldOfView = 55f; cam.farClipPlane = 30000f; RenderSettings.fog = false;
+        prevFov = cam.fieldOfView; prevFar = cam.farClipPlane; prevNear = cam.nearClipPlane; prevFog = RenderSettings.fog;
+        cam.fieldOfView = 55f; RenderSettings.fog = false;
         prevTimeScale = Time.timeScale; Time.timeScale = 0f;
         carMarker.SetActive(true); pin.SetActive(true);
         mouseUntil = 0; lastMouse = lastMousePrev = Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero; held = dragging = false;
@@ -74,7 +76,7 @@ public class MapView : MonoBehaviour
     {
         Active = false;
         follow.enabled = true; follow.Snap();
-        cam.fieldOfView = prevFov; cam.farClipPlane = prevFar; RenderSettings.fog = prevFog;
+        cam.fieldOfView = prevFov; cam.farClipPlane = prevFar; cam.nearClipPlane = prevNear; RenderSettings.fog = prevFog;
         Time.timeScale = prevTimeScale <= 0 ? 1f : prevTimeScale;
         carMarker.SetActive(false); pin.SetActive(false);
         world.HideTrees = false;
@@ -143,7 +145,7 @@ public class MapView : MonoBehaviour
         }
         alt = Mathf.Exp(Mathf.Lerp(Mathf.Log(alt), Mathf.Log(Levels[level]), 1f - Mathf.Exp(-10f * dt)));   // smooth log-space glide between levels
         world.HideTrees = alt < 45f;                                                                        // camera would sit inside the canopy
-        float speed = alt * 1.1f * (fast ? 3f : 1f);
+        float speed = alt * 0.9f * (fast ? 3f : 1f);
         Vector2 np = pos + pan * speed * dt + dragDelta;
         // stop at the map border (camera never leaves the mapped area)
         clampedX = np.x < WorldData.X0 + 6f || np.x > WorldData.MaxX - 6f; clampedZ = np.y < WorldData.Z0 + 6f || np.y > WorldData.MaxZ - 6f;
@@ -165,6 +167,7 @@ public class MapView : MonoBehaviour
 
     void ApplyCamera()
     {
+        cam.nearClipPlane = Mathf.Clamp(alt * 0.05f, 0.3f, 4000f); cam.farClipPlane = Mathf.Max(30000f, alt * 4f);           // depth range follows the altitude (100 km up needs a far plane of 400 km)
         cam.transform.position = new Vector3(pos.x, groundSmooth + alt, pos.y);
         cam.transform.rotation = Quaternion.LookRotation(Vector3.down, Vector3.forward);   // straight down, north up
     }
@@ -246,6 +249,52 @@ public class MapView : MonoBehaviour
         GUI.color = Color.white;
     }
 
+    GUIStyle placeStyle, placeShadow;
+    readonly System.Collections.Generic.List<Rect> placed = new System.Collections.Generic.List<Rect>();
+
+    /// <summary>
+    /// Place names: the more important a place, the higher the altitude it stays visible from; smaller ones appear as you zoom in.
+    /// Labels are placed most important first and skipped when they would overlap one already drawn; they fade out over the last quarter of their range.
+    /// </summary>
+    void DrawPlaces()
+    {
+        if (Places.Count == 0) return;
+        if (placeStyle == null)
+        {
+            placeStyle = new GUIStyle(label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+            placeShadow = new GUIStyle(placeStyle); placeShadow.normal.textColor = Color.black;
+        }
+        placed.Clear();
+        float hv = alt * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad), hh = hv * cam.aspect;
+        float minX = pos.x - hh * 1.05f, maxX = pos.x + hh * 1.05f, minZ = pos.y - hv * 1.05f, maxZ = pos.y + hv * 1.05f;
+        int drawn = 0;
+        for (int i = 0; i < Places.Count && drawn < 220; i++)
+        {
+            float lim = Places.MaxAlt(i); if (alt > lim) continue;
+            var p = Places.All[i];
+            if (p.x < minX || p.x > maxX || p.z < minZ || p.z > maxZ) continue;
+            Vector3 sp = cam.WorldToScreenPoint(new Vector3(p.x, groundSmooth, p.z));
+            if (sp.z <= 0f) continue;
+            int fs = Places.FontSize(p);
+            var content = new GUIContent(p.n); placeStyle.fontSize = fs; placeShadow.fontSize = fs;
+            Vector2 size = placeStyle.CalcSize(content);
+            var r = new Rect(sp.x - size.x / 2, Screen.height - sp.y - size.y - 4f, size.x, size.y);        // just above the point
+            var padded = new Rect(r.x - 5f, r.y - 2f, r.width + 10f, r.height + 4f);
+            if (padded.yMin < 50f || padded.yMax > Screen.height - 104f || padded.xMin < 0f || padded.xMax > Screen.width) continue;         // keep clear of the title and the info panel
+            bool clash = false; foreach (var q in placed) if (q.Overlaps(padded)) { clash = true; break; }
+            if (clash) continue;
+            placed.Add(padded); drawn++;
+            float a = Mathf.Clamp01((lim - alt) / (lim * 0.25f + 1f)); if (lim > 1e8f) a = 1f;
+            GUI.color = new Color(1, 1, 1, a);
+            GUI.DrawTexture(new Rect(sp.x - 2.5f, Screen.height - sp.y - 2.5f, 5f, 5f), Texture2D.whiteTexture);
+            placeShadow.normal.textColor = new Color(0, 0, 0, 0.85f * a);
+            GUI.Label(new Rect(r.x + 1.5f, r.y + 1.5f, r.width, r.height), content, placeShadow);
+            placeStyle.normal.textColor = new Color(1f, 0.97f, 0.85f, a);
+            GUI.Label(r, content, placeStyle);
+        }
+        GUI.color = Color.white;
+    }
+
     public void DrawGUI()
     {
         if (label == null)
@@ -261,6 +310,7 @@ public class MapView : MonoBehaviour
         GUI.color = Color.white;
 
         if (alt <= 130f) DrawGrid();
+        DrawPlaces();
         GUI.Label(new Rect(0, 12, Screen.width, 40), "MAP", title);
         string info = aimValid
             ? $"target  cell {Grid.CellLabel(aimPoint.x, aimPoint.z)}   x {aimPoint.x:F0}  z {aimPoint.z:F0}   elevation {aimPoint.y:F1} m   ({Grid.Lambert(aimPoint.x, aimPoint.z)})"
@@ -269,6 +319,6 @@ public class MapView : MonoBehaviour
         GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(box, Texture2D.whiteTexture); GUI.color = Color.white;
         GUI.Label(new Rect(box.x + 10, box.y + 6, box.width - 20, 26), info + $"      altitude {alt:F0} m  (zoom {level + 1}/{Levels.Length})" + (clampedX || clampedZ ? "      [map edge]" : ""), label);
         GUI.Label(new Rect(box.x + 10, box.y + 32, box.width - 20, 50),
-            "Pan: WASD / arrows / left stick (Shift / L3 = fast)     Drag with the mouse to pan (a quick click without moving teleports)     Zoom (10 m … 10 km, 3 steps per decade): scroll / Q,E / L1,R1 / L2,R2\nTeleport: Enter, Space, click / Cross      Close: M / Select / Esc / right-click / Circle", label);
+            "Pan: WASD / arrows / left stick (Shift / L3 = fast)     Drag with the mouse to pan (a quick click without moving teleports)     Zoom (10 m … 100 km, 3 steps per decade): scroll / Q,E / L1,R1 / L2,R2\nTeleport: Enter, Space, click / Cross      Close: M / Select / Esc / right-click / Circle", label);
     }
 }

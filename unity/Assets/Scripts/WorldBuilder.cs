@@ -70,6 +70,7 @@ public class WorldBuilder : MonoBehaviour
         try
         {
             Data = WorldData.Load();
+            Places.Load();
             Log.I("world", $"world {WorldData.NCX}x{WorldData.NCZ} chunks ({(WorldData.Legacy ? "legacy" : "world.json")}), far terrain {Data.FarNx}x{Data.FarNz} @ {Data.FarCell:F0} m, spawn=({Data.Spawn.x:F0},{Data.Spawn.z:F0}) hdg={Data.Spawn.heading:F0}");
             ScanChunks();
             BuildFarTiles();

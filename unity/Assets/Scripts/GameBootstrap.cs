@@ -75,6 +75,7 @@ public class GameBootstrap : MonoBehaviour
         if (shotsMode) StartCoroutine(Shots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
         { var la2 = System.Environment.GetCommandLineArgs(); int si2 = System.Array.IndexOf(la2, "-shotat"); if (si2 >= 0 && si2 + 2 < la2.Length && float.TryParse(la2[si2 + 1], out float sx2) && float.TryParse(la2[si2 + 2], out float sz2)) StartCoroutine(ShotAt(sx2, sz2)); }
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-mapshots") >= 0) StartCoroutine(MapShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-minimapshot") >= 0) StartCoroutine(MinimapShot());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-sparkletest") >= 0) StartCoroutine(SparkleTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
@@ -512,6 +513,24 @@ public class GameBootstrap : MonoBehaviour
             File.WriteAllBytes(Path.Combine(dir, $"at_{v.n}.png"), tex.EncodeToPNG());
         }
         Log.I("shotat", "done"); Application.Quit();
+    }
+
+    /// <summary>Opens the map at several zoom levels and saves the game window (with the GUI: grid, labels) to docs/shots/map_*.png. Only the game's own framebuffer is captured.</summary>
+    IEnumerator MapShots()
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
+        yield return new WaitForSecondsRealtime(1.5f);
+        map.Toggle();
+        foreach (int lvl in new[] { 6, 8, 9, 10, 11, 12 })
+        {
+            map.TestZoom(lvl, new Vector2(0, 0));
+            world.ForceStream();
+            for (int i = 0; i < 20; i++) yield return null;
+            yield return new WaitForSecondsRealtime(1.2f);
+            ScreenCapture.CaptureScreenshot(Path.Combine(dir, $"map_{lvl:D2}.png"));
+            yield return new WaitForSecondsRealtime(0.6f);
+        }
+        Log.I("mapshots", "done"); Application.Quit();
     }
 
     IEnumerator MinimapShot()
