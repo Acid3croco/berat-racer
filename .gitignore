@@ -1,0 +1,16 @@
+# Unity
+unity/Library/
+unity/Temp/
+unity/Logs/
+unity/UserSettings/
+unity/obj/
+unity/*.csproj
+unity/*.sln
+# built player
+Build/
+# python
+.venv/
+__pycache__/
+# raw downloaded data (regenerate with tools/fetch*.py); the exported game data in unity/Assets/StreamingAssets is committed
+data/
+.DS_Store
