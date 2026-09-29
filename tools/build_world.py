@@ -223,6 +223,50 @@ def densify_pts(pts, step=0.5):
         t = (np.arange(n) / n)[:, None]; out.append(a[None, :] + (b - a)[None, :] * t)
     return np.vstack(out) if out else pts
 
+def build_chains(raw, ends, multi):
+    """Roads joined end to end through nodes where exactly two roads meet form a chain (a bridge and its approaches, a road split by the data into pieces).
+    Returns lists of (road index, reversed) in travel order."""
+    link = {}
+    for members in multi:
+        if len(members) == 2:
+            (ia, ea), (ib, eb) = [(ends[k][0], ends[k][1]) for k in members]
+            if ia != ib: link[(ia, ea)] = (ib, eb); link[(ib, eb)] = (ia, ea)
+    seen, chains = set(), []
+    def walk(i, enter):
+        chain = []
+        while i is not None and i not in seen:
+            seen.add(i); chain.append((i, enter == 1))
+            nxt = link.get((i, 1 - enter))
+            if nxt is None: break
+            i, enter = nxt
+        return chain
+    for i in range(len(raw)):
+        if i in seen: continue
+        for end in (0, 1):
+            if (i, end) not in link:
+                chains.append(walk(i, end)); break
+    for i in range(len(raw)):
+        if i not in seen: chains.append(walk(i, 0))                     # closed loops
+    return chains
+
+def smooth_chain(raw, chain):
+    """One smoothing pass of the height profile along a whole chain; bridge decks keep their level so the approaches ease onto them over the chain's length."""
+    ys, pin, spans = [], [], []
+    for n, (i, rev) in enumerate(chain):
+        y = raw[i]["y"][::-1] if rev else raw[i]["y"]
+        start = len(ys) if n == 0 else len(ys) - 1                          # the first point of each piece is the last of the previous one
+        seg = list(y) if n == 0 else list(y[1:])
+        ys.extend(seg); pin.extend([raw[i]["bridge"]] * len(seg)); spans.append((i, rev, start, len(ys)))
+    y0 = np.array(ys); pinned = np.array(pin)
+    if len(y0) < 5: return
+    y1 = smooth_free(y0, 15)
+    y1 = np.where(pinned, y0, y1)
+    for i, rev, a, b in spans:
+        if raw[i]["bridge"]: continue
+        part = y1[a:b]
+        y = raw[i]["y"]; seg = part[::-1] if rev else part
+        if len(seg) == len(y): raw[i]["y"] = seg.copy()
+
 def process_roads(win, wbox, feats):
     """Drivable polylines of the window with network-consistent heights. Returns a list of dicts (xy, y, hw, dirt, bridge, name, imp)."""
     mns = win.mnt + np.clip(win.mnh, -1.0, 7.0)                                     # surface model: bridge decks, capped so tall trees cannot pass for a deck
@@ -302,9 +346,9 @@ def process_roads(win, wbox, feats):
     # ---- vertical curves: smooth every road's profile again (bridge decks stay level), then pull the ends of joining roads back to one shared height,
     #      fading the correction out over 12 m; a few rounds turn "flat -> ramp -> flat" into a smooth vertical curve without opening steps at the joints
     multi = [m for m in groups.values() if len(m) >= 2]
+    chains = build_chains(raw, ends, multi)
     for _ in range(3):
-        for r in raw:
-            if not r["bridge"] and len(r["y"]) >= 5: r["y"] = smooth_free(r["y"], 15)
+        for chain in chains: smooth_chain(raw, chain)
         for members in multi:
             vals = [raw[ends[k][0]]["y"][0 if ends[k][1] == 0 else -1] for k in members]
             bridges = [v for v, k in zip(vals, members) if raw[ends[k][0]]["bridge"]]

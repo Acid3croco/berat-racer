@@ -383,11 +383,11 @@ public class GameBootstrap : MonoBehaviour
             yield return Hold(kb, Key.E, 0.05f); yield return new WaitForSecondsRealtime(0.6f);
             Check($"zoom in #{i + 1}", Mathf.Abs(map.Altitude - expect[i]) < expect[i] * 0.03f, $"alt {map.Altitude:F1} (want {expect[i]:F1}, min is 10)");
         }
-        for (int i = 0; i < 8; i++) { yield return Hold(kb, Key.Q, 0.05f); yield return new WaitForSecondsRealtime(0.2f); }
-        yield return new WaitForSecondsRealtime(0.8f);
-        Check("zoom out clamps at 1 km", Mathf.Abs(map.Altitude - 1000f) < 30f, $"alt {map.Altitude:F0}");
+        for (int i = 0; i < 16; i++) { yield return Hold(kb, Key.Q, 0.05f); yield return new WaitForSecondsRealtime(0.2f); }
+        yield return new WaitForSecondsRealtime(1.2f);
+        Check("zoom out clamps at 100 km", Mathf.Abs(map.Altitude - 100000f) < 3000f, $"alt {map.Altitude:F0}");
         yield return Hold(kb, Key.E, 0.05f); yield return Hold(kb, Key.E, 0.05f); yield return Hold(kb, Key.E, 0.05f); yield return new WaitForSecondsRealtime(0.8f);
-        Check("zoom back to 100 m", Mathf.Abs(map.Altitude - 100f) < 4f, $"alt {map.Altitude:F0}");
+        Check("zoom back to 10 km", Mathf.Abs(map.Altitude - 10000f) < 300f, $"alt {map.Altitude:F0}");
 
         map.DebugSetPos(3190f, 0f);
         yield return Hold(kb, Key.D, 0.8f);
@@ -940,7 +940,7 @@ public class GameBootstrap : MonoBehaviour
         if (camAge < 2.2f) { if (stCamName == null) stCamName = new GUIStyle(big) { fontSize = 26, alignment = TextAnchor.LowerCenter }; stCamName.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(2.2f - camAge)); GUI.Label(new Rect(0, Screen.height - 90, Screen.width, 60), "Camera: " + cam.ModeName, stCamName); }
         DrawGauges();
         if (minimap != null) minimap.DrawGUI();
-        if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
+        if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 138, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
         DrawPositionBox();
         GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
