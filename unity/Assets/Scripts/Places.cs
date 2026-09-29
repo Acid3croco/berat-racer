@@ -47,18 +47,18 @@ public static class Places
         switch (Tier(p))
         {
             case 0: return 1e9f;
-            case 1: return 90000f;
-            case 2: return 45000f;
-            case 3: return 22000f;
-            case 4: return 12000f;
-            case 5: return 6000f;
-            default: return 2600f;
+            case 1: return 130000f;
+            case 2: return 75000f;
+            case 3: return 42000f;
+            case 4: return 24000f;
+            case 5: return 12000f;
+            default: return 5000f;
         }
     }
     public static float MaxAlt(int i) => maxAlt[i];
 
     public static int FontSize(PlaceEntry p)
     {
-        switch (Tier(p)) { case 0: return 30; case 1: return 25; case 2: return 21; case 3: return 18; case 4: return 16; case 5: return 14; default: return 12; }
+        switch (Tier(p)) { case 0: return 30; case 1: return 25; case 2: return 21; case 3: return 18; case 4: return 15; case 5: return 13; default: return 12; }
     }
 }

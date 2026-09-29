@@ -261,14 +261,14 @@ public class MapView : MonoBehaviour
         if (Places.Count == 0) return;
         if (placeStyle == null)
         {
-            placeStyle = new GUIStyle(label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+            placeStyle = new GUIStyle(label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold, wordWrap = false, clipping = TextClipping.Overflow };      // one line, whatever the name length
             placeShadow = new GUIStyle(placeStyle); placeShadow.normal.textColor = Color.black;
         }
         placed.Clear();
         float hv = alt * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad), hh = hv * cam.aspect;
         float minX = pos.x - hh * 1.05f, maxX = pos.x + hh * 1.05f, minZ = pos.y - hv * 1.05f, maxZ = pos.y + hv * 1.05f;
         int drawn = 0;
-        for (int i = 0; i < Places.Count && drawn < 220; i++)
+        for (int i = 0; i < Places.Count && drawn < 450; i++)
         {
             float lim = Places.MaxAlt(i); if (alt > lim) continue;
             var p = Places.All[i];
@@ -278,8 +278,8 @@ public class MapView : MonoBehaviour
             int fs = Places.FontSize(p);
             var content = new GUIContent(p.n); placeStyle.fontSize = fs; placeShadow.fontSize = fs;
             Vector2 size = placeStyle.CalcSize(content);
-            var r = new Rect(sp.x - size.x / 2, Screen.height - sp.y - size.y - 4f, size.x, size.y);        // just above the point
-            var padded = new Rect(r.x - 5f, r.y - 2f, r.width + 10f, r.height + 4f);
+            var r = new Rect(sp.x - size.x / 2 - 4f, Screen.height - sp.y - size.y - 4f, size.x + 8f, size.y);        // just above the point
+            var padded = new Rect(r.x - 2f, r.y, r.width + 4f, r.height);
             if (padded.yMin < 50f || padded.yMax > Screen.height - 104f || padded.xMin < 0f || padded.xMax > Screen.width) continue;         // keep clear of the title and the info panel
             bool clash = false; foreach (var q in placed) if (q.Overlaps(padded)) { clash = true; break; }
             if (clash) continue;
