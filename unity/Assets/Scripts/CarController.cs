@@ -353,7 +353,7 @@ public class CarController : MonoBehaviour
 
     void UpdateSteering(float dt, float speed)
     {
-        float rate = (Mathf.Abs(Steer) > Mathf.Abs(steerSm) ? 5f : 9f) / (1f + speed / 45f);
+        float rate = (Mathf.Abs(Steer) > Mathf.Abs(steerSm) ? 7f : 10f) / (1f + speed / 30f);                 // quick at parking speed, calmer as speed rises
         steerSm = Mathf.MoveTowards(steerSm, Mathf.Clamp(Steer, -1f, 1f), rate * dt);
         float dCmd = steerSm * MaxSteerRad(speed);
         if (AssistMode != Assist.Off && speed > 3f)
@@ -363,6 +363,7 @@ public class CarController : MonoBehaviour
             {
                 float gammaF = Mathf.Atan2(lv.x + FrontZ * la.y, lv.z);
                 float lim = AssistMode == Assist.Arcade ? 0.17f : AssistMode == Assist.Full ? 0.21f : 0.29f;
+                lim *= Mathf.Lerp(3.5f, 1f, Mathf.InverseLerp(4f, 20f, speed));                                   // slow: the tyres cannot plough, so the wheel is nearly unlimited; fast: full protection
                 float limited = Mathf.Clamp(dCmd, gammaF - lim, gammaF + lim);
                 float wgt = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(3f, 9f, speed));
                 dCmd = Mathf.Lerp(dCmd, limited, wgt);
