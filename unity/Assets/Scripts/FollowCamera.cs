@@ -13,13 +13,16 @@ public class FollowCamera : MonoBehaviour
     public float RestFov = 70f, MaxFov = 100f, FullSpeedKmh = 250f;   // vertical FOV 70 -> 100 deg (research: >100 stretches the edges badly)
 
     struct Rig { public string name; public float dist, height, look, fov, shake; public bool rigid; public Vector3 local; public float pitch; }
-    static readonly Rig[] Rigs = {
-        new Rig { name = "Chase",       dist = 5.3f, height = 1.9f, look = 4f,  fov = 0,  shake = 1f },
-        new Rig { name = "Close chase", dist = 3.7f, height = 1.35f, look = 5f, fov = 3,  shake = 1f },
-        new Rig { name = "Hood",        rigid = true, local = new Vector3(0, 0.50f, 0.72f) * CarVisual.S, pitch = -2f, fov = 6, shake = 0.6f },
-        new Rig { name = "Bumper",      rigid = true, local = new Vector3(0, -0.12f, 2.05f) * CarVisual.S, pitch = 0f, fov = 8, shake = 0.5f },
-        new Rig { name = "Far chase",   dist = 10.5f, height = 4.4f, look = 6f, fov = -5, shake = 0.5f },
-    };
+    Rig[] Rigs = new Rig[5];
+    public void Configure(CarSpec sp)
+    {
+        float L = sp.Length, H = sp.Height, gy = sp.GroundY;
+        Rigs[0] = new Rig { name = "Chase", dist = L * 1.30f, height = H * 1.34f, look = 4f, fov = 0, shake = 1f };
+        Rigs[1] = new Rig { name = "Close chase", dist = L * 0.92f, height = H * 0.95f, look = 5f, fov = 3, shake = 1f };
+        Rigs[2] = new Rig { name = "Hood", rigid = true, local = new Vector3(0, gy + H * 0.86f, sp.A - 0.95f), pitch = -2f, fov = 6, shake = 0.6f };
+        Rigs[3] = new Rig { name = "Bumper", rigid = true, local = new Vector3(0, gy + 0.42f, sp.ZFront - 0.02f), pitch = 0f, fov = 8, shake = 0.5f };
+        Rigs[4] = new Rig { name = "Far chase", dist = L * 2.5f, height = H * 3.2f, look = 6f, fov = -5, shake = 0.5f };
+    }
     /// <summary>Angle (deg) between where the camera looks and the car's centre. Used by the -camtest mode.</summary>
     public float AimErrorDeg => Car == null ? 0f : Vector3.Angle(transform.forward, (Car.transform.position + Vector3.up * 1.1f) - transform.position);
     public string ModeName => Rigs[(int)Mode].name;
@@ -38,6 +41,7 @@ public class FollowCamera : MonoBehaviour
         ModeShownAt = Time.unscaledTime; Snap();
         Log.I("camera", "mode -> " + ModeName);
     }
+    public void SetCar(CarController c) { Car = c; hooked = false; if (c != null && c.Spec != null) Configure(c.Spec); Snap(); }
     public void Look(Vector2 d) { yawOff += d.x; pitchOff = Mathf.Clamp(pitchOff - d.y, -15f, 60f); lastLook = Time.unscaledTime; }
     public void SetFreeLook(float yaw, float pitch) { yawOff = yaw; pitchOff = pitch; lastLook = Time.unscaledTime; }
     public void LookBack(bool on) { lookBack = on; }

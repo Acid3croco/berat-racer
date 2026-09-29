@@ -33,6 +33,59 @@ public class MeshBuilder
         Quad(i[0], i[2], i[6], i[4]); Quad(i[1], i[5], i[7], i[3]);   // -x, +x
     }
 
+    /// <summary>Box rotated by q about its centre.</summary>
+    public void BoxQ(Vector3 center, Vector3 size, Quaternion q, Color32 col)
+    {
+        Vector3 h = size * 0.5f; int[] i = new int[8];
+        for (int k = 0; k < 8; k++)
+        {
+            var p = new Vector3((k & 1) != 0 ? h.x : -h.x, (k & 4) != 0 ? h.y : -h.y, (k & 2) != 0 ? h.z : -h.z);
+            i[k] = Vertex(center + q * p, col);
+        }
+        Quad(i[0], i[1], i[3], i[2]); Quad(i[4], i[6], i[7], i[5]); Quad(i[0], i[4], i[5], i[1]); Quad(i[2], i[3], i[7], i[6]); Quad(i[0], i[2], i[6], i[4]); Quad(i[1], i[5], i[7], i[3]);
+    }
+
+    /// <summary>
+    /// Extrudes a side silhouette across the car. Each point is (x = z position, y = height, z = half width at that point),
+    /// listed around the outline; different half widths per point give tumblehome and tapered noses. Concave outlines (wheel arches) are fine.
+    /// </summary>
+    public void Prism(IList<Vector3> pts, Color32 col)
+    {
+        int n = pts.Count; var poly = new List<Vector2>(n); float area = 0;
+        for (int k = 0; k < n; k++) { poly.Add(new Vector2(pts[k].x, pts[k].y)); var a = pts[k]; var b = pts[(k + 1) % n]; area += a.x * b.y - b.x * a.y; }
+        var idxOrder = new List<int>(n); for (int k = 0; k < n; k++) idxOrder.Add(k);
+        if (area < 0) { poly.Reverse(); idxOrder.Reverse(); }
+        var tri = Triangulate(poly);
+        int[] l = new int[n], r = new int[n];
+        for (int k = 0; k < n; k++)
+        {
+            l[k] = Vertex(new Vector3(-pts[k].z, pts[k].y, pts[k].x), col);
+            r[k] = Vertex(new Vector3(pts[k].z, pts[k].y, pts[k].x), col);
+        }
+        for (int k = 0; k + 2 < tri.Count; k += 3)
+        {   // side caps (indices refer to the possibly reversed polygon)
+            int a = idxOrder[tri[k]], b = idxOrder[tri[k + 1]], c = idxOrder[tri[k + 2]];
+            Tri(l[a], l[b], l[c]); Tri(r[a], r[b], r[c]);
+        }
+        for (int k = 0; k < n; k++) { int m = (k + 1) % n; Quad(l[k], l[m], r[m], r[k]); }
+    }
+
+    /// <summary>Cylinder along the Z axis (round headlights, exhaust tips).</summary>
+    public void CylinderZ(Vector3 center, float radius, float length, int sides, Color32 col)
+    {
+        int[] a = new int[sides], b = new int[sides];
+        for (int k = 0; k < sides; k++)
+        {
+            float t = k * Mathf.PI * 2 / sides; float x = Mathf.Cos(t) * radius, y = Mathf.Sin(t) * radius;
+            a[k] = Vertex(center + new Vector3(x, y, -length / 2), col); b[k] = Vertex(center + new Vector3(x, y, length / 2), col);
+        }
+        for (int k = 0; k < sides; k++)
+        {
+            int m = (k + 1) % sides; Quad(a[k], b[k], b[m], a[m]);
+            if (k >= 1 && k < sides - 1) { Tri(a[0], a[k], a[k + 1]); Tri(b[0], b[k + 1], b[k]); }
+        }
+    }
+
     /// <summary>Cylinder along the X axis (for wheels).</summary>
     public void CylinderX(Vector3 center, float radius, float width, int sides, Color32 col)
     {

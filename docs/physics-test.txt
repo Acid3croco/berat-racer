@@ -1,0 +1,40 @@
+      baseline physics tests on flat asphalt; timeScale 6
+        t=0s  0 km/h  gear 1  968 rpm  accel 0.00 m/s2  wheel kappa 0.00
+PASS  0-100 km/h                                       7.14 s     (target 6.0 .. 9.0)
+PASS  0-200 km/h                                      24.76 s     (target 20.0 .. 40.0)
+PASS  top speed                                      243.39 km/h  (target 230.0 .. 252.0)
+      distance to 100 km/h 97 m
+PASS  100-0 km/h braking distance                     35.10 m     (target 32.0 .. 42.0)
+PASS  braking stability: peak yaw rate                 3.12 deg/s (target 0.0 .. 8.0)
+PASS  braking nose dive                                3.33 deg   (target 0.5 .. 4.5)
+        skid t=0s  40 km/h radius 30.0 m  steer -0.16  latG 0.00  slip s=[8.3,8.3,8.4,8.2]
+        skid t=2s  40 km/h radius 29.8 m  steer -0.16  latG 0.39  slip s=[0.2,0.2,0.2,0.2]
+        skid t=4s  42 km/h radius 30.3 m  steer -0.18  latG 0.46  slip s=[0.3,0.2,0.2,0.2]
+        skid t=6s  43 km/h radius 30.4 m  steer -0.19  latG 0.51  slip s=[0.3,0.3,0.3,0.2]
+PASS  skidpad max lateral acceleration (R=30 m)        0.98 g     (target 1.0 .. 1.3)
+      limit reached at 56 km/h, roll 2.8 deg
+        hb t=0.00  yawTotal 0  slip 0  69 km/h  steer 0.90  hand False  wheels s=[0.0,0.0,0.0,0.0]
+        hb t=0.25  yawTotal 5  slip -1  67 km/h  steer 0.90  hand True  wheels s=[1.8,2.2,7.8,8.3]
+        hb t=0.50  yawTotal 20  slip -12  62 km/h  steer 0.90  hand True  wheels s=[1.8,2.1,8.6,8.6]
+        hb t=0.75  yawTotal 46  slip -33  56 km/h  steer 0.90  hand True  wheels s=[1.6,2.4,9.7,10.5]
+        hb t=1.00  yawTotal 79  slip -62  51 km/h  steer 1.00  hand False  wheels s=[0.2,3.9,14.3,21.5]
+        hb t=1.25  yawTotal 105  slip -87  47 km/h  steer 1.00  hand False  wheels s=[38.3,19.7,53.4,98.5]
+        hb t=1.50  yawTotal 120  slip -102  41 km/h  steer 1.00  hand False  wheels s=[10.1,5.5,67.6,35.5]
+        hb t=1.75  yawTotal 133  slip -119  34 km/h  steer 1.00  hand False  wheels s=[4.9,2.3,17.4,13.6]
+        hb t=2.00  yawTotal 145  slip -141  30 km/h  steer 1.00  hand False  wheels s=[1.3,0.5,7.3,6.2]
+        hb t=2.25  yawTotal 149  slip -152  27 km/h  steer 1.00  hand False  wheels s=[0.2,0.9,3.3,3.5]
+        hb t=2.50  yawTotal 138  slip -151  24 km/h  steer 1.00  hand False  wheels s=[0.7,0.4,1.9,2.4]
+        hb t=2.75  yawTotal 120  slip -152  22 km/h  steer 1.00  hand False  wheels s=[0.7,0.6,1.4,2.0]
+        hb t=3.00  yawTotal 102  slip -155  20 km/h  steer 1.00  hand False  wheels s=[0.5,0.5,0.8,1.2]
+        hb t=3.25  yawTotal 83  slip -157  18 km/h  steer 1.00  hand False  wheels s=[0.4,0.7,0.4,0.5]
+        hb t=3.50  yawTotal 64  slip -157  17 km/h  steer 1.00  hand False  wheels s=[0.3,0.5,0.3,0.5]
+        hb t=3.75  yawTotal 46  slip -158  16 km/h  steer 1.00  hand False  wheels s=[0.3,0.4,0.3,0.4]
+PASS  handbrake turn: peak rotation                  149.55 deg   (target 90.0 .. 360.0)
+PASS  handbrake turn: peak sideslip angle            158.25 deg   (target 35.0 .. 175.0)
+        stability test starts at 196 km/h in gear 6
+PASS  200 km/h hands-off: peak yaw rate                0.00 deg/s (target 0.0 .. 3.0)
+PASS  200 km/h hands-off: lateral drift in 4 s         0.00 m     (target 0.0 .. 3.0)
+      step steer: peak yaw rate 35.3 deg/s, final 26.4 deg/s, kinematic 42.6 deg/s at 4.7 deg road wheel
+PASS  step steer: yaw gain vs kinematic (understeer)     0.62 x     (target 0.6 .. 1.0)
+FAIL  step steer: yaw-rate overshoot                  33.73 %     (target -5.0 .. 28.0)
+==== 12 passed, 1 failed ====

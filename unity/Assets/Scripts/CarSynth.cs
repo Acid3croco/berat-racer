@@ -8,7 +8,7 @@ using System;
 public class CarSynth
 {
     public float Rpm = 900f, Load, SpeedMs, Slip, Rough = 1f, Master = 0.15f;
-    public bool Muted;
+    public bool Muted; public float PulsesPerRev = 2f, Brightness = 1f;
     public float LastPeak; public int Buffers; public bool NaNSeen;
 
     float rpmS = 900f, loadS, speedS, slipS, masterS;
@@ -30,14 +30,14 @@ public class CarSynth
             masterS += ((Muted ? 0f : Master) - masterS) * k;
 
             // ---- engine: 4-stroke 4-cyl fires twice per revolution
-            float f0 = rpmS / 60f * 2f;
+            float f0 = rpmS / 60f * PulsesPerRev;
             phase += f0 / sr; if (phase >= 1.0) phase -= 1.0;
             float p = (float)phase, tp = p * 6.2831853f;
             float saw = 2f * p - 1f;
             float pulse = (float)Math.Sin(tp) + 0.55f * (float)Math.Sin(2 * tp + 0.6f) + 0.35f * (float)Math.Sin(3 * tp + 1.3f)
                         + (0.15f + 0.5f * loadS) * (float)Math.Sin(4 * tp) + (0.10f + 0.4f * loadS) * (float)Math.Sin(6 * tp + 0.4f) + (0.05f + 0.3f * loadS) * (float)Math.Sin(8 * tp);
             float raw = 0.5f * saw + 0.55f * pulse + 0.06f * Noise() * (0.3f + loadS);
-            float cutoff = 500f + rpmS * 0.55f + 2600f * loadS;
+            float cutoff = (500f + rpmS * 0.55f + 2600f * loadS) * Brightness;
             float c = Coef(cutoff, sr);
             engLp1 += (raw - engLp1) * c; engLp2 += (engLp1 - engLp2) * c;
             float engine = engLp2 * (0.32f + 0.5f * loadS) * (0.8f + 0.2f * Math.Min(1f, rpmS / 6000f));

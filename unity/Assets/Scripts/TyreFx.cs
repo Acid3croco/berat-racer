@@ -36,7 +36,7 @@ public class TyreFx : MonoBehaviour
 
             var tg = new GameObject("skid" + i); tg.transform.rotation = Quaternion.LookRotation(Vector3.up);
             var tr = tg.AddComponent<TrailRenderer>();
-            tr.alignment = LineAlignment.TransformZ; tr.time = 14f; tr.minVertexDistance = 0.25f; tr.widthMultiplier = 0.24f * CarVisual.S / 0.92f;
+            tr.alignment = LineAlignment.TransformZ; tr.time = 14f; tr.minVertexDistance = 0.25f; tr.widthMultiplier = car.Spec.TyreWidth(i) * 0.9f;
             tr.startColor = tr.endColor = new Color(0.10f, 0.10f, 0.11f, 1f); tr.sharedMaterial = skidMat; tr.emitting = false;
             tr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; tr.receiveShadows = false;
             skid[i] = tr; skidT[i] = tg.transform;

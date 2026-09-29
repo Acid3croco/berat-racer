@@ -23,6 +23,7 @@ public class GameBootstrap : MonoBehaviour
     float fps, fpsAcc, fpsMin = 999f; int fpsN; float fpsNext, telemetryNext;
     GUIStyle big, small, mono;
     float lastInputErr; bool inputTest, mapTest, shotsMode; Vector3? shotFocus;
+    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0;   // physics harness owns the car inputs
     bool showHelp = true, showDebug; Autopilot auto; bool autoOn;
     string padName = "none"; float steerIn, thrIn, brkIn; bool handIn;
 
@@ -57,20 +58,10 @@ public class GameBootstrap : MonoBehaviour
         if (world.Error != null) { Log.I("boot", "world failed: " + world.Error); yield break; }
 
         var sp = world.Data.Spawn;
-        float gy = world.GroundHeight(sp.x, sp.z, sp.y, out _);
-        var carGo = new GameObject("Car");
-        carGo.transform.SetPositionAndRotation(new Vector3(sp.x, gy + 0.9f, sp.z), Quaternion.Euler(0, sp.heading, 0));   // pose first, THEN the Rigidbody
-        carGo.AddComponent<Rigidbody>();
-        var mat = new Material(GameAssets.Flat);
-        var wheels = CarVisual.Build(carGo.transform, mat);
-        car = carGo.AddComponent<CarController>();
-        car.Init(world, wheels);
-        cam.Car = car; cam.Snap();
-        map = gameObject.AddComponent<MapView>(); map.Init(world, car, cam, mainCam);
-        audio = carGo.AddComponent<CarAudio>(); audio.Car = car;
-        fx = mainCam.gameObject.AddComponent<SpeedFx>(); fx.Car = car;
-        tyres = carGo.AddComponent<TyreFx>(); tyres.Init(car);
-        Log.I("boot", $"car spawned at ({sp.x:F1}, {gy:F1}, {sp.z:F1}) heading {sp.heading:F0}° smoke={smoke}");
+        int startModel = 0; { var la = System.Environment.GetCommandLineArgs(); int ci = System.Array.IndexOf(la, "-car"); if (ci >= 0 && ci + 1 < la.Length) int.TryParse(la[ci + 1], out startModel); }
+        map = gameObject.AddComponent<MapView>();
+        SpawnCar(Mathf.Clamp(startModel, 0, CarSpec.All.Length - 1), new Vector3(sp.x, 0, sp.z), sp.heading, true);
+        Log.I("boot", $"smoke={smoke}");
         var launchArgs = System.Environment.GetCommandLineArgs();
         if (System.Array.IndexOf(launchArgs, "-autopilot") >= 0)
         {
@@ -82,6 +73,8 @@ public class GameBootstrap : MonoBehaviour
         if (inputTest) StartCoroutine(InputTest());
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-carshots") >= 0) StartCoroutine(CarShots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0) StartCoroutine(PhysTest.Run(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-camtest") >= 0) StartCoroutine(CamTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smokeshots") >= 0) StartCoroutine(SmokeShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audiotest") >= 0) StartCoroutine(AudioTest());
@@ -126,6 +119,39 @@ public class GameBootstrap : MonoBehaviour
         }
     }
 
+    // ------------------------------------------------------------ cars
+    int carIndex; CarVisualRefs carVisual; Material carMat;
+
+    /// <summary>Creates (or replaces) the player's car at a ground position. Everything that hangs off the car is rebuilt with it.</summary>
+    void SpawnCar(int index, Vector3 pos, float heading, bool first)
+    {
+        carIndex = index; var spec = CarSpec.All[index];
+        float gy = world.GroundHeight(pos.x, pos.z, world.Data.TerrainHeight(pos.x, pos.z) + 1f, out _);
+        if (car != null) Destroy(car.gameObject);
+        var carGo = new GameObject("Car");
+        carGo.transform.SetPositionAndRotation(new Vector3(pos.x, gy + spec.WheelRadiusSum + 0.25f, pos.z), Quaternion.Euler(0, heading, 0));   // pose first, THEN the Rigidbody
+        carGo.AddComponent<Rigidbody>();
+        if (carMat == null) carMat = new Material(GameAssets.Flat);
+        carVisual = CarVisual.Build(carGo.transform, carMat, spec);
+        car = carGo.AddComponent<CarController>();
+        car.Init(world, carVisual.wheels, spec);
+        cam.SetCar(car);
+        map.Init(world, car, cam, mainCam);
+        audio = carGo.AddComponent<CarAudio>(); audio.Car = car;
+        if (fx == null) fx = mainCam.gameObject.AddComponent<SpeedFx>();
+        fx.Car = car;
+        tyres = carGo.AddComponent<TyreFx>(); tyres.Init(car);
+        Log.I("boot", $"car '{spec.Name}' ({spec.Layout}) at ({pos.x:F1}, {gy:F1}, {pos.z:F1}) heading {heading:F0}");
+        if (!first) { shownCarAt = Time.unscaledTime; auto = null; autoOn = false; }
+    }
+    float shownCarAt = -10f;
+
+    void CycleCar()
+    {
+        var p = car.transform.position; float yaw = car.transform.eulerAngles.y;
+        SpawnCar((carIndex + 1) % CarSpec.All.Length, new Vector3(p.x, 0, p.z), yaw, false);
+    }
+
     // ------------------------------------------------------------ frame
     void Update()
     {
@@ -135,10 +161,11 @@ public class GameBootstrap : MonoBehaviour
         world.UpdateStreaming(shotFocus.HasValue ? shotFocus.Value : (map.Active ? map.Focus : car.transform.position));
         if (map.Active) { map.Tick(); return; }
         HandleCameraInput();
+        if (carVisual != null) { carVisual.brakeGlow.SetActive(car.Brake > 0.1f && car.Gear > 0 || car.Gear < 0 && car.Throttle > 0.1f); carVisual.reverseGlow.SetActive(car.Gear < 0); }
         fpsAcc += Time.unscaledDeltaTime; fpsN++; fpsMin = Mathf.Min(fpsMin, 1f / Mathf.Max(Time.unscaledDeltaTime, 1e-4f));
         if (Time.unscaledTime > fpsNext) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; fpsNext = Time.unscaledTime + 0.5f; }
         if (autoOn && auto != null) { auto.Drive(Time.deltaTime); if (Time.unscaledTime > telemetryNext) { Log.I("auto", auto.Status); Telemetry(); } if (!smoke) HandleToggles(); return; }
-        if (smoke) return;
+        if (smoke || scriptedTest) return;
 
         float steer = 0, thr = 0, brk = 0; bool hand = false, reset = false;
         try {
@@ -165,6 +192,8 @@ public class GameBootstrap : MonoBehaviour
             brk = Mathf.Max(brk, kb.sKey.isPressed || kb.downArrowKey.isPressed ? 1 : 0);
             hand |= kb.spaceKey.isPressed; reset |= kb.rKey.wasPressedThisFrame;
             if (kb.hKey.wasPressedThisFrame) showHelp = !showHelp;
+            if (kb.fKey.wasPressedThisFrame) CycleCar();
+            if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 3); Log.I("car", "assist mode " + car.AssistMode); }
             if (audio != null && (kb.leftBracketKey.wasPressedThisFrame || kb.rightBracketKey.wasPressedThisFrame))
             { audio.Volume = Mathf.Clamp(audio.Volume + (kb.rightBracketKey.wasPressedThisFrame ? 0.05f : -0.05f), 0f, 1f); Log.I("audio", $"volume {audio.Volume * 100:F0}%"); }
             if (kb.nKey.wasPressedThisFrame && audio != null) { audio.Synth.Muted = !audio.Synth.Muted; Log.I("audio", "muted=" + audio.Synth.Muted); }
@@ -205,6 +234,7 @@ public class GameBootstrap : MonoBehaviour
         if (gp != null)
         {
             if (gp.dpad.up.wasPressedThisFrame) cam.NextMode();
+            if (gp.dpad.right.wasPressedThisFrame) CycleCar();
             Vector2 rs = gp.rightStick.ReadValue();
             if (rs.magnitude > 0.2f) cam.Look(rs * 170f * Time.unscaledDeltaTime);
             back |= gp.rightStickButton.isPressed;
@@ -220,7 +250,7 @@ public class GameBootstrap : MonoBehaviour
         telemetryNext = Time.unscaledTime + 1f;
         var p = car.transform.position;
         Log.I("tel", $"pos=({p.x:F0},{p.y:F1},{p.z:F0}) {car.SpeedKmh:F0}km/h fwd={car.ForwardSpeed:F1}m/s wheels={car.WheelsOnGround}/4 surf={car.CurrentSurface} " +
-                     $"in[steer={steerIn:F2} thr={thrIn:F2} brk={brkIn:F2} hand={handIn}] gear={(audio != null ? audio.Gear : 0)} rpm={(audio != null ? audio.Rpm : 0):F0} audioPeak={(audio != null ? audio.Synth.LastPeak : 0):F2} buffers={(audio != null ? audio.Synth.Buffers : 0)} fx={(fx != null ? fx.Strength : 0):F2} smoke={(tyres != null ? tyres.Alive : 0)} wfx=[{car.WheelFx[0]:F1},{car.WheelFx[1]:F1},{car.WheelFx[2]:F1},{car.WheelFx[3]:F1}] cam={(cam != null ? cam.ModeName : "-")} fov={(mainCam != null ? mainCam.fieldOfView : 0):F0} pad={padName} focus={Application.isFocused} kb={(Keyboard.current != null)} auto={autoOn} fps={fps:F0} (min {fpsMin:F0}) mem={System.GC.GetTotalMemory(false) / 1048576}MB");
+                     $"in[steer={steerIn:F2} thr={thrIn:F2} brk={brkIn:F2} hand={handIn}] gear={car.Gear} rpm={car.Rpm:F0} audioPeak={(audio != null ? audio.Synth.LastPeak : 0):F2} buffers={(audio != null ? audio.Synth.Buffers : 0)} fx={(fx != null ? fx.Strength : 0):F2} smoke={(tyres != null ? tyres.Alive : 0)} wfx=[{car.WheelFx[0]:F1},{car.WheelFx[1]:F1},{car.WheelFx[2]:F1},{car.WheelFx[3]:F1}] cam={(cam != null ? cam.ModeName : "-")} fov={(mainCam != null ? mainCam.fieldOfView : 0):F0} pad={padName} focus={Application.isFocused} kb={(Keyboard.current != null)} auto={autoOn} fps={fps:F0} (min {fpsMin:F0}) mem={System.GC.GetTotalMemory(false) / 1048576}MB");
         fpsMin = 999f;
     }
 
@@ -439,6 +469,43 @@ public class GameBootstrap : MonoBehaviour
         Log.I("camtest", fails == 0 ? "ALL PASS" : fails + " FAILED"); Application.Quit();
     }
 
+    /// <summary>Renders every car model from three angles (front 3/4, side, rear 3/4) to docs/shots/car_*.png.</summary>
+    IEnumerator CarShots()
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
+        cam.enabled = false; map.enabled = false;
+        var rt = new RenderTexture(1600, 900, 24); mainCam.targetTexture = rt; mainCam.fieldOfView = 38f; var tex = new Texture2D(1600, 900, TextureFormat.RGB24, false);
+        var sp = world.Data.Spawn; Vector3 at = new Vector3(sp.x, 0, sp.z);
+        for (int idx = 0; idx < CarSpec.All.Length; idx++)
+        {
+            SpawnCar(idx, at, sp.heading, false);
+            car.Throttle = car.Brake = car.Steer = 0; shotFocus = car.transform.position; nextForce();
+            yield return new WaitForSeconds(1.2f);
+            var spec = car.Spec; Vector3 c = car.transform.position + car.transform.TransformDirection(new Vector3(0, spec.GroundY + spec.Height * 0.5f, spec.CentreOfMass.z * 0f));
+            c = car.transform.position + Vector3.up * (spec.GroundY + spec.Height * 0.45f);
+            float dist = spec.Length * 1.55f;
+            foreach (var (name, az, el) in new[] { ("front34", 35f, 9f), ("side", 90f, 4f), ("rear34", 148f, 12f) })
+            {
+                Vector3 pos = default;
+                foreach (float sgn in new[] { 1f, -1f })                                   // try the wanted side, then the other one if a building is in the way
+                    foreach (float dm in new[] { 1f, 0.8f, 0.6f })
+                    {
+                        Vector3 dir3 = Quaternion.Euler(0, car.transform.eulerAngles.y + az * sgn, 0) * Vector3.forward;   // az measured from the car's nose
+                        pos = c + Quaternion.Euler(-el, 0, 0) * dir3 * dist * dm; pos.y = Mathf.Max(pos.y, c.y + 0.4f);
+                        Physics.SyncTransforms();
+                        if (!Physics.CheckSphere(pos, 0.6f) && !Physics.Linecast(pos, c + car.transform.right * 0.3f)) goto placed;
+                    }
+                placed:
+                mainCam.transform.position = pos; mainCam.transform.LookAt(c);
+                mainCam.Render();
+                RenderTexture.active = rt; tex.ReadPixels(new Rect(0, 0, 1600, 900), 0, 0); tex.Apply(); RenderTexture.active = null;
+                File.WriteAllBytes(Path.Combine(dir, $"car_{idx}_{name}.png"), tex.EncodeToPNG());
+            }
+            Log.I("carshots", $"{spec.Name}: rendered, ride height check: wheels on ground {car.WheelsOnGround}/4, body y {car.transform.position.y - world.GroundHeight(car.transform.position.x, car.transform.position.z, car.transform.position.y, out _):F2} m above road");
+        }
+        Log.I("carshots", "done"); Application.Quit();
+    }
+
     IEnumerator SmokeShots()
     {
         string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
@@ -524,13 +591,15 @@ public class GameBootstrap : MonoBehaviour
         }
         if (map != null && map.Active) { map.DrawGUI(); return; }
         GUI.Label(new Rect(Screen.width - 340, Screen.height - 110, 320, 80), $"{car.SpeedKmh:F0} km/h", big);
+        float carAge = Time.unscaledTime - shownCarAt;
+        if (carAge < 3.5f) { var ns = new GUIStyle(big) { fontSize = 34, alignment = TextAnchor.UpperCenter }; ns.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(3.5f - carAge)); GUI.Label(new Rect(0, 70, Screen.width, 50), car.Spec.Name, ns); var ts = new GUIStyle(small) { alignment = TextAnchor.UpperCenter, fontSize = 18 }; ts.normal.textColor = ns.normal.textColor; GUI.Label(new Rect(0, 118, Screen.width, 30), car.Spec.Tagline, ts); }
         float camAge = Time.unscaledTime - cam.ModeShownAt;
         if (camAge < 2.2f) { var cs = new GUIStyle(big) { fontSize = 26, alignment = TextAnchor.LowerCenter }; cs.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(2.2f - camAge)); GUI.Label(new Rect(0, Screen.height - 90, Screen.width, 60), "Camera: " + cam.ModeName, cs); }
         DrawGauges();
         if (autoOn) { var ap = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; ap.normal.textColor = new Color(1f, 0.85f, 0.2f); GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", ap); }
-        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(audio != null ? audio.Gear : 0)}  {(audio != null ? audio.Rpm : 0):F0} rpm   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
+        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
-            GUI.Label(new Rect(16, 36, 900, 90), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
+            GUI.Label(new Rect(16, 36, 900, 90), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)
         {
             var sb = new StringBuilder();

@@ -1,0 +1,18 @@
+      baseline physics tests on flat asphalt; timeScale 6
+FAIL  0-100 km/h                                       5.18 s     (target 6.0 .. 9.0)
+FAIL  0-200 km/h                                      99.00 s     (target 20.0 .. 40.0)
+FAIL  top speed                                      168.38 km/h  (target 230.0 .. 252.0)
+      distance to 100 km/h 83 m
+FAIL  100-0 km/h braking distance                     57.90 m     (target 32.0 .. 42.0)
+PASS  braking stability: peak yaw rate                 0.00 deg/s (target 0.0 .. 8.0)
+FAIL  braking nose dive                                0.43 deg   (target 0.5 .. 4.5)
+FAIL  skidpad max lateral acceleration (R=30 m)        0.00 g     (target 1.0 .. 1.3)
+      limit reached at 0 km/h, roll 0.0 deg
+PASS  handbrake turn: total rotation                 124.92 deg   (target 100.0 .. 400.0)
+FAIL  handbrake turn: peak sideslip angle            160.75 deg   (target 35.0 .. 140.0)
+PASS  200 km/h hands-off: peak yaw rate                0.00 deg/s (target 0.0 .. 3.0)
+PASS  200 km/h hands-off: lateral drift in 4 s         0.00 m     (target 0.0 .. 3.0)
+      step steer: peak yaw rate 36.8 deg/s, final 36.7 deg/s
+PASS  step steer: yaw-rate overshoot                   0.45 %     (target -5.0 .. 25.0)
+FAIL  step steer: steady yaw rate (0.22 steer @80)    36.68 deg/s (target 6.0 .. 22.0)
+==== 5 passed, 8 failed ====

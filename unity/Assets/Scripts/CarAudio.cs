@@ -10,13 +10,12 @@ public class CarAudio : MonoBehaviour
     public int Gear { get; private set; } = 1;
     public float Rpm => Synth.Rpm;
     int sampleRate = 48000;
-    const float Idle = 900f, Redline = 7000f;
-    static readonly float[] GearTop = { 55f, 95f, 135f, 175f, 215f, 260f };      // km/h at redline in each gear
-    float shiftTimer, prevThrottle;
 
     void Start()
     {
         sampleRate = AudioSettings.outputSampleRate;
+        if (Application.isBatchMode) { Volume = 0.01f; Log.I("audio", "batch / headless run: volume 1%"); }      // automated tests stay nearly silent
+        if (Car != null && Car.Spec != null) { Synth.PulsesPerRev = Car.Spec.Cylinders / 2f; Synth.Brightness = Car.Spec.Style == BodyStyle.Sports ? 1.35f : Car.Spec.Style == BodyStyle.Sedan ? 0.85f : 1f; }
         var src = GetComponent<AudioSource>();
         src.clip = AudioClip.Create("carsynth-carrier", sampleRate, 1, sampleRate, false);
         src.clip.SetData(new float[sampleRate], 0);
@@ -30,24 +29,13 @@ public class CarAudio : MonoBehaviour
     {
         if (Car == null) return;
         bool paused = Time.timeScale == 0f;
-        float kmh = Car.SpeedKmh, thr = Car.Throttle;
-        // gearbox with hysteresis
-        float gtop = GearTop[Gear - 1];
-        if (kmh > gtop * 0.94f && Gear < GearTop.Length) { Gear++; shiftTimer = 0.25f; }
-        else if (Gear > 1 && kmh < GearTop[Gear - 2] * 0.60f) { Gear--; shiftTimer = 0.15f; }
-        gtop = GearTop[Gear - 1];
-        float frac = Mathf.Clamp01(kmh / gtop);
-        float target = Mathf.Lerp(Idle + 900f, Redline, Mathf.Pow(frac, 0.9f));
-        if (kmh < 12f) target = Mathf.Max(target, Idle + thr * 5200f);                // launch: revs follow the throttle
-        shiftTimer -= Time.unscaledDeltaTime;
-        if (shiftTimer > 0f) target *= 0.72f;                                         // drop between gears
-        if (thr < 0.05f && kmh < 4f) target = Idle;
-        Synth.Rpm = Mathf.Lerp(Synth.Rpm, target, 1f - Mathf.Exp(-9f * Time.unscaledDeltaTime));
-        Synth.Load = paused ? 0f : Mathf.Clamp01(Mathf.Lerp(0.15f, 1f, thr));
+        float thr = Car.Throttle;
+        Gear = Car.Gear;
+        Synth.Rpm = Mathf.Lerp(Synth.Rpm, Car.Rpm, 1f - Mathf.Exp(-25f * Time.unscaledDeltaTime));
+        Synth.Load = paused ? 0f : Mathf.Clamp01(Mathf.Lerp(0.15f, 1f, Car.EngineLoad));
         Synth.SpeedMs = paused ? 0f : Car.Body.linearVelocity.magnitude;
         Synth.Slip = paused ? 0f : Car.SlipAmount;
         Synth.Rough = Car.CurrentSurface == Surface.Asphalt ? 1f : Car.CurrentSurface == Surface.Dirt ? 2.2f : 1.8f;
         Synth.Master = paused ? Volume * 0.2f : Volume;
-        prevThrottle = thr;
     }
 }

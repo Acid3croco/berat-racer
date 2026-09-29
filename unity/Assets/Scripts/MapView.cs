@@ -30,6 +30,7 @@ public class MapView : MonoBehaviour
     public void Init(WorldBuilder w, CarController c, FollowCamera f, Camera camera)
     {
         world = w; car = c; follow = f; cam = camera;
+        if (carMarker != null) return;
         carMarker = MakeMarker("map car marker", new Color32(255, 60, 40, 255), 1f, 1.6f);
         pin = MakeMarker("map pin", new Color32(255, 220, 30, 255), 0.55f, 2.6f);
         carMarker.SetActive(false); pin.SetActive(false);

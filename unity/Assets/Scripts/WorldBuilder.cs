@@ -349,6 +349,8 @@ public class WorldBuilder : MonoBehaviour
     // ------------------------------------------------------------------ runtime
     float nextCull; int lastT = -1, lastB = -1;
     public bool HideTrees;
+    /// <summary>Test mode: a perfectly flat asphalt plane at FlatY instead of the real terrain (physics test harness).</summary>
+    public bool Flat; public float FlatY;
     public void ForceStream() { nextCull = 0; }
     public void UpdateStreaming(Vector3 focus)
     {
@@ -388,6 +390,7 @@ public class WorldBuilder : MonoBehaviour
     /// <summary>Ground height for the car: terrain, or a bridge deck if one is within reach of refY.</summary>
     public float GroundHeight(float x, float z, float refY, out Surface surface)
     {
+        if (Flat) { surface = Surface.Asphalt; return FlatY; }
         float terrain = Data.TerrainHeight(x, z);
         surface = Roads.Query(x, z, refY, out float deck);
         return float.IsNaN(deck) ? terrain : deck + 0.06f;

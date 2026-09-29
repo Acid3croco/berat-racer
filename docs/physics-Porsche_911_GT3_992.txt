@@ -1,0 +1,86 @@
+      baseline physics tests on flat asphalt; timeScale 6
+        launch t=0.24 3 km/h gear 1 1288 rpm clutch 0.89 locked True Te 25 Nm kappaRear 2.01/2.39 loadRear 5086/5083 accel 1.8
+        launch t=0.49 6 km/h gear 1 2125 rpm clutch 0.43 locked False Te 365 Nm kappaRear 0.39/0.10 loadRear 4466/4448 accel 2.6
+        launch t=0.74 12 km/h gear 1 1672 rpm clutch 0.99 locked True Te 339 Nm kappaRear 0.07/0.05 loadRear 5133/5140 accel 4.5
+        launch t=0.99 18 km/h gear 1 2415 rpm clutch 1.00 locked True Te 375 Nm kappaRear 0.06/0.07 loadRear 5189/5192 accel 6.0
+        launch t=1.24 26 km/h gear 1 3329 rpm clutch 1.00 locked True Te 409 Nm kappaRear 0.08/0.06 loadRear 5317/5315 accel 7.2
+        launch t=1.49 34 km/h gear 1 4362 rpm clutch 1.00 locked True Te 438 Nm kappaRear 0.06/0.09 loadRear 5408/5408 accel 8.1
+        launch t=1.74 42 km/h gear 1 5488 rpm clutch 1.00 locked True Te 461 Nm kappaRear 0.09/0.07 loadRear 5482/5482 accel 8.9
+        launch t=1.99 51 km/h gear 1 6641 rpm clutch 1.00 locked True Te 462 Nm kappaRear 0.07/0.09 loadRear 5518/5525 accel 9.5
+        launch t=2.24 60 km/h gear 1 7718 rpm clutch 1.00 locked True Te 438 Nm kappaRear 0.08/0.07 loadRear 5470/5470 accel 9.6
+        launch t=2.49 65 km/h gear 2 9342 rpm clutch 0.01 locked False Te 0 Nm kappaRear 0.00/0.01 loadRear 4449/4449 accel 7.1
+        launch t=2.74 73 km/h gear 2 6047 rpm clutch 1.00 locked True Te 470 Nm kappaRear 0.11/0.09 loadRear 5808/5799 accel 7.9
+        launch t=2.99 79 km/h gear 2 6341 rpm clutch 1.00 locked True Te 466 Nm kappaRear 0.05/0.06 loadRear 5112/5112 accel 7.7
+        launch t=3.24 86 km/h gear 2 6841 rpm clutch 1.00 locked True Te 458 Nm kappaRear 0.05/0.04 loadRear 5249/5255 accel 7.4
+        launch t=3.49 92 km/h gear 2 7325 rpm clutch 1.00 locked True Te 447 Nm kappaRear 0.04/0.05 loadRear 5278/5264 accel 7.1
+        launch t=3.74 98 km/h gear 2 7797 rpm clutch 1.00 locked True Te 436 Nm kappaRear 0.05/0.04 loadRear 5256/5256 accel 6.9
+        launch t=3.99 103 km/h gear 3 8837 rpm clutch 0.09 locked False Te 414 Nm kappaRear 0.00/0.01 loadRear 4978/4978 accel 6.1
+        launch t=4.24 108 km/h gear 3 6782 rpm clutch 0.99 locked False Te 456 Nm kappaRear 0.08/0.07 loadRear 5561/5552 accel 6.0
+        launch t=4.49 113 km/h gear 3 6445 rpm clutch 1.00 locked True Te 464 Nm kappaRear 0.03/0.04 loadRear 5045/5034 accel 5.9
+        launch t=4.74 118 km/h gear 3 6710 rpm clutch 1.00 locked True Te 460 Nm kappaRear 0.04/0.03 loadRear 5146/5146 accel 5.5
+        launch t=4.99 123 km/h gear 3 6966 rpm clutch 1.00 locked True Te 456 Nm kappaRear 0.03/0.04 loadRear 5203/5203 accel 5.3
+        launch t=5.24 127 km/h gear 3 7220 rpm clutch 1.00 locked True Te 450 Nm kappaRear 0.04/0.03 loadRear 5184/5184 accel 5.2
+        launch t=5.49 131 km/h gear 3 7468 rpm clutch 1.00 locked True Te 444 Nm kappaRear 0.03/0.04 loadRear 5206/5206 accel 5.0
+        launch t=5.74 136 km/h gear 3 7711 rpm clutch 1.00 locked True Te 437 Nm kappaRear 0.04/0.03 loadRear 5215/5215 accel 4.9
+        launch t=5.99 140 km/h gear 3 7949 rpm clutch 1.00 locked True Te 432 Nm kappaRear 0.03/0.04 loadRear 5218/5218 accel 4.8
+      car under test: Porsche 911 GT3 (992) (RWD), 1435 kg
+PASS  0-100 km/h                                       3.83 s     (target 2.8 .. 4.6)
+PASS  0-200 km/h                                      11.00 s     (target 8.0 .. 16.0)
+PASS  top speed                                      305.37 km/h  (target 290.0 .. 335.0)
+      distance to 100 km/h 51 m
+PASS  100-0 km/h braking distance                     26.51 m     (target 24.0 .. 36.0)
+PASS  braking stability: peak yaw rate                 1.14 deg/s (target 0.0 .. 8.0)
+PASS  braking nose dive                                1.77 deg   (target 0.3 .. 6.0)
+        skid t=0s  40 km/h radius 30.0 m  steer -0.17  latG 0.00  slip s=[8.3,8.3,8.6,8.1]
+        skid t=2s  42 km/h radius 30.4 m  steer -0.19  latG 0.45  slip s=[0.2,0.2,0.2,0.1]
+        skid t=4s  44 km/h radius 30.4 m  steer -0.19  latG 0.51  slip s=[0.2,0.2,0.2,0.2]
+        skid t=6s  47 km/h radius 30.4 m  steer -0.19  latG 0.57  slip s=[0.2,0.2,0.2,0.2]
+        skid t=8s  49 km/h radius 30.4 m  steer -0.20  latG 0.63  slip s=[0.3,0.2,0.2,0.2]
+        skid t=10s  52 km/h radius 30.5 m  steer -0.21  latG 0.70  slip s=[0.3,0.3,0.3,0.2]
+        skid t=12s  54 km/h radius 30.5 m  steer -0.21  latG 0.77  slip s=[0.3,0.3,0.3,0.2]
+        skid t=14s  57 km/h radius 30.5 m  steer -0.22  latG 0.84  slip s=[0.3,0.3,0.3,0.3]
+        skid t=16s  59 km/h radius 30.6 m  steer -0.22  latG 0.91  slip s=[0.4,0.4,0.4,0.3]
+PASS  skidpad max lateral acceleration (R=30 m)        1.35 g     (target 1.3 .. 1.8)
+      limit reached at 75 km/h, roll 1.2 deg
+        hb t=0.00  yawTotal 0  slip 0  69 km/h  steer 0.90  hand False  wheels s=[0.0,0.0,1.6,1.8]
+        hb t=0.25  yawTotal 3  slip 0  68 km/h  steer 0.90  hand True  wheels s=[1.7,2.2,0.9,1.9]
+        hb t=0.50  yawTotal 15  slip -5  60 km/h  steer 0.90  hand True  wheels s=[1.8,2.3,6.7,8.4]
+        hb t=0.75  yawTotal 38  slip -22  52 km/h  steer 0.90  hand True  wheels s=[1.8,2.2,8.9,9.2]
+        hb t=1.00  yawTotal 68  slip -47  43 km/h  steer 0.90  hand True  wheels s=[1.2,3.1,10.9,13.9]
+        hb t=1.25  yawTotal 103  slip -73  36 km/h  steer 1.00  hand False  wheels s=[0.8,5.6,16.3,64.6]
+        hb t=1.50  yawTotal 127  slip -93  30 km/h  steer 1.00  hand False  wheels s=[20.7,6.0,67.2,48.3]
+        hb t=1.75  yawTotal 145  slip -112  21 km/h  steer 1.00  hand False  wheels s=[6.9,1.9,34.4,15.2]
+        hb t=2.00  yawTotal 158  slip -147  14 km/h  steer 1.00  hand False  wheels s=[0.5,2.6,7.4,5.7]
+        hb t=2.25  yawTotal 161  slip 0  10 km/h  steer 0.00  hand False  wheels s=[0.8,0.9,1.0,1.2]
+        hb t=2.50  yawTotal 156  slip 0  7 km/h  steer 0.00  hand False  wheels s=[1.2,1.4,0.2,0.1]
+        hb t=2.75  yawTotal 157  slip 0  6 km/h  steer 0.00  hand False  wheels s=[0.3,0.3,0.1,0.2]
+        hb t=3.00  yawTotal 156  slip 0  4 km/h  steer 0.00  hand False  wheels s=[0.1,0.1,0.1,0.2]
+        hb t=3.25  yawTotal 156  slip 0  3 km/h  steer 0.00  hand False  wheels s=[0.0,0.0,0.1,0.2]
+        hb t=3.50  yawTotal 156  slip 0  2 km/h  steer 0.00  hand False  wheels s=[0.0,0.0,0.2,0.1]
+        hb t=3.75  yawTotal 156  slip 0  0 km/h  steer 0.00  hand False  wheels s=[0.0,0.0,0.1,0.2]
+        hb t=4.00  yawTotal 156  slip 0  1 km/h  steer 0.00  hand False  wheels s=[0.0,0.0,0.2,0.1]
+PASS  handbrake turn: peak rotation                  161.94 deg   (target 90.0 .. 360.0)
+PASS  handbrake turn: peak sideslip angle            161.70 deg   (target 35.0 .. 175.0)
+        stability test starts at 197 km/h in gear 7
+PASS  200 km/h hands-off: peak yaw rate                0.00 deg/s (target 0.0 .. 3.0)
+PASS  200 km/h hands-off: lateral drift in 4 s         0.00 m     (target 0.0 .. 3.0)
+        stp t=0.0 yawRate 0.0 slipAngle 0.0 roll 0.0 s=[0.00,0.00,0.06,0.13] load=[2808,2805,4557,4557]
+        stp t=0.1 yawRate 6.0 slipAngle 0.1 roll 0.2 s=[0.15,0.16,0.03,0.04] load=[3071,2326,4955,3995]
+        stp t=0.2 yawRate 10.2 slipAngle -0.2 roll 0.2 s=[0.15,0.16,0.12,0.08] load=[2741,1965,5247,4387]
+        stp t=0.3 yawRate 11.9 slipAngle -0.4 roll 0.3 s=[0.17,0.17,0.10,0.11] load=[3248,2130,5136,3722]
+        stp t=0.4 yawRate 13.4 slipAngle -0.6 roll 0.4 s=[0.18,0.19,0.14,0.14] load=[3540,2142,5177,3532]
+        stp t=0.5 yawRate 14.5 slipAngle -0.8 roll 0.4 s=[0.19,0.19,0.16,0.17] load=[3627,2047,5278,3473]
+        stp t=0.6 yawRate 14.9 slipAngle -0.9 roll 0.5 s=[0.20,0.20,0.17,0.19] load=[3590,1887,5411,3499]
+        stp t=0.7 yawRate 14.9 slipAngle -0.9 roll 0.5 s=[0.21,0.21,0.18,0.19] load=[3578,1806,5491,3495]
+        stp t=0.8 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3590,1793,5495,3486]
+        stp t=0.9 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3602,1806,5490,3474]
+        stp t=1.0 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3608,1810,5485,3454]
+        stp t=1.1 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3608,1806,5483,3463]
+        stp t=1.2 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3612,1805,5496,3472]
+        stp t=1.3 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3606,1802,5494,3470]
+        stp t=1.4 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3603,1801,5495,3473]
+        stp t=1.5 yawRate 14.9 slipAngle -1.0 roll 0.5 s=[0.21,0.22,0.18,0.20] load=[3603,1801,5495,3473]
+      step steer: peak yaw rate 14.9 deg/s, final 14.9 deg/s, kinematic 17.2 deg/s at 1.9 deg road wheel
+PASS  step steer: yaw gain vs kinematic (understeer)     0.86 x     (target 0.6 .. 1.0)
+PASS  step steer: yaw-rate overshoot                   0.42 %     (target -5.0 .. 30.0)
+==== 13 passed, 0 failed ====
