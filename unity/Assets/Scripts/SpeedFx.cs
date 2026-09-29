@@ -18,7 +18,7 @@ public class SpeedFx : MonoBehaviour
         var sh = Resources.Load<Shader>("BeratPostFx");
         if (sh == null || !sh.isSupported) { Log.I("fx", "PostFx shader missing/unsupported: post effects disabled"); enabled = false; return; }
         mat = new Material(sh);
-        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-nofxaa") >= 0) Fxaa = false;
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-fxaa") >= 0) Fxaa = true;
         var cam = GetComponent<Camera>(); cam.allowHDR = true; cam.allowMSAA = true;
     }
 
@@ -28,7 +28,7 @@ public class SpeedFx : MonoBehaviour
         Strength = Mathf.Lerp(Strength, target, 1f - Mathf.Exp(-4f * Time.unscaledDeltaTime));
     }
 
-    public bool Fxaa = true;
+    public bool Fxaa = false;                       // off by default: it softened the whole image; -fxaa turns it on
 
     void OnRenderImage(RenderTexture src, RenderTexture dst)
     {
