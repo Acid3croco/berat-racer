@@ -74,3 +74,12 @@ if __name__ == "__main__":
             diff += 1; bad.append((ai, aj, step))
         assert load("../world", "n", ai, aj) == load(dirp, "n", ci, cj), ("n differs", ai, aj)
     print("original chunks byte-identical (bar header):", same, "different:", diff, bad[:5])
+    if "--where" in sys.argv:
+        bad = []
+        for (ci, cj), h in H.items():
+            for n_, e in (((ci + 1, cj), lambda: np.abs(h[:, -1] - H[ci + 1, cj][:, 0])), ((ci, cj + 1), lambda: np.abs(h[-1, :] - H[ci, cj + 1][0, :]))):
+                if n_ in H:
+                    m = e().max() / max(S[ci, cj], S[n_])
+                    if m > 1.01: bad.append((round(float(m), 1), round(float(e().max()), 3), (ci, cj), n_))
+        bad.sort(reverse=True); print(len(bad), "seams >1 step"); print(bad[:15])
+        print("sector-border seams among them:", sum(1 for b in bad if (b[2][0] + 120) % 8 == 7 and b[3][0] != b[2][0] or (b[2][1] + 144) % 8 == 7 and b[3][1] != b[2][1]))

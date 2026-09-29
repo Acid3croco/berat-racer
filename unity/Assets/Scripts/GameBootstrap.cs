@@ -24,7 +24,7 @@ public class GameBootstrap : MonoBehaviour
     float fps, fpsAcc, fpsMin = 999f; int fpsN; float fpsNext, telemetryNext;
     GUIStyle big, small, mono;
     float lastInputErr; bool inputTest, mapTest, shotsMode; Vector3? shotFocus;
-    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0;   // physics harness owns the car inputs
+    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-stabtest") >= 0;   // physics harness owns the car inputs
     bool showHelp = true, showDebug; Autopilot auto; bool autoOn;
     string padName = "none"; float steerIn, thrIn, brkIn; bool handIn;
 
@@ -86,6 +86,7 @@ public class GameBootstrap : MonoBehaviour
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0) StartCoroutine(PhysTest.RoadRun(world, car, 150f, 100f));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-carshots") >= 0) StartCoroutine(CarShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0) StartCoroutine(PhysTest.Run(world, car));
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-stabtest") >= 0) StartCoroutine(PhysTest.StabRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-camtest") >= 0) StartCoroutine(CamTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smokeshots") >= 0) StartCoroutine(SmokeShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audiotest") >= 0) StartCoroutine(AudioTest());
@@ -238,7 +239,7 @@ public class GameBootstrap : MonoBehaviour
             if (kb.hKey.wasPressedThisFrame) showHelp = !showHelp;
             if (kb.fKey.wasPressedThisFrame) CycleCar();
             if (kb.vKey.wasPressedThisFrame) { QualitySettings.vSyncCount = 1 - QualitySettings.vSyncCount; Log.I("gfx", "vsync " + (QualitySettings.vSyncCount == 1 ? "ON" : "OFF")); copiedNote = "vsync " + (QualitySettings.vSyncCount == 1 ? "on" : "off"); copiedAt = Time.unscaledTime; }
-            if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 3); Log.I("car", "assist mode " + car.AssistMode); }
+            if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 4); Log.I("car", "assist mode " + car.AssistMode); }
             if (audio != null && (kb.leftBracketKey.wasPressedThisFrame || kb.rightBracketKey.wasPressedThisFrame))
             { audio.Volume = Mathf.Clamp(audio.Volume + (kb.rightBracketKey.wasPressedThisFrame ? 0.05f : -0.05f), 0f, 1f); Log.I("audio", $"volume {audio.Volume * 100:F0}%"); }
             if (kb.nKey.wasPressedThisFrame && audio != null) { audio.Synth.Muted = !audio.Synth.Muted; Log.I("audio", "muted=" + audio.Synth.Muted); }

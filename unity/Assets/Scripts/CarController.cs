@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public enum Assist { Off, Sport, Full }
+public enum Assist { Off, Sport, Full, Arcade }
 
 /// <summary>
 /// Vehicle dynamics for a Clio-class hot hatch (1250 kg, RWD, 150 kW turbo, 6-speed automatic).
@@ -17,7 +17,7 @@ public enum Assist { Off, Sport, Full }
 public class CarController : MonoBehaviour
 {
     public WorldBuilder World;
-    public Assist AssistMode = Assist.Sport;
+    public Assist AssistMode = Assist.Arcade;
 
     // ------------------------------------------------------------------ specification (filled from CarSpec in Init)
     public CarSpec Spec { get; private set; }
@@ -162,7 +162,7 @@ public class CarController : MonoBehaviour
             return;
         }
         waitingForGround = false;
-        if ((++insideCheck & 7) == 0 && World.InsideBuilding(transform.position, out Vector3 outside))
+        if (!World.Flat && (++insideCheck & 7) == 0 && World.InsideBuilding(transform.position, out Vector3 outside))
         {   // trapped in a building (map teleport onto a roof, tunnelling at speed): step out through the nearest wall
             float gy = World.GroundHeight(outside.x, outside.z, outside.y, out _);
             Log.I("car", $"inside a building at ({transform.position.x:F1},{transform.position.z:F1}) -> moved out to ({outside.x:F1},{outside.z:F1})");
@@ -220,6 +220,12 @@ public class CarController : MonoBehaviour
         float maxKappaDriven = Mathf.Max(w[dA].kappa, w[dB].kappa);
         tcsCut = 0f; TcsActive = false;
         if (AssistMode != Assist.Off && drivePedal > 0.05f && maxKappaDriven > 0.22f) { tcsCut = Mathf.Clamp((maxKappaDriven - 0.22f) * 6f, 0f, 0.85f); TcsActive = true; }
+        if (AssistMode == Assist.Arcade && drivePedal > 0.05f && speed > 6f)
+        {   // sideways: back off the power until the car is pointing where it travels again
+            Vector3 lvA = transform.InverseTransformDirection(vel); float betaA = Mathf.Abs(Mathf.Atan2(lvA.x, Mathf.Max(lvA.z, 0.5f)));
+            float cutA = Mathf.Clamp01((betaA - 0.22f) / 0.20f) * 0.8f;
+            if (cutA > tcsCut) { tcsCut = cutA; TcsActive = true; }
+        }
         // resisting torque on the driven axle from last step's tyre forces and brakes (lets the drivetrain solve exactly)
         float extT = 0f;
         for (int k = 0; k < 2; k++) { var dw0 = w[k == 0 ? dA : dB]; extT += WheelR * dw0.fxAvg + prevBrakeTq[k == 0 ? dA : dB] * Mathf.Sign(dw0.omega) * (Mathf.Abs(dw0.omega) > 0.5f ? 1f : 0f); }
@@ -238,6 +244,7 @@ public class CarController : MonoBehaviour
         for (int i = 0; i < 4; i++)
         {
             float bt = brakePedal * (i < 2 ? brakeFront : brakeRear);
+            if (AssistMode == Assist.Arcade && i >= 2) bt *= Mathf.Lerp(1f, 0.5f, Mathf.Clamp01(Mathf.Abs(steerSm) * 2.5f));         // braking while turning: keep the rear planted, the classic way to spin a car
             if (AssistMode != Assist.Off && bt > 0f)
             {   // ABS: back off when the wheel is decelerating faster than the tyre can follow
                 float k = w[i].kappa; float scale = 1f - Mathf.Clamp01((-k - 0.16f) / 0.12f);
@@ -261,6 +268,7 @@ public class CarController : MonoBehaviour
                 continue;
             }
             var sp = Tyre.Props(q.surf);
+            if (AssistMode == Assist.Arcade) sp.slide = Mathf.Lerp(sp.slide, 1f, 0.55f);                 // breakaway is gradual: grip falls away slowly past the limit instead of dropping off a cliff
             float loadFactor = Mathf.Clamp(1f - LoadSens * (q.fz / fzNom - 1f), 0.65f, 1.25f);
             float muX = Mu0 * muScale * (i < 2 ? muFrontScale : muRearScale) * sp.mu * loadFactor, muY = muX * MuYRatio;
             float vden = Mathf.Max(Mathf.Abs(q.vx), 1.0f);
@@ -311,6 +319,7 @@ public class CarController : MonoBehaviour
         }
         BellyContact(dt);
         if (AssistMode == Assist.Full && grounded >= 3) YawStability();
+        if (AssistMode == Assist.Arcade && grounded >= 3) ArcadeAids();
     }
 
     // ------------------------------------------------------------------ pedals, steering
@@ -338,11 +347,16 @@ public class CarController : MonoBehaviour
             if (lv.z > 1f)
             {
                 float gammaF = Mathf.Atan2(lv.x + FrontZ * la.y, lv.z);
-                float lim = AssistMode == Assist.Full ? 0.21f : 0.29f;
+                float lim = AssistMode == Assist.Arcade ? 0.17f : AssistMode == Assist.Full ? 0.21f : 0.29f;
                 float limited = Mathf.Clamp(dCmd, gammaF - lim, gammaF + lim);
                 float wgt = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(3f, 9f, speed));
                 dCmd = Mathf.Lerp(dCmd, limited, wgt);
             }
+        }
+        if (AssistMode == Assist.Arcade && speed > 4f)
+        {   // automatic counter-steer: when the car slides, the front wheels turn toward the direction of travel
+            Vector3 lv2 = transform.InverseTransformDirection(Body.linearVelocity);
+            if (lv2.z > 1.5f) dCmd += Mathf.Clamp(Mathf.Atan2(lv2.x, lv2.z) * 0.55f, -0.16f, 0.16f) * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(4f, 12f, speed));
         }
         steerCentre = dCmd;
         // Ackermann geometry
@@ -410,6 +424,25 @@ public class CarController : MonoBehaviour
     }
 
     /// <summary>Full assist: gentle yaw damping toward the yaw rate the steering asks for, off during handbrake turns.</summary>
+    /// <summary>
+    /// Arcade stability aid: (1) damps yaw that the steering did not ask for (spin), (2) gives a little extra turn-in when the car rotates less than asked,
+    /// (3) rotates the car back toward its direction of travel once the sideslip passes ~9 degrees. Torque is capped at 6 rad/s2, so it feels like grip, not a hand.
+    /// </summary>
+    void ArcadeAids()
+    {
+        if (Handbrake) return;
+        Vector3 lv = transform.InverseTransformDirection(Body.linearVelocity), la = transform.InverseTransformDirection(Body.angularVelocity);
+        float v = Mathf.Sqrt(lv.x * lv.x + lv.z * lv.z); if (v < 6f || lv.z < 2f) return;
+        float Iy = Body.inertiaTensor.y;
+        float rDes = v * Mathf.Tan(steerCentre) / WheelBase / (1f + 0.0015f * v * v), err = la.y - rDes;
+        float torque = 0f;
+        if (Mathf.Abs(err) > 0.10f) torque -= Mathf.Sign(err) * (Mathf.Abs(err) - 0.10f) * (err * rDes < 0f || Mathf.Abs(la.y) > Mathf.Abs(rDes) ? 7f : 3f) * Iy;
+        float beta = Mathf.Atan2(lv.x, lv.z);
+        if (Mathf.Abs(beta) > 0.15f) torque += Mathf.Sign(beta) * (Mathf.Abs(beta) - 0.15f) * 9f * Iy;
+        torque = Mathf.Clamp(torque, -6f * Iy, 6f * Iy);
+        Body.AddTorque(transform.up * torque);
+    }
+
     void YawStability()
     {
         if (Handbrake) return;

@@ -35,6 +35,7 @@ from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point, Polygon, box, shape
 from shapely.strtree import STRtree
 from fetch import CX, CY
+from road_smooth import round_corners
 
 HALF = 16000
 SECTOR = 3200                    # m
@@ -142,11 +143,13 @@ def geom_local(f):
     """GeoJSON feature geometry as a 2D shapely geometry in local coordinates."""
     return shapely.transform(shapely.force_2d(shape(f["geometry"])), lambda c: c - np.array([CX, CY]))
 
-def dense_runs(geom, wbox, step=2.0):
+def dense_runs(geom, wbox, step=2.0, rounded=False):
     """Densify each line of the FULL feature from its own start (so every sector gets the same vertices), then keep the runs of points inside wbox."""
     out = []
     for line in lines_of(geom):
-        xy = densify(np.asarray(line.coords)[:, :2], step)
+        src = np.asarray(line.coords)[:, :2]
+        if rounded: src = round_corners(src)                                       # bends become curves (bounded fillets), then the usual stable densification
+        xy = densify(src, step)
         if xy is None: continue
         inside = shapely.contains_xy(wbox, xy[:, 0], xy[:, 1])
         idx = np.where(inside)[0]
@@ -202,7 +205,7 @@ def process_roads(win, wbox, feats):
         p = f["properties"]
         if p["nature"] == "Sentier": continue
         g = geom_local(f)
-        for xy in dense_runs(g, wbox):
+        for xy in dense_runs(g, wbox, rounded=True):
             hw0 = road_halfwidth(p)
             tang = np.gradient(xy, axis=0); tang /= np.maximum(np.hypot(tang[:, 0], tang[:, 1]), 1e-6)[:, None]
             nrm = np.c_[-tang[:, 1], tang[:, 0]]
@@ -243,7 +246,7 @@ def process_roads(win, wbox, feats):
             if r["bridge"]: continue
             y = r["y"]; d = node - y[0 if ends[k][1] == 0 else -1]
             s_ = np.r_[0, np.cumsum(np.hypot(np.diff(r["xy"][:, 0]), np.diff(r["xy"][:, 1])))]
-            span = max(min(30.0, 0.5 * s_[-1]), 2.0)
+            span = max(min(60.0 if bridges else 30.0, 0.5 * s_[-1]), 2.0)                     # a bridge deck is level: ease the approaches onto it over a longer stretch
             y += d * np.clip(1.0 - (s_ if ends[k][1] == 0 else s_[-1] - s_) / span, 0.0, 1.0)
     # ---- joins: every end of a cluster snaps to the cluster centre (fading out over 8 m), and where exactly two roads meet along a gentle bend
     #      both get the SAME tangent at the joint, so their ribbons meet edge to edge instead of leaving a wedge
@@ -269,6 +272,22 @@ def process_roads(win, wbox, feats):
             n, ia, ib, T = best; T = (float(T[0] / n), float(T[1] / n))
             for i in (ia, ib):
                 k = members[i]; raw[ends[k][0]]["t0" if ends[k][1] == 0 else "t1"] = T
+    # ---- vertical curves: smooth every road's profile again (bridge decks stay level), then pull the ends of joining roads back to one shared height,
+    #      fading the correction out over 12 m; a few rounds turn "flat -> ramp -> flat" into a smooth vertical curve without opening steps at the joints
+    multi = [m for m in groups.values() if len(m) >= 2]
+    for _ in range(3):
+        for r in raw:
+            if not r["bridge"] and len(r["y"]) >= 5: r["y"] = smooth_free(r["y"], 15)
+        for members in multi:
+            vals = [raw[ends[k][0]]["y"][0 if ends[k][1] == 0 else -1] for k in members]
+            bridges = [v for v, k in zip(vals, members) if raw[ends[k][0]]["bridge"]]
+            node = float(np.mean(bridges)) if bridges else float(np.mean(vals))
+            for k in members:
+                r = raw[ends[k][0]]
+                if r["bridge"]: continue
+                y = r["y"]; d = node - y[0 if ends[k][1] == 0 else -1]
+                s_ = np.r_[0, np.cumsum(np.hypot(np.diff(r["xy"][:, 0]), np.diff(r["xy"][:, 1])))]
+                y += d * np.clip(1.0 - (s_ if ends[k][1] == 0 else s_[-1] - s_) / 12.0, 0.0, 1.0)
     return raw
 
 # ------------------------------------------------------------------ colour (ported)
@@ -474,7 +493,7 @@ def process_sector(args):
         t = np.clip((d - (hwv + 3.0)) / 6.0, 0, 1); wgt = np.where(hit, 1 - t * t * (3 - 2 * t), 0)
         # the road always wins: sink the ground a little below the drawn surface under and beside the ribbon, so a coarse 4 m terrain facet can never
         # stand above the road where its profile bends sharply (bridge exits, crests)
-        sink = 0.3 * (1.0 - np.clip((d - (hwv + 0.5)) / 3.0, 0.0, 1.0))
+        sink = 0.05 * (1.0 - np.clip((d - (hwv + 0.5)) / 3.0, 0.0, 1.0))
         h = h * (1 - wgt) + (yv - np.where(hit, sink, 0.0)) * wgt
     H = h.reshape(nv, nv)
 

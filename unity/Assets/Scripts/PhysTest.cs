@@ -47,9 +47,65 @@ public static class PhysTest
         }
     }
 
+    /// <summary>
+    /// Loss-of-control test: abrupt, keyboard-style inputs at speed, for each assist mode. A run "loses control" when the car ends up sliding sideways
+    /// (|sideslip| above 35 deg at any time after the input, or above 20 deg three seconds after the driver lets go). Run: -stabtest [-car N]
+    /// </summary>
+    public static IEnumerator StabRun(WorldBuilder w, CarController c)
+    {
+        world = w; car = c; summary.Clear();
+        world.Flat = true; world.FlatY = world.Data.TerrainHeight(0, 0) + 0.02f;
+        Time.timeScale = 6f;
+        yield return new WaitForSecondsRealtime(0.5f);
+        var modes = new[] { Assist.Sport, Assist.Full, Assist.Arcade };
+        foreach (var mode in modes)
+        {
+            car.AssistMode = mode; int lost = 0, runs = 0;
+            var names = new List<string>();
+            for (int sc = 0; sc < 6; sc++)
+            {
+                Place(0, 0, 0); yield return new WaitForSeconds(0.3f);
+                string name = ""; float peak = 0f, endBeta = 0f;
+                switch (sc)
+                {
+                    case 0: name = "110 km/h full-lock snap, hold 1.5 s, release"; yield return ReachSpeed(110f); break;
+                    case 1: name = "100 km/h corner, lift + brake tap"; yield return ReachSpeed(100f); break;
+                    case 2: name = "60 km/h corner, full throttle"; yield return ReachSpeed(60f); break;
+                    case 3: name = "130 km/h flick-flick slalom"; yield return ReachSpeed(130f); break;
+                    case 4: name = "90 km/h steer + hard brake"; yield return ReachSpeed(90f); break;
+                    case 5: name = "160 km/h half-lock snap, release"; yield return ReachSpeed(160f); break;
+                }
+                float t0 = Time.time; bool spun = false; float v0 = Kmh, maxYaw = 0f, vmin = 1e9f;
+                while (Time.time - t0 < 7f)
+                {
+                    float t = Time.time - t0;
+                    switch (sc)
+                    {
+                        case 0: car.Throttle = t < 1.5f ? 0.4f : 0.3f; car.Brake = 0; car.Steer = t < 1.5f ? 1f : 0f; break;
+                        case 1: car.Steer = t < 2.5f ? 0.35f : 0f; car.Throttle = t < 0.3f ? 0.5f : 0f; car.Brake = (t > 0.6f && t < 1.0f) ? 0.7f : 0f; if (t > 2.5f) car.Steer = 0f; break;
+                        case 2: car.Steer = t < 3f ? 0.4f : 0f; car.Throttle = 1f; car.Brake = 0; break;
+                        case 3: car.Throttle = 0.35f; car.Brake = 0; car.Steer = t < 3f ? (Mathf.Repeat(t, 1.0f) < 0.5f ? 0.7f : -0.7f) : 0f; break;
+                        case 4: car.Steer = t < 1.5f ? 0.5f : 0f; car.Throttle = 0; car.Brake = (t > 0.2f && Kmh > 3f) ? 1f : 0f; break;
+                        case 5: car.Throttle = 0.3f; car.Brake = 0; car.Steer = t < 1.2f ? 0.5f : 0f; break;
+                    }
+                    yield return new WaitForFixedUpdate();
+                    float beta = Mathf.Abs(SlipAngleDeg); maxYaw = Mathf.Max(maxYaw, Mathf.Abs(car.Body.angularVelocity.y) * Mathf.Rad2Deg); vmin = Mathf.Min(vmin, Kmh);
+                    if (Kmh > 15f) { peak = Mathf.Max(peak, beta); if (t > 3f) endBeta = beta; if (beta > 35f && t > 0.3f) spun = true; }
+                    if (Kmh < 4f && t > 3f) break;
+                }
+                if (endBeta > 20f) spun = true;
+                runs++; if (spun) lost++;
+                Info($"  [{mode}] {(spun ? "LOST " : "held ")} peak sideslip {peak,5:F1} deg, at end {endBeta,5:F1}, start {v0:F0} km/h, min {vmin:F0}, peak yaw {maxYaw:F0} deg/s   {name}");
+            }
+            Info($"==== {car.Spec.Name}, assist {mode}: lost control in {lost} of {runs} abuse runs ====");
+        }
+        System.IO.File.WriteAllLines(System.IO.Path.Combine(Application.dataPath, "..", "..", "..", "docs", $"stability-{car.Spec.Name.Replace(' ', '_')}.txt"), summary);
+        Application.Quit();
+    }
+
     public static IEnumerator Run(WorldBuilder w, CarController c)
     {
-        world = w; car = c; pass = fail = 0; summary.Clear();
+        world = w; car = c; pass = fail = 0; summary.Clear(); car.AssistMode = Assist.Sport;              // the realism benchmarks judge the plain physics, not the arcade aids
         world.Flat = true; world.FlatY = world.Data.TerrainHeight(0, 0) + 0.02f;
         Time.timeScale = 6f;
         yield return new WaitForSecondsRealtime(0.5f);
