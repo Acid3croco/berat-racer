@@ -160,4 +160,136 @@ public static class PhysTest
         System.IO.File.WriteAllText(System.IO.Path.GetFullPath(System.IO.Path.Combine(Application.dataPath, "..", "..", "..", "docs", "physics-" + car.Spec.Name.Replace(" ", "_").Replace("(", "").Replace(")", "") + ".txt")), string.Join("\n", summary) + $"\n==== {pass} passed, {fail} failed ====\n");
         Time.timeScale = 1f; Application.Quit();
     }
+
+    /// <summary>
+    /// Road-drive benchmark: the autopilot drives the real road network and we measure what a passenger would feel.
+    /// vertical jolt = RMS of high-pass filtered vertical acceleration; hops = physics steps with a wheel airborne on a road;
+    /// phantom stops = deceleration above 9 m/s2 with no brake pedal (something invisible was hit).
+    /// </summary>
+    public static IEnumerator RoadRun(WorldBuilder w, CarController c, float seconds, float kmh)
+    {
+        world = w; car = c; Time.timeScale = 4f;
+        yield return new WaitForSecondsRealtime(0.5f);
+        var auto = new Autopilot(world.Data, car) { TargetKmh = kmh };
+        float t0 = Time.time, lastVy = car.Body.linearVelocity.y, lp = 0, lpFast = 0, lastSpeed = car.Body.linearVelocity.magnitude, dist = 0;
+        double sumSq = 0, harshSq = 0; int n = 0, hops = 0, phantom = 0, steps = 0, respawns = 0, phantomCooldown = 0; float peak = 0; Vector3 lastPos = car.transform.position;
+        var events = new List<string>(); var spikes = new List<string>(); int spikeCd = 0, harshCd = 0, envN = 0, envCnt = 0; float envP1 = 0, envP2 = 0; double envSq = 0; var harshList = new List<string>();
+        car.Respawned += () => respawns++;
+        while (Time.time - t0 < seconds)
+        {
+            auto.Drive(Time.fixedDeltaTime);
+            yield return new WaitForFixedUpdate();
+            float dt = Time.fixedDeltaTime; steps++;
+            if (steps < 300) { lastVy = car.Body.linearVelocity.y; lastSpeed = car.Body.linearVelocity.magnitude; lastPos = car.transform.position; continue; }   // let it get going
+            float vy = car.Body.linearVelocity.y, av = (vy - lastVy) / dt; lastVy = vy;
+            var cpos = car.transform.position; if (Mathf.Abs(cpos.x) > 3100f || Mathf.Abs(cpos.z) > 3100f) continue;     // ignore the edge of the world
+            lp += (av - lp) * (1f - Mathf.Exp(-dt / 0.6f)); lpFast += (av - lpFast) * (1f - Mathf.Exp(-dt / 0.08f));
+            double harsh = av - lpFast; harshSq += harsh * harsh;
+            { float h0 = car.DebugEnvelope[0]; if (envN >= 2) { float a2 = (h0 - 2 * envP1 + envP2) / (dt * dt); envSq += (double)a2 * a2; envCnt++; } envP2 = envP1; envP1 = h0; envN++; }
+            if (Mathf.Abs((float)harsh) > 3.5f && harshCd == 0 && harshList.Count < 14)
+            {
+                harshCd = 40; var q = car.transform.position; world.GroundHeight(q.x, q.z, q.y, out Surface sfc2);
+                world.Roads.Query(q.x, q.z, q.y, out float dk, out float ry, out float rw);
+                harshList.Add($"t={Time.time - t0:F0}s harsh {harsh:F1}  at ({q.x:F0},{q.z:F0}) cell=({Mathf.FloorToInt(q.x / 5f)},{Mathf.FloorToInt(q.z / 5f)}) {car.SpeedKmh:F0} km/h roadW {rw:F2} roadY {ry:F2} terrain {world.Data.TerrainHeight(q.x, q.z):F2} car y {q.y:F2} deck {dk:F2}");
+            }
+            if (harshCd > 0) harshCd--;
+            float hp = av - lp; sumSq += hp * hp; n++; peak = Mathf.Max(peak, Mathf.Abs(hp));
+            if (Mathf.Abs(hp) > 25f && spikeCd == 0 && spikes.Count < 12)
+            {
+                spikeCd = 60; var pp = car.transform.position; world.GroundHeight(pp.x, pp.z, pp.y, out Surface sfc);
+                spikes.Add($"t={Time.time - t0:F0}s  {hp:F0} m/s2  at ({pp.x:F0},{pp.z:F0}) cell=({Mathf.FloorToInt(pp.x / 5f)},{Mathf.FloorToInt(pp.z / 5f)})  {car.SpeedKmh:F0} km/h  surface {sfc}  wheels {car.WheelsOnGround}/4");
+            }
+            if (spikeCd > 0) spikeCd--;
+            if (car.WheelsOnGround < 4) hops++;
+            float sp = car.Body.linearVelocity.magnitude, dec = (lastSpeed - sp) / dt; lastSpeed = sp;
+            if (phantomCooldown > 0) phantomCooldown--;
+            if (dec > 9f && car.Brake < 0.05f && phantomCooldown == 0 && !car.AbsActive)
+            {
+                phantom++; phantomCooldown = 100;
+                if (events.Count < 8) events.Add($"t={Time.time - t0:F0}s {sp * 3.6f + dec * dt * 3.6f:F0}->{sp * 3.6f:F0} km/h at ({car.transform.position.x:F0},{car.transform.position.z:F0})");
+            }
+            dist += Vector3.Distance(car.transform.position, lastPos); lastPos = car.transform.position;
+        }
+        float rms = n > 0 ? Mathf.Sqrt((float)(sumSq / n)) : 0f;
+        Log.I("roadtest", $"ROAD BENCHMARK  {seconds:F0}s @ {kmh:F0} km/h target, {dist / 1000f:F1} km driven, avg {dist / seconds * 3.6f:F0} km/h");
+        float harshRms = n > 0 ? Mathf.Sqrt((float)(harshSq / n)) : 0f;
+        Log.I("roadtest", $"  vertical jolt RMS {rms:F2} m/s2   worst spike {peak:F1} m/s2   HARSHNESS (>2 Hz bumps) RMS {harshRms:F2} m/s2");
+        Log.I("roadtest", $"  wheel-hop steps {hops} ({100f * hops / Mathf.Max(n, 1):F2}% of time)");
+        Log.I("roadtest", $"  phantom stops (decel > 9 m/s2 without braking): {phantom}    respawns: {respawns}");
+        Log.I("roadtest", $"  INPUT: ground-envelope second derivative under front-left wheel, RMS {Mathf.Sqrt((float)(envSq / Mathf.Max(envCnt, 1))):F2} m/s2");
+        foreach (var e in events) Log.I("roadtest", "    " + e);
+        foreach (var sp in spikes) Log.I("roadtest", "  spike " + sp);
+        foreach (var hh in harshList) Log.I("roadtest", "  bump " + hh);
+        Time.timeScale = 1f; Application.Quit();
+    }
+
+    /// <summary>Drives across the reported bridge (near x=3, z=756) and logs height, wheel contact and vertical acceleration.</summary>
+    public static IEnumerator BridgeRun(WorldBuilder w, CarController c)
+    {
+        world = w; car = c; Time.timeScale = 2f;
+        yield return new WaitForSecondsRealtime(0.5f);
+        float hdg = Mathf.Atan2(2f - (-30f), 758f - 790f) * Mathf.Rad2Deg;
+        float gy = world.GroundHeight(-30f, 790f, 300f, out _);
+        car.Respawn(new Vector3(-30f, gy + 0.8f, 790f), hdg);
+        var auto = new Autopilot(world.Data, car) { TargetKmh = 50f };
+        var route = new List<Vector2>();                       // the bridge and both approaches, in driving order
+        foreach (int ri in new[] { 135, 160, 161, 136, 257, 927 })
+        {
+            var rd = world.Data.Roads[ri]; var pts = new List<Vector2>();
+            for (int i = 0; i < rd.pts.Length / 3; i++) pts.Add(new Vector2(rd.pts[i * 3], rd.pts[i * 3 + 2]));
+            if (route.Count > 0 && Vector2.Distance(route[route.Count - 1], pts[0]) > Vector2.Distance(route[route.Count - 1], pts[pts.Count - 1])) pts.Reverse();
+            route.AddRange(pts);
+        }
+        auto.FollowPolyline(route);
+        float t0 = Time.time, lastVy = 0, maxA = 0; int minWheels = 4;
+        while (Time.time - t0 < 14f)
+        {
+            auto.Drive(Time.fixedDeltaTime); yield return new WaitForFixedUpdate();
+            float av = (car.Body.linearVelocity.y - lastVy) / Time.fixedDeltaTime; lastVy = car.Body.linearVelocity.y;
+            if (Time.time - t0 > 1f) maxA = Mathf.Max(maxA, Mathf.Abs(av));
+            minWheels = Mathf.Min(minWheels, car.WheelsOnGround);
+            if (Mathf.Abs(((Time.time - t0) * 2f) - Mathf.Round((Time.time - t0) * 2f)) < 0.011f)
+            {
+                var p = car.transform.position; float g = world.GroundHeight(p.x, p.z, p.y, out Surface sf); world.Roads.Query(p.x, p.z, p.y, out float deck);
+                Log.I("bridgetest", $"t={Time.time - t0:F1}s  pos=({p.x:F1},{p.z:F1})  {car.SpeedKmh:F0} km/h  car y {p.y:F2}  ground {g:F2}  deck {(float.IsNaN(deck) ? "-" : deck.ToString("F2"))}  wheels {car.WheelsOnGround}/4");
+            }
+        }
+        Log.I("bridgetest", $"peak vertical acceleration {maxA:F1} m/s2, fewest wheels on ground {minWheels}");
+        Application.Quit();
+    }
+
+    /// <summary>Whole-car collision: drop the car on its side / roof onto flat ground and onto a slope and check no hull point sinks in.</summary>
+    public static IEnumerator HullRun(WorldBuilder w, CarController c)
+    {
+        world = w; car = c; Time.timeScale = 2f; int fails = 0;
+        yield return new WaitForSecondsRealtime(0.5f);
+        world.Flat = true; world.FlatY = world.Data.TerrainHeight(0, 0) + 0.02f;
+        foreach (var (name, roll, pitch) in new[] { ("upright drop from 1.5 m", 0f, 0f), ("on its side", 90f, 0f), ("upside down", 180f, 0f), ("nose-first", 0f, 75f), ("tail-first", 0f, -75f) })
+        {
+            car.Respawn(new Vector3(0, world.FlatY + 1.5f + 2.6f * Mathf.Abs(Mathf.Sin(pitch * Mathf.Deg2Rad)), 0), 0f); car.ResetDynamics();      // start with nothing already inside the ground
+            car.Body.rotation = Quaternion.Euler(pitch, 0, roll); car.transform.rotation = Quaternion.Euler(pitch, 0, roll);
+            Physics.SyncTransforms();
+            float worst = 0f, t0 = Time.time;
+            while (Time.time - t0 < 2.2f) { yield return new WaitForFixedUpdate(); worst = Mathf.Max(worst, car.MaxHullPenetration()); }
+            bool ok = worst < 0.12f; if (!ok) fails++;
+            Log.I("hulltest", $"{(ok ? "PASS" : "FAIL")}  {name,-24} deepest hull penetration {worst * 100f:F1} cm, settled speed {car.SpeedKmh:F1} km/h");
+        }
+        Log.I("hulltest", fails == 0 ? "ALL PASS" : fails + " FAILED");
+        Time.timeScale = 1f; Application.Quit();
+    }
+
+    /// <summary>Checks the coordinate grid maths and the parser for every format a bug report might use.</summary>
+    public static void GridRun()
+    {
+        int fails = 0;
+        void Eq(string what, bool ok, string got) { if (!ok) fails++; Log.I("gridtest", $"{(ok ? "PASS" : "FAIL")}  {what}: {got}"); }
+        var c = Grid.CellOf(3f, 756f); Eq("cell of (3, 756)", c.x == 0 && c.y == 151, c.ToString());
+        c = Grid.CellOf(-0.1f, -4.9f); Eq("cell of (-0.1, -4.9)", c.x == -1 && c.y == -1, c.ToString());
+        foreach (var (text, ex, ez) in new[] { ("x=3 z=756", 3f, 756f), ("x3 z 756", 3f, 756f), ("x: -12,5  z: 40", -12.5f, 40f), ("cell (0, 151)", 2.5f, 757.5f), ("3 756", 3f, 756f), ("(3, 756)", 3f, 756f), ("BERAT x=55.6 z=-33.6 y=245.3 cell=(11, -7) heading=31", 55.6f, -33.6f) })
+        {
+            bool ok = Grid.TryParse(text, out float x, out float z) && Mathf.Abs(x - ex) < 0.01f && Mathf.Abs(z - ez) < 0.01f; Eq($"parse \"{text}\"", ok, $"{x}, {z}");
+        }
+        Eq("reject garbage", !Grid.TryParse("hello world", out _, out _), "-");
+        Log.I("gridtest", fails == 0 ? "ALL PASS" : fails + " FAILED");
+    }
 }

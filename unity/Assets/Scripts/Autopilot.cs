@@ -38,6 +38,9 @@ public class Autopilot
         if (bestRoad >= 0) AppendRoad(bestRoad, bestRev);
     }
 
+    /// <summary>Follow exactly this polyline (used by tests that must cross a specific structure).</summary>
+    public void FollowPolyline(IList<Vector2> pts) { path.Clear(); path.AddRange(pts); lastRoad = -2; }
+
     void AppendRoad(int ri, bool reversed)
     {
         var pts = Pts(data.Roads[ri]);
@@ -90,7 +93,7 @@ public class Autopilot
         for (int i = 0; i < Mathf.Min(path.Count - 1, 40); i++) { float d = DistToSeg(p, path[i], path[i + 1]); if (d < best) { best = d; ci = i; } }
         if (ci > 0) path.RemoveRange(0, ci);
         if (best > 25f) { Status = "off-road, re-acquiring"; Reset(); return; }
-        ExtendIfShort();
+        if (lastRoad != -2) ExtendIfShort();
 
         float speed = car.SpeedKmh, look = 7f + speed * 0.22f;
         Vector2 target = path[path.Count - 1]; float acc = 0;

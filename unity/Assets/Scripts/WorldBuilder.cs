@@ -13,16 +13,26 @@ public class WorldBuilder : MonoBehaviour
     public float Progress;
     public bool Ready;
 
-    Material mat, roadMat, markMat;
-    class Chunk { public Transform root; public GameObject terrain, roads, buildings, trees; public Vector2 center; public bool t, r, b, tr; }
+    Material mat, roadMat, markMat, terrainMat, buildingMat, treeMat;
+    class Chunk { public Transform root; public GameObject terrain, roads, buildings, trees, street; public Vector2 center; public bool t, r, b, tr; }
     readonly Chunk[] chunks = new Chunk[NC * NC];
+    readonly MeshBuilder[] colMB = new MeshBuilder[NC * NC];
+    readonly MeshBuilder[] streetMB = new MeshBuilder[NC * NC];
     readonly MeshBuilder[] facMB = new MeshBuilder[NC * NC], roadMB = new MeshBuilder[NC * NC], markMB = new MeshBuilder[NC * NC], bldMB = new MeshBuilder[NC * NC], treeMB = new MeshBuilder[NC * NC];
     readonly List<BoxSpec>[] bldBoxes = new List<BoxSpec>[NC * NC];
     struct BoxSpec { public Vector3 c, size; public float yaw; }
 
     // tree colliders (pooled around the car)
+    struct Obstacle { public Vector3 pos; public float r, h; }
+    readonly List<Obstacle> obstacles = new List<Obstacle>();
     readonly Dictionary<long, List<int>> treeHash = new Dictionary<long, List<int>>();
     CapsuleCollider[] treePool;
+    void AddObstacle(Vector3 pos, float r, float h)
+    {
+        long key = HashKey(pos.x, pos.z);
+        if (!treeHash.TryGetValue(key, out var l)) treeHash[key] = l = new List<int>();
+        l.Add(obstacles.Count); obstacles.Add(new Obstacle { pos = pos, r = r, h = h });
+    }
 
     static int CI(float v) => Mathf.Clamp(Mathf.FloorToInt((v + WorldData.Half) / ChunkSize), 0, NC - 1);
     static int CK(float x, float z) => CI(z) * NC + CI(x);
@@ -39,6 +49,11 @@ public class WorldBuilder : MonoBehaviour
         mat = new Material(shader);
         roadMat = new Material(shader); roadMat.SetFloat("_OffsetFactor", -2); roadMat.SetFloat("_OffsetUnits", -2);
         markMat = new Material(shader); markMat.SetFloat("_OffsetFactor", -4); markMat.SetFloat("_OffsetUnits", -4);
+        // fine procedural grain: fields, asphalt and rendered walls stop looking like flat colour
+        terrainMat = new Material(shader); terrainMat.SetFloat("_Noise", 0.16f); terrainMat.SetFloat("_NoiseScale", 0.55f);
+        roadMat.SetFloat("_Noise", 0.10f); roadMat.SetFloat("_NoiseScale", 1.6f);
+        buildingMat = new Material(shader); buildingMat.SetFloat("_Noise", 0.05f); buildingMat.SetFloat("_NoiseScale", 2.2f);
+        treeMat = new Material(shader); treeMat.SetFloat("_Noise", 0.10f); treeMat.SetFloat("_NoiseScale", 1.1f);
         yield return null;
 
         var stages = new (string name, float progress, System.Action run)[]
@@ -50,7 +65,7 @@ public class WorldBuilder : MonoBehaviour
                 Log.I("world", $"data: terrain {Data.N}x{Data.N} cell={Data.Cell}m, roads={Data.Roads.Length}, buildings={Data.Buildings.Length}, trees={Data.Trees.Length / 4}, spawn=({Data.Spawn.x:F0},{Data.Spawn.z:F0}) hdg={Data.Spawn.heading:F0}");
                 for (int i = 0; i < chunks.Length; i++)
                 {
-                    facMB[i] = new MeshBuilder(); roadMB[i] = new MeshBuilder(); markMB[i] = new MeshBuilder(); bldMB[i] = new MeshBuilder(); treeMB[i] = new MeshBuilder();
+                    colMB[i] = new MeshBuilder(); streetMB[i] = new MeshBuilder(); facMB[i] = new MeshBuilder(); roadMB[i] = new MeshBuilder(); markMB[i] = new MeshBuilder(); bldMB[i] = new MeshBuilder(); treeMB[i] = new MeshBuilder();
                     bldBoxes[i] = new List<BoxSpec>();
                     var go = new GameObject($"chunk_{i % NC}_{i / NC}"); go.transform.SetParent(transform, false);
                     chunks[i] = new Chunk { root = go.transform, center = new Vector2(-WorldData.Half + (i % NC + 0.5f) * ChunkSize, -WorldData.Half + (i / NC + 0.5f) * ChunkSize) };
@@ -59,7 +74,9 @@ public class WorldBuilder : MonoBehaviour
             ("terrain", 0.35f, BuildTerrain),
             ("roads", 0.55f, BuildRoads),
             ("buildings", 0.75f, BuildBuildings),
+            ("street furniture", 0.82f, BuildStreetFurniture),
             ("trees", 0.90f, BuildTrees),
+            ("shrubs", 0.95f, BuildShrubs),
             ("finish", 1.00f, Finish),
         };
         foreach (var st in stages)
@@ -106,18 +123,19 @@ public class WorldBuilder : MonoBehaviour
                 var m = new Mesh { name = "terrain", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
                 m.vertices = verts; m.colors32 = cols; m.triangles = tris; m.RecalculateBounds();
                 var ch = chunks[cz * NC + cx];
-                ch.terrain = MakeObject("terrain", ch.root, m, mat);
+                ch.terrain = MakeObject("terrain", ch.root, m, terrainMat, false, true);
             }
     }
 
     // ------------------------------------------------------------------ roads
-    static readonly Color32 Asphalt = new Color32(78, 80, 86, 255), Dirt = new Color32(158, 132, 96, 255),
+    static readonly Color32 Asphalt = new Color32(94, 94, 98, 255), Shoulder = new Color32(108, 102, 84, 255), Dirt = new Color32(158, 132, 96, 255),
         Concrete = new Color32(170, 168, 160, 255), Paint = new Color32(236, 232, 214, 255);
 
     void BuildRoads()
     {
-        foreach (var r in Data.Roads)
+        for (int ri = 0; ri < Data.Roads.Length; ri++)
         {
+            var r = Data.Roads[ri];
             int n = r.pts.Length / 3;
             var left = new Vector3[n]; var right = new Vector3[n];
             for (int i = 0; i < n; i++)
@@ -127,7 +145,7 @@ public class WorldBuilder : MonoBehaviour
                 Vector3 q1 = new Vector3(r.pts[Mathf.Min(i + 1, n - 1) * 3], 0, r.pts[Mathf.Min(i + 1, n - 1) * 3 + 2]);
                 Vector3 dir = (q1 - q0); dir.y = 0; dir = dir.sqrMagnitude > 1e-6f ? dir.normalized : Vector3.forward;
                 Vector3 side = new Vector3(dir.z, 0, -dir.x) * r.hw;
-                p.y += 0.06f;
+                p.y += RoadLift + (ri % 6) * 0.0009f;                  // tiny per-road bias so overlapping ribbons never z-fight
                 left[i] = p - side; right[i] = p + side;
             }
             var col = r.dirt ? Dirt : Asphalt;
@@ -151,8 +169,107 @@ public class WorldBuilder : MonoBehaviour
                     }
                 }
                 if (!r.dirt && r.hw >= 2.3f && !r.bridge) AddCentreLine(markMB[ck], left, right, i, end);
+                if (!r.dirt && !r.bridge) AddShoulderAndEdges(roadMB[ck], markMB[ck], left, right, i, end, r.hw >= 2.6f);
             }
         }
+    }
+
+    /// <summary>Gravel verge on both sides of an asphalt road, and (on wider roads) solid white edge lines.</summary>
+    void AddShoulderAndEdges(MeshBuilder road, MeshBuilder marks, Vector3[] left, Vector3[] right, int i, int end, bool edgeLines)
+    {
+        for (int k = i; k < end; k++)
+        {
+            Vector3 wl0 = (left[k] - right[k]).normalized, wl1 = (left[k + 1] - right[k + 1]).normalized;     // outward on the left / right side
+            foreach (int side in new[] { 0, 1 })
+            {
+                Vector3 e0 = side == 0 ? left[k] : right[k], e1 = side == 0 ? left[k + 1] : right[k + 1];
+                Vector3 o0 = side == 0 ? wl0 : -wl0, o1 = side == 0 ? wl1 : -wl1;
+                Vector3 down = Vector3.down * 0.012f;
+                road.Quad(road.Vertex(e0 + down, Shoulder), road.Vertex(e1 + down, Shoulder), road.Vertex(e1 + o1 * 0.45f + down * 2f, Shoulder), road.Vertex(e0 + o0 * 0.45f + down * 2f, Shoulder));
+                if (edgeLines)
+                {
+                    Vector3 in0 = -o0, in1 = -o1, lift = Vector3.up * 0.03f;
+                    marks.Quad(marks.Vertex(e0 + in0 * 0.14f + lift, Paint), marks.Vertex(e1 + in1 * 0.14f + lift, Paint), marks.Vertex(e1 + in1 * 0.25f + lift, Paint), marks.Vertex(e0 + in0 * 0.25f + lift, Paint));
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ street furniture: lamp posts in the village, wooden poles + wires in the country
+    void BuildStreetFurniture()
+    {
+        // where are the buildings? (30 m cells with a building count) and their oriented boxes, to keep poles out of walls
+        var urban = new Dictionary<long, int>();
+        foreach (var bd in Data.Buildings) { float cx = bd.p[0], cz = bd.p[1]; long key = ((long)Mathf.FloorToInt(cx / 30f) << 32) ^ (uint)Mathf.FloorToInt(cz / 30f); urban.TryGetValue(key, out int c); urban[key] = c + 1; }
+        Color32 steel = new Color32(64, 68, 72, 255), lampHead = new Color32(240, 236, 220, 60), wood = new Color32(112, 86, 62, 255), wire = new Color32(24, 24, 26, 255), insul = new Color32(190, 196, 190, 255);
+        int lamps = 0, poles = 0; var rng = new System.Random(7);
+        foreach (var r in Data.Roads)
+        {
+            if (r.dirt || r.bridge || r.pts.Length < 12) continue;
+            int n = r.pts.Length / 3; float acc = 0, spacing = 0; int sideSign = rng.Next(2) == 0 ? -1 : 1;
+            Vector3 prevPole = default; bool hasPrev = false;
+            for (int k = 1; k < n; k++)
+            {
+                Vector3 a = new Vector3(r.pts[(k - 1) * 3], r.pts[(k - 1) * 3 + 1], r.pts[(k - 1) * 3 + 2]), b = new Vector3(r.pts[k * 3], r.pts[k * 3 + 1], r.pts[k * 3 + 2]);
+                acc += Vector3.Distance(a, b);
+                Vector3 dir = new Vector3(b.x - a.x, 0, b.z - a.z); if (dir.sqrMagnitude < 1e-4f) continue; dir.Normalize();
+                long key = ((long)Mathf.FloorToInt(b.x / 30f) << 32) ^ (uint)Mathf.FloorToInt(b.z / 30f);
+                bool isUrban = urban.TryGetValue(key, out int cnt) && cnt >= 3;
+                float want = isUrban ? 34f : 52f;
+                if (acc < want + spacing) continue;
+                acc = 0; spacing = (float)rng.NextDouble() * 6f;
+                Vector3 side = new Vector3(dir.z, 0, -dir.x) * sideSign; if (isUrban || rng.Next(3) == 0) sideSign = -sideSign;
+                Vector3 pos = b + side * (r.hw + (isUrban ? 1.0f : 1.5f)); pos.y = Data.TerrainHeight(pos.x, pos.z);
+                if (InsideAnyBuilding(pos)) { hasPrev = false; continue; }
+                int ck = CK(pos.x, pos.z); var mb = streetMB[ck];
+                if (isUrban)
+                {
+                    AddObstacle(pos, 0.2f, 3f);
+                    mb.Box(pos + Vector3.up * 3.1f, new Vector3(0.15f, 6.2f, 0.15f), steel);
+                    Vector3 toRoad = -side; var q = Quaternion.LookRotation(toRoad, Vector3.up);
+                    mb.BoxQ(pos + Vector3.up * 6.15f + toRoad * 0.65f, new Vector3(0.09f, 0.09f, 1.4f), q, steel);
+                    mb.BoxQ(pos + Vector3.up * 6.05f + toRoad * 1.25f, new Vector3(0.34f, 0.10f, 0.62f), q, lampHead);
+                    lamps++; hasPrev = false;
+                }
+                else
+                {
+                    AddObstacle(pos, 0.3f, 3f);
+                    mb.Box(pos + Vector3.up * 4.6f, new Vector3(0.24f, 9.2f, 0.24f), wood);
+                    var q = Quaternion.LookRotation(side, Vector3.up);
+                    mb.BoxQ(pos + Vector3.up * 8.7f, new Vector3(2.0f, 0.13f, 0.13f), q, wood);
+                    for (int w = -1; w <= 1; w++) mb.BoxQ(pos + Vector3.up * 8.85f + Vector3.Cross(Vector3.up, side).normalized * (w * 0.85f), new Vector3(0.07f, 0.16f, 0.07f), q, insul);
+                    Vector3 top = pos + Vector3.up * 8.9f;
+                    if (hasPrev && Vector3.Distance(prevPole, top) < 90f)
+                    {   // three wires with a catenary sag
+                        Vector3 perp = Vector3.Cross(Vector3.up, side).normalized;
+                        for (int w = -1; w <= 1; w++)
+                        {
+                            Vector3 p0 = prevPole + perp * (w * 0.85f), p1 = top + perp * (w * 0.85f); Vector3 last = p0;
+                            for (int sgm = 1; sgm <= 8; sgm++)
+                            {
+                                float t = sgm / 8f; Vector3 pt = Vector3.Lerp(p0, p1, t); pt.y -= 4f * 0.9f * t * (1f - t) * (Vector3.Distance(p0, p1) / 45f);
+                                Vector3 mid = (last + pt) * 0.5f; Vector3 dv = pt - last;
+                                streetMB[CK(mid.x, mid.z)].BoxQ(mid, new Vector3(0.025f, 0.025f, dv.magnitude), Quaternion.LookRotation(dv.normalized, Vector3.up), wire);
+                                last = pt;
+                            }
+                        }
+                    }
+                    prevPole = top; hasPrev = true; poles++;
+                }
+            }
+        }
+        Log.I("world", $"street furniture: {lamps} lamp posts, {poles} utility poles");
+    }
+
+    bool InsideAnyBuilding(Vector3 p)
+    {
+        foreach (var bx in bldBoxes[CK(p.x, p.z)])
+        {
+            float yaw = bx.yaw * Mathf.Deg2Rad; Vector2 d = new Vector2(p.x - bx.c.x, p.z - bx.c.z);
+            float lx = d.x * Mathf.Cos(yaw) + d.y * Mathf.Sin(yaw), lz = -d.x * Mathf.Sin(yaw) + d.y * Mathf.Cos(yaw);
+            if (Mathf.Abs(lx) < bx.size.x * 0.5f + 1.5f && Mathf.Abs(lz) < bx.size.z * 0.5f + 1.5f) return true;
+        }
+        return false;
     }
 
     void AddCentreLine(MeshBuilder mb, Vector3[] left, Vector3[] right, int i, int end)
@@ -223,10 +340,31 @@ public class WorldBuilder : MonoBehaviour
             float yg = Mathf.Clamp(Data.TerrainHeight(fm.x, fm.y), y0 + 0.4f, y1 - 2f);      // doors sit on the ground at the road-facing wall
             Facade.Build(bd, pts, style, yg, y1, facMB[ck], rng);
             bldBoxes[ck].Add(FitBox(pts, y0, y1 + Mathf.Max(bd.r, 0)));
+            AddCollisionPrism(bd, colMB[ck], y0, y1 + Mathf.Max(bd.r, 0));
         }
     }
 
-    /// <summary>Oriented box collider from the longest footprint edge.</summary>
+    /// <summary>Exact collision volume of a building: its footprint (minus any road corridor that crosses it) extruded to roof height.</summary>
+    static void AddCollisionPrism(BuildingData bd, MeshBuilder mb, float y0, float y1)
+    {
+        if (bd.cn == null || bd.cp == null) return;
+        int off = 0; var ring = new List<Vector2>();
+        foreach (int cnt in bd.cn)
+        {
+            ring.Clear(); for (int k = 0; k < cnt; k++) ring.Add(new Vector2(bd.cp[(off + k) * 2], bd.cp[(off + k) * 2 + 1])); off += cnt;
+            var c = new Color32(255, 255, 255, 255);
+            for (int k = 0; k < cnt; k++)
+            {
+                Vector2 a = ring[k], b = ring[(k + 1) % cnt];
+                mb.Quad(mb.Vertex(new Vector3(a.x, y0, a.y), c), mb.Vertex(new Vector3(b.x, y0, b.y), c), mb.Vertex(new Vector3(b.x, y1, b.y), c), mb.Vertex(new Vector3(a.x, y1, a.y), c));
+            }
+            var tri = MeshBuilder.Triangulate(ring); int bi = mb.V.Count;
+            foreach (var q in ring) mb.Vertex(new Vector3(q.x, y1, q.y), c);
+            for (int k = 0; k + 2 < tri.Count; k += 3) mb.Tri(bi + tri[k], bi + tri[k + 1], bi + tri[k + 2]);
+        }
+    }
+
+    /// <summary>Oriented box collider from the longest footprint edge (only used to keep poles out of walls now).</summary>
     static BoxSpec FitBox(List<Vector2> pts, float y0, float y1)
     {
         int n = pts.Count; float best = 0; Vector2 axis = Vector2.right;
@@ -296,14 +434,28 @@ public class WorldBuilder : MonoBehaviour
                 for (int k = 0; k < 6; k++) { float a2 = k * Mathf.PI / 3 + rnd * 1.5f; mb.Vertex(new Vector3(x + Mathf.Cos(a2) * rad * 0.8f, y + th * 0.7f, z + Mathf.Sin(a2) * rad * 0.8f), k % 2 == 0 ? leaf : Tint(leaf, 0.85f)); }
                 for (int k = 0; k < 6; k++) mb.Tri(apex, r0 + k, r0 + (k + 1) % 6);
             }
-            if (h >= 3f)
-            {
-                long key = HashKey(x, z);
-                if (!treeHash.TryGetValue(key, out var l)) treeHash[key] = l = new List<int>();
-                l.Add(i);
-            }
+            if (h >= 3f) AddObstacle(new Vector3(x, y, z), tr + 0.12f, 3f);                  // trunk only: the crown is not solid
         }
     }
+    /// <summary>Hedges and garden shrubs: small squashed blobs, three shades of green, merged into the tree layer of each chunk.</summary>
+    void BuildShrubs()
+    {
+        int count = Data.Shrubs.Length / 4;
+        for (int i = 0; i < count; i++)
+        {
+            float x = Data.Shrubs[i * 4], y = Data.Shrubs[i * 4 + 1], z = Data.Shrubs[i * 4 + 2], h = Data.Shrubs[i * 4 + 3];
+            var mb = treeMB[CK(x, z)];
+            uint hash = (uint)(i * 2246822519u); float rnd = (hash >> 9 & 255) / 255f;
+            var leaf = C((int)(46 + 40 * rnd), (int)(96 + 46 * rnd), (int)(44 + 22 * rnd));
+            float rad = Mathf.Clamp(h * 0.62f, 0.55f, 1.4f), hh = Mathf.Clamp(h, 0.9f, 2.4f);
+            int top = mb.Vertex(new Vector3(x, y + hh, z), leaf), bot = mb.Vertex(new Vector3(x, y + 0.05f, z), Tint(leaf, 0.7f)); int r0 = mb.V.Count;
+            for (int k = 0; k < 6; k++) { float a = k * Mathf.PI / 3 + rnd * 2f; mb.Vertex(new Vector3(x + Mathf.Cos(a) * rad, y + hh * 0.42f, z + Mathf.Sin(a) * rad), k % 2 == 0 ? Tint(leaf, 1.1f) : leaf); }
+            for (int k = 0; k < 6; k++) { mb.Tri(top, r0 + k, r0 + (k + 1) % 6); mb.Tri(bot, r0 + (k + 1) % 6, r0 + k); }
+            if (hh > 1.3f) AddObstacle(new Vector3(x, y, z), rad * 0.75f, hh * 0.8f);
+        }
+        Log.I("world", $"shrubs: {count}");
+    }
+
     static long HashKey(float x, float z) => ((long)Mathf.FloorToInt(x / 16f) << 32) ^ (uint)Mathf.FloorToInt(z / 16f);
 
     // ------------------------------------------------------------------ finish
@@ -316,41 +468,42 @@ public class WorldBuilder : MonoBehaviour
             if (!markMB[i].Empty && ch.roads != null) MakeObject("marks", ch.roads.transform, markMB[i].ToMesh("marks"), markMat);
             if (!bldMB[i].Empty)
             {
-                ch.buildings = MakeObject("buildings", ch.root, bldMB[i].ToMesh("buildings"), mat);
-                if (!facMB[i].Empty) MakeObject("facades", ch.buildings.transform, facMB[i].ToMesh("facades"), markMat);
-                if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-nobcol") < 0)
-                foreach (var b in bldBoxes[i])
+                ch.buildings = MakeObject("buildings", ch.root, bldMB[i].ToMesh("buildings"), buildingMat, true, true);
+                if (!facMB[i].Empty) MakeObject("facades", ch.buildings.transform, facMB[i].ToMesh("facades"), markMat, false, true);
+                if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-nobcol") < 0 && !colMB[i].Empty)
                 {
-                    var go = new GameObject("bc"); go.transform.SetParent(ch.buildings.transform, false);
-                    go.transform.position = b.c; go.transform.rotation = Quaternion.Euler(0, -b.yaw, 0);
-                    go.AddComponent<BoxCollider>().size = b.size;
+                    var mc = ch.buildings.AddComponent<MeshCollider>();
+                    mc.sharedMesh = colMB[i].ToMesh("buildingCollision");
+                    mc.cookingOptions = MeshColliderCookingOptions.CookForFasterSimulation;
                 }
             }
-            if (!treeMB[i].Empty) ch.trees = MakeObject("trees", ch.root, treeMB[i].ToMesh("trees"), mat);
+            if (!streetMB[i].Empty) ch.street = MakeObject("street", ch.root, streetMB[i].ToMesh("street"), mat, true, true);
+            if (!treeMB[i].Empty) ch.trees = MakeObject("trees", ch.root, treeMB[i].ToMesh("trees"), treeMat, true, true);
         }
-        treePool = new CapsuleCollider[System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-notcol") >= 0 ? 0 : 40];
+        treePool = new CapsuleCollider[System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-notcol") >= 0 ? 0 : 110];
         for (int i = 0; i < treePool.Length; i++)
         {
             var go = new GameObject("treeCollider"); go.transform.SetParent(transform, false);
-            var cc = go.AddComponent<CapsuleCollider>(); cc.radius = 0.4f; cc.height = 8f; cc.direction = 1; go.SetActive(false);
+            var cc = go.AddComponent<CapsuleCollider>(); cc.radius = 0.4f; cc.height = 3f; cc.direction = 1; go.SetActive(false);
             treePool[i] = cc;
         }
     }
 
-    static GameObject MakeObject(string name, Transform parent, Mesh m, Material mat)
+    static GameObject MakeObject(string name, Transform parent, Mesh m, Material mat, bool cast = false, bool receive = true)
     {
         var go = new GameObject(name); go.transform.SetParent(parent, false);
         go.AddComponent<MeshFilter>().sharedMesh = m;
         var mr = go.AddComponent<MeshRenderer>(); mr.sharedMaterial = mat;
-        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; mr.receiveShadows = false;
+        mr.shadowCastingMode = cast ? UnityEngine.Rendering.ShadowCastingMode.On : UnityEngine.Rendering.ShadowCastingMode.Off; mr.receiveShadows = receive;
         return go;
     }
 
     // ------------------------------------------------------------------ runtime
     float nextCull; int lastT = -1, lastB = -1;
-    public bool HideTrees;
+    public bool HideTrees; public int LastToggleFrame;
     /// <summary>Test mode: a perfectly flat asphalt plane at FlatY instead of the real terrain (physics test harness).</summary>
     public bool Flat; public float FlatY;
+    public bool TerrainPhysicsOnly = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-terrainphys") >= 0;
     public void ForceStream() { nextCull = 0; }
     public void UpdateStreaming(Vector3 focus)
     {
@@ -364,35 +517,46 @@ public class WorldBuilder : MonoBehaviour
             Toggle(ch.roads, d < 1600f);
             Toggle(ch.buildings, d < 1300f);
             Toggle(ch.trees, d < 900f && !HideTrees);
+            Toggle(ch.street, d < 800f);
             if (ch.terrain != null && ch.terrain.activeSelf) aT++;
             if (ch.roads != null && ch.roads.activeSelf) aR++;
             if (ch.buildings != null && ch.buildings.activeSelf) aB++;
             if (ch.trees != null && ch.trees.activeSelf) aTr++;
         }
         if (aT != lastT || aB != lastB) { lastT = aT; lastB = aB; Log.I("stream", $"active chunks: terrain={aT} roads={aR} buildings={aB} trees={aTr} around ({focus.x:F0},{focus.z:F0})"); }
-        // pool tree colliders near the car
+        // pool obstacle colliders (trunks, poles, lamp posts, hedges) that are at the car's own height, so nothing below a bridge or above a tunnel can touch it
         int used = 0;
-        int cx = Mathf.FloorToInt(focus.x / 16f), cz = Mathf.FloorToInt(focus.z / 16f);
-        for (int dx = -2; dx <= 2 && used < treePool.Length; dx++)
-            for (int dz = -2; dz <= 2 && used < treePool.Length; dz++)
-                if (treeHash.TryGetValue(((long)(cx + dx) << 32) ^ (uint)(cz + dz), out var list))
-                    foreach (int ti in list)
-                    {
-                        if (used >= treePool.Length) break;
-                        var t = treePool[used++];
-                        t.transform.position = new Vector3(Data.Trees[ti * 4], Data.Trees[ti * 4 + 1] + 4f, Data.Trees[ti * 4 + 2]);
-                        t.gameObject.SetActive(true);
-                    }
+        if (focus.y > 1f)
+        {
+            int cx = Mathf.FloorToInt(focus.x / 16f), cz = Mathf.FloorToInt(focus.z / 16f);
+            for (int dx = -2; dx <= 2 && used < treePool.Length; dx++)
+                for (int dz = -2; dz <= 2 && used < treePool.Length; dz++)
+                    if (treeHash.TryGetValue(((long)(cx + dx) << 32) ^ (uint)(cz + dz), out var list))
+                        foreach (int oi in list)
+                        {
+                            var ob = obstacles[oi];
+                            if (Mathf.Abs(ob.pos.y - (focus.y - 0.7f)) > 3.2f) continue;         // car mount is ~0.7 m above the road
+                            if (used >= treePool.Length) break;
+                            var t = treePool[used++];
+                            t.radius = Mathf.Max(ob.r, 0.15f); t.height = ob.h; t.transform.position = ob.pos + Vector3.up * (ob.h * 0.5f);
+                            t.gameObject.SetActive(true);
+                        }
+        }
         for (int i = used; i < treePool.Length; i++) treePool[i].gameObject.SetActive(false);
     }
-    static void Toggle(GameObject go, bool on) { if (go != null && go.activeSelf != on) go.SetActive(on); }
+    void Toggle(GameObject go, bool on) { if (go != null && go.activeSelf != on) { go.SetActive(on); LastToggleFrame = Time.frameCount; } }
 
     /// <summary>Ground height for the car: terrain, or a bridge deck if one is within reach of refY.</summary>
+    public const float RoadLift = 0.05f;
     public float GroundHeight(float x, float z, float refY, out Surface surface)
     {
         if (Flat) { surface = Surface.Asphalt; return FlatY; }
         float terrain = Data.TerrainHeight(x, z);
-        surface = Roads.Query(x, z, refY, out float deck);
-        return float.IsNaN(deck) ? terrain : deck + 0.06f;
+        surface = Roads.Query(x, z, refY, out float deck, out float roadY, out float wgt);
+        if (TerrainPhysicsOnly) { return float.IsNaN(deck) ? terrain : deck + RoadLift; }        // old behaviour (benchmark comparison)
+        if (!float.IsNaN(deck)) return deck + RoadLift;
+        if (wgt > 0f) return Mathf.Lerp(terrain, roadY + RoadLift, wgt);      // on the carriageway the physics surface IS the ribbon; it fades into the terrain over 0.6 m
+        return terrain;
     }
+
 }

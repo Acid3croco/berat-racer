@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 public enum Assist { Off, Sport, Full }
@@ -52,6 +53,8 @@ public class CarController : MonoBehaviour
     public readonly float[] WheelSlip = new float[4];           // combined slip s (1 = peak grip)
     public readonly float[] WheelKappa = new float[4];          // slip ratio
     public readonly float[] WheelLoad = new float[4];           // N
+    public readonly float[] DebugEnvelope = new float[4];       // ground envelope height under each wheel (test instrumentation)
+    public readonly float[] DebugComp = new float[4];
     public readonly Vector3[] WheelPoint = new Vector3[4];
     public readonly Surface[] SurfaceUnderWheel = new Surface[4];
     public Surface CurrentSurface { get; private set; }
@@ -112,12 +115,26 @@ public class CarController : MonoBehaviour
         dA = spec.Layout == DriveLayout.FWD ? 0 : 2; dB = dA + 1;
         w = new Wheel[4];
         for (int i = 0; i < 4; i++) w[i] = new Wheel { mount = spec.Mount(i), front = i < 2, driven = i == dA || i == dB, visual = wheelVisuals[i] };
-        belly = new[] {
-            new Vector3(-spec.Width * 0.38f, spec.GroundY + clearance * 0.8f, spec.ZFront - 0.25f), new Vector3(spec.Width * 0.38f, spec.GroundY + clearance * 0.8f, spec.ZFront - 0.25f),
-            new Vector3(-spec.Width * 0.38f, spec.GroundY + clearance * 0.8f, spec.ZRear + 0.25f), new Vector3(spec.Width * 0.38f, spec.GroundY + clearance * 0.8f, spec.ZRear + 0.25f),
-            new Vector3(0f, spec.GroundY + clearance * 0.8f, 0f) };
+        // hull collision points: skid plate, sills, bumpers and roof corners, so the WHOLE car collides with the ground (crests, ditches, kerbs, rolling over)
+        var hp = new List<Vector3>();
+        float wx = spec.Width * 0.5f, yLow = spec.GroundY + clearance * 0.8f, yMid = spec.GroundY + 0.30f, yNose = spec.GroundY + 0.40f, yRoof = spec.GroundY + spec.Height - 0.03f;
+        foreach (float zz in new[] { spec.ZFront - 0.25f, 0f, spec.ZRear + 0.25f }) { hp.Add(new Vector3(-wx * 0.78f, yLow, zz)); hp.Add(new Vector3(wx * 0.78f, yLow, zz)); }
+        hp.Add(new Vector3(0f, yLow, 0f));
+        hp.Add(new Vector3(-wx * 0.98f, yMid, 0.9f)); hp.Add(new Vector3(wx * 0.98f, yMid, 0.9f)); hp.Add(new Vector3(-wx * 0.98f, yMid, -0.9f)); hp.Add(new Vector3(wx * 0.98f, yMid, -0.9f));   // sills
+        hp.Add(new Vector3(-wx * 0.85f, yNose, spec.ZFront)); hp.Add(new Vector3(wx * 0.85f, yNose, spec.ZFront)); hp.Add(new Vector3(0f, yNose, spec.ZFront));                                    // front bumper
+        hp.Add(new Vector3(-wx * 0.85f, yNose, spec.ZRear)); hp.Add(new Vector3(wx * 0.85f, yNose, spec.ZRear)); hp.Add(new Vector3(0f, yNose, spec.ZRear));                                       // rear bumper
+        foreach (float zz in new[] { spec.A - 0.9f, -spec.B + 0.7f }) { hp.Add(new Vector3(-wx * 0.7f, yRoof, zz)); hp.Add(new Vector3(wx * 0.7f, yRoof, zz)); }                                    // roof corners
+        belly = hp.ToArray();
         ResetDynamics();
         Log.I("car", $"{spec.Name}: {Mass} kg, {spec.Layout}, wheelbase {WheelBase:F2} m, front weight {spec.FrontWeight * 100:F0}%, {spec.Idle}-{spec.Redline} rpm, {drivetrain.Gears}-speed auto, ride {spec.RideFreqF:F2}/{spec.RideFreqR:F2} Hz");
+    }
+
+    /// <summary>Deepest any hull collision point is below the ground right now (m); 0 when nothing penetrates. Test instrumentation.</summary>
+    public float MaxHullPenetration()
+    {
+        float worst = 0f;
+        foreach (var lp in belly) { Vector3 p = transform.TransformPoint(lp); worst = Mathf.Max(worst, World.GroundHeight(p.x, p.z, p.y + 0.6f, out _) - p.y); }
+        return worst;
     }
 
     /// <summary>Clears wheel speeds, filters and drivetrain so a manoeuvre starts from rest.</summary>
@@ -331,6 +348,7 @@ public class CarController : MonoBehaviour
         }
         float uy = Mathf.Max(up.y, 0.35f);
         float d = (mountW.y - hEnv) / uy;
+        int wi = System.Array.IndexOf(w, q); if (wi >= 0) DebugEnvelope[wi] = hEnv;
         q.surf = surf;
         if (d >= DMax) { q.grounded = false; q.d = DMax; q.x = 0f; return; }
         q.grounded = true; q.d = Mathf.Max(d, DMin); q.x = DMax - q.d;
@@ -347,20 +365,26 @@ public class CarController : MonoBehaviour
         q.lastGround = gCentre;
     }
 
-    /// <summary>Skid plate: the underside cannot sink into the terrain on crests, landings and steep kerbs.</summary>
+    /// <summary>
+    /// Whole-hull ground contact. Any hull point that ends up below the ground is pushed out along the surface normal
+    /// (stiff spring, one-sided damper) and dragged by Coulomb friction, so bumpers, sills and the roof interact with slopes as well as the wheels do.
+    /// </summary>
     void BellyContact(float dt)
     {
         foreach (var lp in belly)
         {
             Vector3 p = transform.TransformPoint(lp);
-            float g = World.GroundHeight(p.x, p.z, p.y + 0.5f, out _);
+            float g = World.GroundHeight(p.x, p.z, p.y + 0.6f, out _);
             float depth = g - p.y;
             if (depth <= 0f) continue;
+            float e = 0.35f;
+            Vector3 n = new Vector3(-(World.GroundHeight(p.x + e, p.z, p.y, out _) - World.GroundHeight(p.x - e, p.z, p.y, out _)) / (2 * e), 1f, -(World.GroundHeight(p.x, p.z + e, p.y, out _) - World.GroundHeight(p.x, p.z - e, p.y, out _)) / (2 * e)).normalized;
             Vector3 v = Body.GetPointVelocity(p);
-            float F = Mathf.Max(0f, 90000f * depth - 4500f * v.y);
-            Body.AddForceAtPosition(Vector3.up * F, p);
-            Vector3 vh = new Vector3(v.x, 0, v.z);
-            if (vh.sqrMagnitude > 0.01f) Body.AddForceAtPosition(-vh.normalized * Mathf.Min(0.5f * F, vh.magnitude * 2000f), p);
+            float vn = Vector3.Dot(v, n);
+            float F = Mathf.Clamp(420000f * depth - (vn < 0f ? 16000f * vn : 0f), 0f, 260000f);     // damp only while penetrating deeper: no suction on the way out
+            Body.AddForceAtPosition(n * F, p);
+            Vector3 vt = v - n * vn;
+            if (vt.sqrMagnitude > 0.0004f) Body.AddForceAtPosition(-vt.normalized * Mathf.Min(0.6f * F, vt.magnitude * Mass * 0.25f / Mathf.Max(dt, 1e-3f)), p);
         }
     }
 
@@ -390,7 +414,7 @@ public class CarController : MonoBehaviour
     {
         float v = c.relativeVelocity.magnitude;
         if (v > 2f) Impact?.Invoke(v);
-        if (v > 2f) Log.I("car", $"collision with '{c.collider.name}' ({c.collider.transform.parent?.name}) rel speed {v:F1} m/s at {c.GetContact(0).point}");
+        if (v > 2f) Log.I("car", $"collision with '{c.collider.name}' ({c.collider.transform.parent?.name}) rel speed {v:F1} m/s at {c.GetContact(0).point} cell {Grid.CellLabel(c.GetContact(0).point.x, c.GetContact(0).point.z)}");
     }
 
     public void Respawn(Vector3 pos, float heading = float.NaN)

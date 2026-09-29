@@ -205,6 +205,29 @@ public class MapView : MonoBehaviour
         Close("teleported");
     }
 
+    /// <summary>5 m grid over the terrain (top-down camera, north up): faint lines every cell, stronger every 5th cell with its index.</summary>
+    void DrawGrid()
+    {
+        float hv = alt * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad), hh = hv * cam.aspect, y = groundSmooth;
+        int gx0 = Mathf.FloorToInt((pos.x - hh) / Grid.CellSize), gx1 = Mathf.CeilToInt((pos.x + hh) / Grid.CellSize);
+        int gz0 = Mathf.FloorToInt((pos.y - hv) / Grid.CellSize), gz1 = Mathf.CeilToInt((pos.y + hv) / Grid.CellSize);
+        if ((gx1 - gx0) > 90 || (gz1 - gz0) > 90) return;
+        var lab = new GUIStyle(label) { fontSize = 12 }; lab.normal.textColor = new Color(1f, 1f, 0.7f);
+        for (int gx = gx0; gx <= gx1; gx++)
+        {
+            bool major = gx % 5 == 0; Vector3 sp = cam.WorldToScreenPoint(new Vector3(gx * Grid.CellSize, y, pos.y));
+            GUI.color = new Color(1, 1, 1, major ? 0.42f : 0.16f); GUI.DrawTexture(new Rect(sp.x, 0, 1, Screen.height), Texture2D.whiteTexture);
+            if (major) { GUI.color = Color.white; GUI.Label(new Rect(sp.x + 3, 46, 60, 18), gx.ToString(), lab); }
+        }
+        for (int gz = gz0; gz <= gz1; gz++)
+        {
+            bool major = gz % 5 == 0; Vector3 sp = cam.WorldToScreenPoint(new Vector3(pos.x, y, gz * Grid.CellSize)); float sy = Screen.height - sp.y;
+            GUI.color = new Color(1, 1, 1, major ? 0.42f : 0.16f); GUI.DrawTexture(new Rect(0, sy, Screen.width, 1), Texture2D.whiteTexture);
+            if (major) { GUI.color = Color.white; GUI.Label(new Rect(4, sy + 2, 60, 18), gz.ToString(), lab); }
+        }
+        GUI.color = Color.white;
+    }
+
     public void DrawGUI()
     {
         if (label == null)
@@ -219,9 +242,10 @@ public class MapView : MonoBehaviour
         GUI.DrawTexture(new Rect(a.x - 1, a.y - 14, 2, 28), Texture2D.whiteTexture);
         GUI.color = Color.white;
 
+        if (alt <= 130f) DrawGrid();
         GUI.Label(new Rect(0, 12, Screen.width, 40), "MAP", title);
         string info = aimValid
-            ? $"target  x {aimPoint.x:F0}  z {aimPoint.z:F0}   elevation {aimPoint.y:F1} m   (Lambert-93  E {OriginE + aimPoint.x:F0}  N {OriginN + aimPoint.z:F0})"
+            ? $"target  cell {Grid.CellLabel(aimPoint.x, aimPoint.z)}   x {aimPoint.x:F0}  z {aimPoint.z:F0}   elevation {aimPoint.y:F1} m   ({Grid.Lambert(aimPoint.x, aimPoint.z)})"
             : "target  outside the map";
         var box = new Rect(14, Screen.height - 96, Screen.width - 28, 84);
         GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(box, Texture2D.whiteTexture); GUI.color = Color.white;

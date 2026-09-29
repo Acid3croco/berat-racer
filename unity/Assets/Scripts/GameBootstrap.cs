@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using UnityEngine;
@@ -23,7 +24,7 @@ public class GameBootstrap : MonoBehaviour
     float fps, fpsAcc, fpsMin = 999f; int fpsN; float fpsNext, telemetryNext;
     GUIStyle big, small, mono;
     float lastInputErr; bool inputTest, mapTest, shotsMode; Vector3? shotFocus;
-    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0;   // physics harness owns the car inputs
+    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0;   // physics harness owns the car inputs
     bool showHelp = true, showDebug; Autopilot auto; bool autoOn;
     string padName = "none"; float steerIn, thrIn, brkIn; bool handIn;
 
@@ -41,13 +42,11 @@ public class GameBootstrap : MonoBehaviour
         LogSystem();
         SetupInput();
 
-        var sky = new Color(0.62f, 0.78f, 0.93f);
-        RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear; RenderSettings.fogColor = sky;
-        RenderSettings.fogStartDistance = 500f; RenderSettings.fogEndDistance = 2800f;
+        SetupEnvironment();
 
         var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
         var camera = camGo.AddComponent<Camera>();
-        camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = sky;
+        camera.clearFlags = CameraClearFlags.Skybox; camera.allowHDR = true; camera.allowMSAA = true;
         camera.nearClipPlane = 0.3f; camera.farClipPlane = 3400f;
         camGo.AddComponent<AudioListener>();
         cam = camGo.AddComponent<FollowCamera>(); mainCam = camera;
@@ -63,6 +62,7 @@ public class GameBootstrap : MonoBehaviour
         SpawnCar(Mathf.Clamp(startModel, 0, CarSpec.All.Length - 1), new Vector3(sp.x, 0, sp.z), sp.heading, true);
         Log.I("boot", $"smoke={smoke}");
         var launchArgs = System.Environment.GetCommandLineArgs();
+        { int gi = System.Array.IndexOf(launchArgs, "-goto"); if (gi >= 0 && gi + 1 < launchArgs.Length && Grid.TryParse(string.Join(" ", launchArgs, gi + 1, Mathf.Min(2, launchArgs.Length - gi - 1)), out float gx, out float gz)) { TeleportCar(gx, gz); } }
         if (System.Array.IndexOf(launchArgs, "-autopilot") >= 0)
         {
             auto = new Autopilot(world.Data, car); autoOn = true; auto.TargetKmh = 95f;
@@ -73,6 +73,11 @@ public class GameBootstrap : MonoBehaviour
         if (inputTest) StartCoroutine(InputTest());
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0) StartCoroutine(PhysTest.HullRun(world, car));
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-gridtest") >= 0) { PhysTest.GridRun(); Application.Quit(); }
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-groundscan") >= 0) StartCoroutine(GroundScan());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0) StartCoroutine(PhysTest.RoadRun(world, car, 150f, 100f));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-carshots") >= 0) StartCoroutine(CarShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0) StartCoroutine(PhysTest.Run(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-camtest") >= 0) StartCoroutine(CamTest());
@@ -119,6 +124,33 @@ public class GameBootstrap : MonoBehaviour
         }
     }
 
+    // ------------------------------------------------------------ lighting / atmosphere
+    Light sun;
+    /// <summary>Afternoon sun with cascaded soft shadows, gradient ambient, procedural sky and matching aerial haze. All values are linear.</summary>
+    void SetupEnvironment()
+    {
+        var go = new GameObject("Sun");
+        sun = go.AddComponent<Light>(); sun.type = LightType.Directional;
+        sun.transform.rotation = Quaternion.Euler(41f, 32f, 0f);                     // sun in the south-west, ~41 deg up
+        sun.color = new Color(1.0f, 0.93f, 0.82f); sun.intensity = 1.35f;
+        sun.shadows = LightShadows.Soft; sun.shadowStrength = 0.92f; sun.shadowBias = 0.05f; sun.shadowNormalBias = 0.45f; sun.shadowNearPlane = 0.4f;
+        RenderSettings.sun = sun;
+        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
+        RenderSettings.ambientSkyColor = new Color(0.27f, 0.35f, 0.50f);
+        RenderSettings.ambientEquatorColor = new Color(0.31f, 0.32f, 0.30f);
+        RenderSettings.ambientGroundColor = new Color(0.17f, 0.15f, 0.12f);
+        var skyShader = Resources.Load<Shader>("BeratSky");
+        if (skyShader != null) RenderSettings.skybox = new Material(skyShader); else Log.I("gfx", "sky shader missing");
+        var haze = new Color(0.42f, 0.62f, 0.90f);
+        RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared; RenderSettings.fogColor = haze; RenderSettings.fogDensity = 0.00028f;
+
+        QualitySettings.antiAliasing = 4;
+        QualitySettings.shadows = ShadowQuality.All; QualitySettings.shadowResolution = ShadowResolution.VeryHigh; QualitySettings.shadowProjection = ShadowProjection.StableFit;
+        QualitySettings.shadowCascades = 4; QualitySettings.shadowDistance = 260f; QualitySettings.shadowCascade4Split = new Vector3(0.04f, 0.14f, 0.40f);
+        QualitySettings.anisotropicFiltering = AnisotropicFiltering.ForceEnable;
+        Log.I("gfx", $"environment: sun {sun.transform.eulerAngles}, MSAA {QualitySettings.antiAliasing}x, shadows {QualitySettings.shadowResolution} {QualitySettings.shadowCascades} cascades to {QualitySettings.shadowDistance} m");
+    }
+
     // ------------------------------------------------------------ cars
     int carIndex; CarVisualRefs carVisual; Material carMat;
 
@@ -135,6 +167,7 @@ public class GameBootstrap : MonoBehaviour
         carVisual = CarVisual.Build(carGo.transform, carMat, spec);
         car = carGo.AddComponent<CarController>();
         car.Init(world, carVisual.wheels, spec);
+        car.Impact += v => rumbleImpact = Mathf.Max(rumbleImpact, Mathf.Clamp01(v / 10f));
         cam.SetCar(car);
         map.Init(world, car, cam, mainCam);
         audio = carGo.AddComponent<CarAudio>(); audio.Car = car;
@@ -160,8 +193,9 @@ public class GameBootstrap : MonoBehaviour
         if (!smoke && ((kbM != null && kbM.mKey.wasPressedThisFrame) || (gpM != null && gpM.selectButton.wasPressedThisFrame))) { map.Toggle(); }
         world.UpdateStreaming(shotFocus.HasValue ? shotFocus.Value : (map.Active ? map.Focus : car.transform.position));
         if (map.Active) { map.Tick(); return; }
-        HandleCameraInput();
+        HandleCameraInput(); HandleCoordinateKeys();
         if (carVisual != null) { carVisual.brakeGlow.SetActive(car.Brake > 0.1f && car.Gear > 0 || car.Gear < 0 && car.Throttle > 0.1f); carVisual.reverseGlow.SetActive(car.Gear < 0); }
+        if (Time.unscaledDeltaTime > 0.028f && Time.frameCount > 120) Log.I("perf", $"slow frame {Time.unscaledDeltaTime * 1000f:F0} ms  streamToggle={(world.LastToggleFrame == Time.frameCount)}  gc={System.GC.CollectionCount(0)}  speed={(car != null ? car.SpeedKmh : 0):F0}");
         fpsAcc += Time.unscaledDeltaTime; fpsN++; fpsMin = Mathf.Min(fpsMin, 1f / Mathf.Max(Time.unscaledDeltaTime, 1e-4f));
         if (Time.unscaledTime > fpsNext) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; fpsNext = Time.unscaledTime + 0.5f; }
         if (autoOn && auto != null) { auto.Drive(Time.deltaTime); if (Time.unscaledTime > telemetryNext) { Log.I("auto", auto.Status); Telemetry(); } if (!smoke) HandleToggles(); return; }
@@ -209,6 +243,7 @@ public class GameBootstrap : MonoBehaviour
             car.Respawn(new Vector3(p.x, world.GroundHeight(p.x, p.z, p.y, out _) + 1f, p.z));
             cam.Snap();
         }
+        UpdateHaptics();
         if (Time.unscaledTime > telemetryNext) Telemetry();
     }
 
@@ -240,6 +275,23 @@ public class GameBootstrap : MonoBehaviour
             back |= gp.rightStickButton.isPressed;
         }
         cam.LookBack(back);
+    }
+
+    float rumbleImpact;
+    /// <summary>DualSense / gamepad rumble: low motor = tyre slip and wheelspin, high motor = ABS / traction-control chatter and impacts.</summary>
+    void UpdateHaptics()
+    {
+        var gp = pad; if (gp == null) return;
+        try
+        {
+            if (map != null && map.Active || Time.timeScale == 0f) { gp.SetMotorSpeeds(0f, 0f); return; }
+            float slip = car.SlipAmount * Mathf.Clamp01(car.SpeedKmh / 25f);
+            float low = Mathf.Clamp01(slip * 0.55f + (car.Rpm > car.Spec.Redline * 0.97f ? 0.12f : 0f));
+            float high = Mathf.Clamp01((car.AbsActive || car.TcsActive ? 0.35f : 0f) + rumbleImpact);
+            rumbleImpact = Mathf.Max(0f, rumbleImpact - 2.5f * Time.unscaledDeltaTime);
+            gp.SetMotorSpeeds(low, high);
+        }
+        catch (System.Exception) { /* not every controller supports rumble */ }
     }
 
     static float Deadzone(float v, float dz) => Mathf.Abs(v) < dz ? 0 : Mathf.Sign(v) * (Mathf.Abs(v) - dz) / (1 - dz);
@@ -506,6 +558,42 @@ public class GameBootstrap : MonoBehaviour
         Log.I("carshots", "done"); Application.Quit();
     }
 
+    /// <summary>Samples the physics ground function every 0.25 m along the main road and compares road-ribbon vs terrain-mesh profiles.</summary>
+    IEnumerator GroundScan()
+    {
+        yield return new WaitForSeconds(0.5f);
+        var road = world.Data.Roads[269]; int n = road.pts.Length / 3;
+        var pts = new List<Vector3>(); for (int i = 0; i < n; i++) pts.Add(new Vector3(road.pts[i * 3], road.pts[i * 3 + 1], road.pts[i * 3 + 2]));
+        var prof = new List<Vector3>();      // x = s, y = ribbon-mode height, z = terrain-mode height
+        float acc = 0; Vector3 prev = pts[0];
+        for (int i = 1; i < pts.Count; i++)
+        {
+            float L = Vector3.Distance(new Vector3(pts[i].x, 0, pts[i].z), new Vector3(prev.x, 0, prev.z));
+            for (float d = 0; d < L; d += 0.25f)
+            {
+                var p = Vector3.Lerp(new Vector3(prev.x, 0, prev.z), new Vector3(pts[i].x, 0, pts[i].z), d / Mathf.Max(L, 1e-3f));
+                world.TerrainPhysicsOnly = false; float a = world.GroundHeight(p.x, p.z, 400f, out _);
+                world.TerrainPhysicsOnly = true; float b = world.GroundHeight(p.x, p.z, 400f, out _);
+                prof.Add(new Vector3(acc + d, a, b));
+            }
+            acc += L; prev = pts[i];
+        }
+        Vector2 Rough(bool ribbon)
+        {   // second derivative (curvature) statistics over 2 m baseline: what a wheel rolling at speed converts into vertical acceleration
+            double sum = 0; float mx = 0; int c = 0;
+            for (int i = 8; i + 8 < prof.Count; i++)
+            {
+                float y0 = ribbon ? prof[i - 8].y : prof[i - 8].z, y1 = ribbon ? prof[i].y : prof[i].z, y2 = ribbon ? prof[i + 8].y : prof[i + 8].z;
+                float k = (y0 - 2 * y1 + y2) / 4f; sum += k * k; mx = Mathf.Max(mx, Mathf.Abs(k)); c++;
+            }
+            return new Vector2(Mathf.Sqrt((float)(sum / Mathf.Max(c, 1))), mx);
+        }
+        var rr = Rough(true); var tr = Rough(false);
+        Log.I("groundscan", $"road #269, {acc:F0} m, {prof.Count} samples. curvature RMS  ribbon {rr.x:F5} 1/m (max {rr.y:F4})   terrain {tr.x:F5} 1/m (max {tr.y:F4})   at 25 m/s: ribbon {rr.x * 625f:F2} m/s2 vs terrain {tr.x * 625f:F2} m/s2");
+        for (int i = 100; i < 260 && i < prof.Count; i += 8) Log.I("groundscan", $"  s={prof[i].x:F1}  ribbon {prof[i].y:F3}  terrain {prof[i].z:F3}  diff {prof[i].y - prof[i].z:+0.000;-0.000}");
+        Application.Quit();
+    }
+
     IEnumerator SmokeShots()
     {
         string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
@@ -547,6 +635,52 @@ public class GameBootstrap : MonoBehaviour
         }
         Log.I("smoke", "done");
         Application.Quit();
+    }
+
+    // ------------------------------------------------------------ position / bug-report coordinates
+    string copiedNote; float copiedAt = -10f;
+
+    void DrawPositionBox()
+    {
+        var p = car.transform.position; var c = Grid.CellOf(p.x, p.z);
+        world.GroundHeight(p.x, p.z, p.y, out Surface surf);
+        float w = 330f, h = 84f; var r = new Rect(Screen.width - w - 14, 10, w, h);
+        GUI.color = new Color(0, 0, 0, 0.5f); GUI.DrawTexture(r, Texture2D.whiteTexture); GUI.color = Color.white;
+        var st = new GUIStyle(small) { alignment = TextAnchor.UpperRight, fontSize = 15 };
+        var big2 = new GUIStyle(st) { fontSize = 20, fontStyle = FontStyle.Bold };
+        GUI.Label(new Rect(r.x, r.y + 4, w - 10, 26), $"cell ({c.x}, {c.y})", big2);
+        GUI.Label(new Rect(r.x, r.y + 30, w - 10, 22), $"x {p.x:F1}   z {p.z:F1}   elev {p.y:F1} m", st);
+        GUI.Label(new Rect(r.x, r.y + 50, w - 10, 22), $"{Grid.Lambert(p.x, p.z)}   {surf}", st);
+        if (Time.unscaledTime - copiedAt < 2.5f) { var cs = new GUIStyle(st) { fontSize = 13 }; cs.normal.textColor = new Color(0.6f, 1f, 0.6f); GUI.Label(new Rect(r.x, r.y + h + 2, w - 10, 20), copiedNote, cs); }
+    }
+
+    /// <summary>K: copy this spot as a one-line report (also logged). J: jump to coordinates found on the clipboard.</summary>
+    void HandleCoordinateKeys()
+    {
+        var kb = Keyboard.current; if (kb == null) return;
+        if (kb.kKey.wasPressedThisFrame)
+        {
+            var p = car.transform.position; world.GroundHeight(p.x, p.z, p.y, out Surface surf);
+            string rep = Grid.Report(p, car.transform.eulerAngles.y, car.Spec.Name, surf.ToString());
+            GUIUtility.systemCopyBuffer = rep; Log.I("spot", rep); copiedNote = "copied to clipboard"; copiedAt = Time.unscaledTime;
+        }
+        if (kb.jKey.wasPressedThisFrame)
+        {
+            if (Grid.TryParse(GUIUtility.systemCopyBuffer, out float x, out float z)) { TeleportCar(x, z); copiedNote = $"jumped to {x:F0}, {z:F0}"; }
+            else copiedNote = "clipboard has no coordinates (x=.. z=.. or cell (a, b))";
+            copiedAt = Time.unscaledTime; Log.I("spot", copiedNote);
+        }
+    }
+
+    /// <summary>Places the car on the ground at (x, z), aligned to the nearest road if there is one within 7 m.</summary>
+    void TeleportCar(float x, float z)
+    {
+        x = Mathf.Clamp(x, -WorldData.Half + 8f, WorldData.Half - 8f); z = Mathf.Clamp(z, -WorldData.Half + 8f, WorldData.Half - 8f);
+        float yaw = car.transform.eulerAngles.y;
+        if (world.Roads.NearestRoad(x, z, 7f, out Vector2 dir)) { float a = Mathf.Atan2(dir.x, dir.y) * Mathf.Rad2Deg; yaw = Mathf.Abs(Mathf.DeltaAngle(a, yaw)) <= 90f ? a : a + 180f; }
+        float g = world.GroundHeight(x, z, world.Data.TerrainHeight(x, z) + 1f, out _);
+        car.Respawn(new Vector3(x, g + car.Spec.WheelRadiusSum + 0.25f, z), yaw); cam.Snap();
+        Log.I("spot", $"teleported to x={x:F1} z={z:F1} cell={Grid.CellLabel(x, z)}");
     }
 
     // ------------------------------------------------------------ HUD
@@ -597,14 +731,15 @@ public class GameBootstrap : MonoBehaviour
         if (camAge < 2.2f) { var cs = new GUIStyle(big) { fontSize = 26, alignment = TextAnchor.LowerCenter }; cs.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(2.2f - camAge)); GUI.Label(new Rect(0, Screen.height - 90, Screen.width, 60), "Camera: " + cam.ModeName, cs); }
         DrawGauges();
         if (autoOn) { var ap = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; ap.normal.textColor = new Color(1f, 0.85f, 0.2f); GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", ap); }
+        DrawPositionBox();
         GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
-            GUI.Label(new Rect(16, 36, 900, 90), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
+            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)
         {
             var sb = new StringBuilder();
             var p = car.transform.position;
-            sb.AppendLine($"pos {p.x:F0},{p.y:F1},{p.z:F0}   surf {car.CurrentSurface}   wheels {car.WheelsOnGround}/4");
+            sb.AppendLine($"pos {p.x:F1},{p.y:F1},{p.z:F1}   cell {Grid.CellLabel(p.x, p.z)}   surf {car.CurrentSurface}   wheels {car.WheelsOnGround}/4");
             sb.AppendLine($"input steer {steerIn:F2} thr {thrIn:F2} brk {brkIn:F2} hand {handIn}");
             sb.AppendLine($"log: {Log.Path_}");
             GUI.Label(new Rect(16, Screen.height - 90, 900, 80), sb.ToString(), mono);

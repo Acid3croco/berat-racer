@@ -4,7 +4,7 @@ using UnityEngine;
 
 [Serializable] public class RoadData { public float hw; public bool dirt; public bool bridge; public string name; public string imp; public float[] pts; }
 [Serializable] public class RoadList { public RoadData[] items; }
-[Serializable] public class BuildingData { public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; }
+[Serializable] public class BuildingData { public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; public float[] cp; public int[] cn; }
 [Serializable] public class BuildingList { public BuildingData[] items; }
 [Serializable] public class SpawnData { public float x, y, z, heading; public string road; }
 
@@ -18,6 +18,7 @@ public class WorldData
     public RoadData[] Roads;
     public BuildingData[] Buildings;
     public float[] Trees;            // x,y,z,height per tree
+    public float[] Shrubs;           // same layout, low vegetation
     public SpawnData Spawn;
 
     public static WorldData Load()
@@ -36,6 +37,8 @@ public class WorldData
         w.Buildings = JsonUtility.FromJson<BuildingList>(File.ReadAllText(Path.Combine(dir, "buildings.json"))).items;
         var tb = File.ReadAllBytes(Path.Combine(dir, "trees.bin"));
         w.Trees = new float[tb.Length / 4]; Buffer.BlockCopy(tb, 0, w.Trees, 0, tb.Length);
+        var sb = File.ReadAllBytes(Path.Combine(dir, "shrubs.bin"));
+        w.Shrubs = new float[sb.Length / 4]; Buffer.BlockCopy(sb, 0, w.Shrubs, 0, sb.Length);
         w.Spawn = JsonUtility.FromJson<SpawnData>(File.ReadAllText(Path.Combine(dir, "spawn.json")));
         return w;
     }

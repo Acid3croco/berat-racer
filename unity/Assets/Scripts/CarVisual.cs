@@ -7,8 +7,8 @@ public class CarVisualRefs { public Transform[] wheels; public GameObject brakeG
 public static class CarVisual
 {
     static Color32 C(int r, int g, int b) => new Color32((byte)r, (byte)g, (byte)b, 255);
-    static readonly Color32 Glass = new Color32(52, 70, 92, 255), Plastic = new Color32(30, 32, 36, 255), Lens = new Color32(238, 238, 228, 255),
-        TailRed = new Color32(200, 24, 28, 255), Chrome = new Color32(196, 200, 206, 255), Tyre = new Color32(26, 26, 28, 255), Rim = new Color32(186, 190, 198, 255);
+    static readonly Color32 Glass = new Color32(52, 70, 92, 24), Plastic = new Color32(30, 32, 36, 255), Lens = new Color32(238, 238, 228, 255),
+        TailRed = new Color32(200, 24, 28, 255), Chrome = new Color32(196, 200, 206, 30), Tyre = new Color32(26, 26, 28, 255), Rim = new Color32(186, 190, 198, 255);
 
     public static CarVisualRefs Build(Transform car, Material mat, CarSpec sp)
     {
@@ -43,7 +43,8 @@ public static class CarVisual
         if (sp.Style == BodyStyle.Sports) g.Box(new Vector3(0, yl, zRear), new Vector3(sp.Width * 0.72f, 0.045f, 0.012f), C(255, 40, 40));
         else foreach (float s in new[] { -1f, 1f }) g.Box(new Vector3(s * hwL, yl, zRear), new Vector3(sp.Width * 0.20f, 0.09f, 0.012f), C(255, 46, 46));
         foreach (float s in new[] { -1f, 1f }) rv.Box(new Vector3(s * hwL * 0.55f, yl - 0.11f, zRear), new Vector3(0.10f, 0.05f, 0.012f), C(255, 255, 255));
-        refs.brakeGlow = Attach(car, "brakeGlow", g.ToMesh("brakeGlow"), mat); refs.reverseGlow = Attach(car, "reverseGlow", rv.ToMesh("reverseGlow"), mat);
+        var glowMat = new Material(mat); glowMat.SetFloat("_Emission", 3.2f);
+        refs.brakeGlow = Attach(car, "brakeGlow", g.ToMesh("brakeGlow"), glowMat); refs.reverseGlow = Attach(car, "reverseGlow", rv.ToMesh("reverseGlow"), glowMat);
         refs.brakeGlow.SetActive(false); refs.reverseGlow.SetActive(false);
         return refs;
     }
@@ -53,9 +54,11 @@ public static class CarVisual
         var go = new GameObject(name); go.transform.SetParent(parent, false);
         go.AddComponent<MeshFilter>().sharedMesh = m;
         var mr = go.AddComponent<MeshRenderer>(); mr.sharedMaterial = mat;
-        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On; mr.receiveShadows = true;
         return go;
     }
+
+    static Color32 Gloss(Color32 c) => new Color32(c.r, c.g, c.b, 45);        // vertex alpha = 255 - gloss: clear-coated paint
 
     // ---------------------------------------------------------------- shared helpers
     /// <summary>Point on a side silhouette. t: 0 = nose, 1 = tail; h: height above ground; hw: half width there.</summary>
@@ -101,7 +104,7 @@ public static class CarVisual
     // ---------------------------------------------------------------- Peugeot 406 saloon
     static void Sedan(MeshBuilder mb, CarSpec sp)
     {
-        Color32 paint = sp.Paint; float hw = sp.Width * 0.5f;
+        Color32 paint = Gloss(sp.Paint); float hw = sp.Width * 0.5f;
         var top = new List<Vector3> {
             P(sp,0.000f,0.60f,hw*0.94f), P(sp,0.012f,0.76f,hw*0.97f), P(sp,0.060f,0.81f,hw*0.99f), P(sp,0.290f,0.93f,hw*1.00f), P(sp,0.640f,0.98f,hw*1.00f),
             P(sp,0.800f,1.00f,hw*1.00f), P(sp,0.960f,0.99f,hw*0.98f), P(sp,0.992f,0.87f,hw*0.96f), P(sp,1.000f,0.72f,hw*0.95f) };
@@ -134,7 +137,7 @@ public static class CarVisual
     // ---------------------------------------------------------------- Hot hatch
     static void Hatch(MeshBuilder mb, CarSpec sp)
     {
-        Color32 paint = sp.Paint; float hw = sp.Width * 0.5f;
+        Color32 paint = Gloss(sp.Paint); float hw = sp.Width * 0.5f;
         var top = new List<Vector3> {
             P(sp,0.000f,0.58f,hw*0.94f), P(sp,0.015f,0.74f,hw*0.97f), P(sp,0.075f,0.79f,hw*0.99f), P(sp,0.265f,0.91f,hw*1.00f), P(sp,0.700f,0.97f,hw*1.00f),
             P(sp,0.940f,1.00f,hw*0.98f), P(sp,0.990f,0.90f,hw*0.96f), P(sp,1.000f,0.70f,hw*0.95f) };
@@ -163,7 +166,7 @@ public static class CarVisual
     // ---------------------------------------------------------------- Porsche 911 GT3 (992)
     static void Sports(MeshBuilder mb, CarSpec sp)
     {
-        Color32 paint = sp.Paint, black = C(22, 22, 26), carbon = C(34, 36, 42); float hw = sp.Width * 0.5f;
+        Color32 paint = Gloss(sp.Paint), black = C(22, 22, 26), carbon = new Color32(34, 36, 42, 90); float hw = sp.Width * 0.5f;
         var top = new List<Vector3> {
             P(sp,0.000f,0.44f,hw*0.84f), P(sp,0.010f,0.55f,hw*0.92f), P(sp,0.045f,0.63f,hw*0.97f), P(sp,0.150f,0.70f,hw*0.99f), P(sp,0.305f,0.78f,hw*1.00f),
             P(sp,0.560f,0.86f,hw*1.00f), P(sp,0.770f,0.90f,hw*1.02f), P(sp,0.905f,0.92f,hw*0.99f), P(sp,0.960f,0.88f,hw*0.94f), P(sp,0.992f,0.78f,hw*0.86f), P(sp,1.000f,0.64f,hw*0.80f) };

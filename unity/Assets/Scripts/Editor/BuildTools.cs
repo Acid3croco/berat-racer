@@ -21,6 +21,13 @@ public static class BuildTools
         Debug.Log("[berat] project set up");
     }
 
+    /// <summary>Build target folder. Pass "-out Path/To.app" on the command line to build somewhere else (e.g. next to a running copy).</summary>
+    static string OutputPath()
+    {
+        var a = System.Environment.GetCommandLineArgs(); int i = System.Array.IndexOf(a, "-out");
+        return i >= 0 && i + 1 < a.Length ? a[i + 1] : "../Build/BeratRacer.app";
+    }
+
     [MenuItem("Berat/Build macOS")]
     public static void BuildMac()
     {
@@ -28,7 +35,7 @@ public static class BuildTools
         var opts = new BuildPlayerOptions
         {
             scenes = new[] { "Assets/Scenes/Main.unity" },
-            locationPathName = Path.GetFullPath("../Build/BeratRacer.app"),
+            locationPathName = Path.GetFullPath(OutputPath()),
             target = BuildTarget.StandaloneOSX, options = BuildOptions.None
         };
         var report = BuildPipeline.BuildPlayer(opts);

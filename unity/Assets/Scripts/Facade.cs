@@ -26,7 +26,7 @@ public static class Facade
 
     // Haute-Garonne / Comminges village houses: mostly rendered walls (crepi) in white-beige-cream, plus 'brique toulousaine' pink-orange brick
     // From photos of Berat (docs/berat-style-guide.md): ~30% exposed brique foraine, ~40% cream / pink / off-white render, ~20% white-grey modern, some ochre.
-    static readonly Color32 Brick = C(181, 101, 74), BrickTrim = C(200, 104, 60);
+    static readonly Color32 Brick = C(214, 142, 108), BrickTrim = C(222, 128, 80);
     static readonly Color32[] HouseWalls = {
         C(232, 220, 200), C(232, 220, 200), C(217, 169, 143), C(239, 234, 224), C(236, 228, 208), C(226, 212, 184),      // render: cream, warm pink, off-white
         C(242, 240, 234), C(207, 203, 196), C(242, 240, 234),                                                              // modern white / light grey
@@ -45,7 +45,7 @@ public static class Facade
 
     public static FacadeStyle Pick(BuildingData bd, System.Random r)
     {
-        var s = new FacadeStyle { kind = bd.k ?? "house", glass = C(52, 66, 84), frame = C(244, 242, 236), plinth = C(150, 144, 134) };
+        var s = new FacadeStyle { kind = bd.k ?? "house", glass = new Color32(84, 106, 128, 70), frame = C(244, 242, 236), plinth = C(150, 144, 134) };
         s.shutter = Pick(r, Shutters); s.door = Pick(r, Doors);
         switch (s.kind)
         {
