@@ -87,28 +87,65 @@ public static class Facade
     static void Q(MeshBuilder mb, Edge e, float t0, float t1, float y0, float y1, float off, Color32 c)
         => mb.Quad(mb.Vertex(P(e, t0, y0, off), c), mb.Vertex(P(e, t1, y0, off), c), mb.Vertex(P(e, t1, y1, off), c), mb.Vertex(P(e, t0, y1, off), c));
 
+    /// <summary>A box standing on the wall: from wall offset o0 to o1 (front, top, bottom and both ends; the back is against the wall).</summary>
+    static void Slab(MeshBuilder mb, Edge e, float t0, float t1, float y0, float y1, float o0, float o1, Color32 col)
+    {
+        int a = mb.Vertex(P(e, t0, y0, o0), col), b = mb.Vertex(P(e, t1, y0, o0), col), c = mb.Vertex(P(e, t1, y1, o0), col), d = mb.Vertex(P(e, t0, y1, o0), col);
+        int a1 = mb.Vertex(P(e, t0, y0, o1), col), b1 = mb.Vertex(P(e, t1, y0, o1), col), c1 = mb.Vertex(P(e, t1, y1, o1), col), d1 = mb.Vertex(P(e, t0, y1, o1), col);
+        mb.Quad(a1, b1, c1, d1); mb.Quad(d, c, c1, d1); mb.Quad(a, b, b1, a1); mb.Quad(a, d, d1, a1); mb.Quad(b, c, c1, b1);
+    }
+
+    /// <summary>A rectangular frame standing `depth` proud of the wall, with an opening whose reveal goes back to `glassOff`: front bars, inner reveal and outer sides.</summary>
+    static void Ring(MeshBuilder mb, Edge e, float t0, float t1, float y0, float y1, float bar, float depth, float glassOff, Color32 col)
+    {
+        float[] ot = { t0, t1, t1, t0 }, oy = { y0, y0, y1, y1 }, it = { t0 + bar, t1 - bar, t1 - bar, t0 + bar }, iy = { y0 + bar, y0 + bar, y1 - bar, y1 - bar };
+        int[] o0 = new int[4], o1 = new int[4], i1 = new int[4], ig = new int[4];
+        for (int k = 0; k < 4; k++)
+        {
+            o0[k] = mb.Vertex(P(e, ot[k], oy[k], 0f), col); o1[k] = mb.Vertex(P(e, ot[k], oy[k], depth), col);
+            i1[k] = mb.Vertex(P(e, it[k], iy[k], depth), col); ig[k] = mb.Vertex(P(e, it[k], iy[k], glassOff), col);
+        }
+        for (int k = 0; k < 4; k++)
+        {
+            int n = (k + 1) % 4;
+            mb.Quad(o1[k], o1[n], i1[n], i1[k]);            // front bar
+            mb.Quad(i1[k], i1[n], ig[n], ig[k]);            // reveal
+            mb.Quad(o0[k], o0[n], o1[n], o1[k]);            // outer side
+        }
+    }
+
+    const float GlassOff = 0.09f, FrameDepth = 0.14f, FrameBar = 0.07f;
+
     static void Window(MeshBuilder mb, Edge e, float tc, float y, float w, float h, FacadeStyle s, bool shutters, bool arched)
     {
-        Q(mb, e, tc - w / 2 - 0.07f, tc + w / 2 + 0.07f, y - 0.07f, y + h + 0.07f, 0.02f, s.frame);
-        Q(mb, e, tc - w / 2, tc + w / 2, y, y + h, 0.035f, s.glass);
-        if (arched) mb.Tri(mb.Vertex(P(e, tc - w / 2, y + h, 0.035f), s.glass), mb.Vertex(P(e, tc + w / 2, y + h, 0.035f), s.glass), mb.Vertex(P(e, tc, y + h + w * 0.75f, 0.035f), s.glass));
-        else Q(mb, e, tc - 0.02f, tc + 0.02f, y, y + h, 0.045f, s.frame);                 // central mullion
-        Q(mb, e, tc - w / 2 - 0.15f, tc + w / 2 + 0.15f, y - 0.1f, y - 0.01f, 0.06f, s.sill);
+        Ring(mb, e, tc - w / 2 - FrameBar, tc + w / 2 + FrameBar, y - FrameBar, y + h + FrameBar, FrameBar, FrameDepth, GlassOff, s.frame);
+        Q(mb, e, tc - w / 2, tc + w / 2, y, y + h, GlassOff, s.glass);
+        if (arched)
+        {
+            mb.Tri(mb.Vertex(P(e, tc - w / 2 - FrameBar, y + h, 0.04f), s.frame), mb.Vertex(P(e, tc + w / 2 + FrameBar, y + h, 0.04f), s.frame), mb.Vertex(P(e, tc, y + h + w * 0.75f + FrameBar * 1.6f, 0.04f), s.frame));
+            mb.Tri(mb.Vertex(P(e, tc - w / 2, y + h, GlassOff), s.glass), mb.Vertex(P(e, tc + w / 2, y + h, GlassOff), s.glass), mb.Vertex(P(e, tc, y + h + w * 0.75f, GlassOff), s.glass));
+        }
+        else
+        {
+            Slab(mb, e, tc - 0.02f, tc + 0.02f, y, y + h, GlassOff, GlassOff + 0.04f, s.frame);                                             // central mullion
+            Slab(mb, e, tc - w / 2 - 0.14f, tc + w / 2 + 0.14f, y + h + FrameBar, y + h + FrameBar + 0.10f, 0f, 0.17f, s.sill);           // lintel
+        }
+        Slab(mb, e, tc - w / 2 - 0.16f, tc + w / 2 + 0.16f, y - FrameBar - 0.07f, y - FrameBar, 0f, 0.2f, s.sill);                           // sill
         if (shutters)
         {
             float sw = w * 0.5f;
-            Q(mb, e, tc - w / 2 - sw - 0.03f, tc - w / 2 - 0.03f, y - 0.02f, y + h + 0.02f, 0.05f, s.shutter);
-            Q(mb, e, tc + w / 2 + 0.03f, tc + w / 2 + sw + 0.03f, y - 0.02f, y + h + 0.02f, 0.05f, s.shutter);
+            Slab(mb, e, tc - w / 2 - sw - 0.05f, tc - w / 2 - 0.05f, y - 0.04f, y + h + 0.04f, 0f, 0.07f, s.shutter);
+            Slab(mb, e, tc + w / 2 + 0.05f, tc + w / 2 + sw + 0.05f, y - 0.04f, y + h + 0.04f, 0f, 0.07f, s.shutter);
         }
     }
 
     static void Door(MeshBuilder mb, Edge e, float tc, float yg, float w, float h, FacadeStyle s, bool arched)
     {
-        Q(mb, e, tc - w / 2 - 0.1f, tc + w / 2 + 0.1f, yg, yg + h + 0.1f, 0.02f, s.frame);
-        Q(mb, e, tc - w / 2, tc + w / 2, yg, yg + h, 0.04f, s.door);
-        if (arched) mb.Tri(mb.Vertex(P(e, tc - w / 2, yg + h, 0.04f), s.door), mb.Vertex(P(e, tc + w / 2, yg + h, 0.04f), s.door), mb.Vertex(P(e, tc, yg + h + w * 0.7f, 0.04f), s.door));
-        Q(mb, e, tc - w / 2 - 0.2f, tc + w / 2 + 0.2f, yg - 0.05f, yg + 0.12f, 0.35f, s.sill);   // step
-        Q(mb, e, tc + w * 0.28f, tc + w * 0.34f, yg + 1.0f, yg + 1.1f, 0.055f, C(220, 200, 120)); // handle
+        Ring(mb, e, tc - w / 2 - 0.1f, tc + w / 2 + 0.1f, yg, yg + h + 0.1f, 0.1f, 0.15f, 0.09f, s.frame);
+        Q(mb, e, tc - w / 2, tc + w / 2, yg + 0.1f, yg + h, 0.09f, s.door);
+        if (arched) mb.Tri(mb.Vertex(P(e, tc - w / 2, yg + h, 0.09f), s.door), mb.Vertex(P(e, tc + w / 2, yg + h, 0.09f), s.door), mb.Vertex(P(e, tc, yg + h + w * 0.7f, 0.09f), s.door));
+        Slab(mb, e, tc - w / 2 - 0.25f, tc + w / 2 + 0.25f, yg - 0.02f, yg + 0.14f, 0f, 0.45f, s.sill);                                     // step
+        Slab(mb, e, tc + w * 0.28f, tc + w * 0.34f, yg + 1.0f, yg + 1.1f, 0.09f, 0.15f, C(220, 200, 120));                                  // handle
     }
 
     public static void Build(BuildingData bd, List<Vector2> ring, FacadeStyle s, float yg, float top, MeshBuilder mb, System.Random rng, System.Func<float, float, float> roadClearance = null)
@@ -129,8 +166,8 @@ public static class Facade
             var e = new Edge { a = a, d = d, n = nrm, len = L, front = i == fe };
 
             // plinth band + roof-line cornice (thin, slightly darker/lighter strips break up the flat wall)
-            Q(mb, e, 0, L, yg, yg + 0.55f, 0.02f, s.plinth);
-            if (wallH > 3f) Q(mb, e, 0, L, top - 0.2f, top, 0.03f, Tint(s.wall, 1.06f));
+            Slab(mb, e, 0, L, yg, yg + 0.55f, 0f, 0.07f, s.plinth);
+            if (wallH > 3f) Slab(mb, e, 0, L, top - 0.25f, top, 0f, 0.22f, Tint(s.wall, 1.06f));
 
             if (s.kind == "silo" || s.kind == "greenhouse") continue;
 
@@ -166,7 +203,7 @@ public static class Facade
                     if (wy + h > top - 0.35f) continue;
                     Window(mb, e, tc, wy, w, h, s, s.mode == 0 && !strip, arched);
                 }
-                if (f > 0 && f < floors) Q(mb, e, 0, L, fy - 0.08f, fy + 0.08f, 0.03f, Tint(s.wall, 0.92f));   // floor string course
+                if (f > 0 && f < floors) Slab(mb, e, 0, L, fy - 0.08f, fy + 0.08f, 0f, 0.08f, Tint(s.wall, 0.92f));   // floor string course
             }
             if (e.front && bays == 0 && L >= 1.6f) Door(mb, e, L / 2, yg, 1.0f, 2.1f, s, false);
         }
@@ -195,9 +232,9 @@ public static class Facade
             float dw = Mathf.Min(e.len - 1f, s.kind == "barn" ? 4.2f : 2.6f), dh = Mathf.Min(top - yg - 0.3f, s.kind == "barn" ? 3.6f : 2.2f);
             float tc = e.len * F(rng, 0.35f, 0.65f);
             Color32 dc = s.kind == "barn" ? C(96, 78, 62) : (rng.NextDouble() < 0.5 ? C(240, 238, 232) : C(112, 84, 62));
-            Q(mb, e, tc - dw / 2 - 0.08f, tc + dw / 2 + 0.08f, yg, yg + dh + 0.08f, 0.02f, s.frame);
-            Q(mb, e, tc - dw / 2, tc + dw / 2, yg, yg + dh, 0.04f, dc);
-            for (int k = 1; k < 4; k++) Q(mb, e, tc - dw / 2, tc + dw / 2, yg + dh * k / 4f - 0.015f, yg + dh * k / 4f + 0.015f, 0.05f, Tint(dc, 0.8f));   // door panels
+            Ring(mb, e, tc - dw / 2 - 0.1f, tc + dw / 2 + 0.1f, yg, yg + dh + 0.1f, 0.1f, 0.16f, 0.09f, s.frame);
+            Q(mb, e, tc - dw / 2, tc + dw / 2, yg + 0.1f, yg + dh, 0.09f, dc);
+            for (int k = 1; k < 4; k++) Slab(mb, e, tc - dw / 2, tc + dw / 2, yg + dh * k / 4f - 0.03f, yg + dh * k / 4f + 0.03f, 0.09f, 0.14f, Tint(dc, 0.8f));   // door panels
         }
         else if (e.len > 3.2f && rng.NextDouble() < 0.4)                // one small window
             Window(mb, e, e.len * 0.5f, yg + 1.2f, 0.7f, 0.7f, s, false, false);
@@ -225,24 +262,24 @@ public static class Facade
         float dh = Mathf.Min(2.35f, wallH - 0.9f);
         Color32 glass = Tint(s.glass, 1.35f);
         float doorT = e.len * 0.5f;
-        Q(mb, e, t0 - 0.08f, t1 + 0.08f, yg + 0.2f, yg + dh + 0.08f, 0.02f, s.frame);
-        Q(mb, e, t0, doorT - 0.55f, yg + 0.3f, yg + dh, 0.04f, glass);
-        Q(mb, e, doorT + 0.55f, t1, yg + 0.3f, yg + dh, 0.04f, glass);
-        Q(mb, e, doorT - 0.5f, doorT + 0.5f, yg, yg + dh, 0.04f, s.frame);
-        Q(mb, e, doorT - 0.42f, doorT + 0.42f, yg + 0.1f, yg + dh - 0.1f, 0.05f, glass);
+        Ring(mb, e, t0 - 0.08f, t1 + 0.08f, yg + 0.2f, yg + dh + 0.08f, 0.08f, 0.16f, 0.09f, s.frame);
+        Q(mb, e, t0, doorT - 0.55f, yg + 0.3f, yg + dh, 0.09f, glass);
+        Q(mb, e, doorT + 0.55f, t1, yg + 0.3f, yg + dh, 0.09f, glass);
+        Slab(mb, e, doorT - 0.5f, doorT + 0.5f, yg, yg + dh, 0.08f, 0.13f, s.frame);
+        Q(mb, e, doorT - 0.42f, doorT + 0.42f, yg + 0.1f, yg + dh - 0.1f, 0.19f, glass);
         if (wallH > 3.1f)
         {   // sign band across the top of the shopfront
             float sy0 = yg + dh + 0.12f, sy1 = Mathf.Min(top - 0.25f, sy0 + 0.75f);
             if (sy1 > sy0 + 0.3f)
             {
-                Q(mb, e, t0, t1, sy0, sy1, 0.05f, s.sign);
-                Q(mb, e, t0 + 0.15f, t1 - 0.15f, sy0 + 0.1f, sy1 - 0.1f, 0.06f, Tint(s.sign, 1.18f));
+                Slab(mb, e, t0, t1, sy0, sy1, 0f, 0.16f, s.sign);
+                Slab(mb, e, t0 + 0.15f, t1 - 0.15f, sy0 + 0.1f, sy1 - 0.1f, 0.16f, 0.21f, Tint(s.sign, 1.18f));
             }
             if (s.cross && sy1 + 0.2f < top)
             {   // pharmacy green cross (drawn on the wall above the sign when there is room, otherwise on the sign)
                 float cy = Mathf.Min(top - 0.9f, sy1 + 0.6f);
-                Q(mb, e, doorT - 0.55f, doorT + 0.55f, cy - 0.18f, cy + 0.18f, 0.07f, s.sign);
-                Q(mb, e, doorT - 0.18f, doorT + 0.18f, cy - 0.55f, cy + 0.55f, 0.07f, s.sign);
+                Slab(mb, e, doorT - 0.55f, doorT + 0.55f, cy - 0.18f, cy + 0.18f, 0f, 0.09f, s.sign);
+                Slab(mb, e, doorT - 0.18f, doorT + 0.18f, cy - 0.55f, cy + 0.55f, 0f, 0.09f, s.sign);
             }
         }
         if (s.awning && wallH > 3.4f)
