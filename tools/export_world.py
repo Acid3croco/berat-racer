@@ -166,11 +166,13 @@ col = col[iy, ix]
 col = gaussian_filter(col, sigma=(1.2, 1.2, 0))
 grey = col.mean(axis=2, keepdims=True)
 col = (grey + (col - grey) * 1.5) * np.array([1.10, 1.16, 0.90])           # warm + saturate: fields read green / ochre
-# dark, nearly neutral pixels are ploughed soil / gravel in the orthophoto: give them an earthy brown instead of charcoal
-lum = col.mean(axis=2, keepdims=True); sat = (col.max(axis=2, keepdims=True) - col.min(axis=2, keepdims=True)) / np.maximum(col.max(axis=2, keepdims=True), 1)
-earth = np.clip((0.22 - sat) / 0.14, 0, 1) * np.clip((150 - lum) / 70, 0, 1)
-col = col * (1 - earth) + (lum * np.array([1.22, 1.02, 0.80]) + 14) * earth
-col = np.clip(np.maximum(col * 1.12, 96), 0, 255)                                   # no black shadow blobs
+# Dark orthophoto pixels are cast shadows (bluish) or ploughed soil: the ground itself is never blue-black. Pull them toward warm olive soil / grass
+lum = col.mean(axis=2, keepdims=True)
+dark = np.clip((135 - lum) / 65, 0, 1)
+olive = np.concatenate([lum * 1.16 + 14, lum * 1.12 + 17, lum * 0.78 + 6], axis=2)
+col = col * (1 - dark) + olive * dark
+col = col * 1.12
+_l = col.mean(axis=2, keepdims=True); col = np.clip(col * np.maximum(1.0, 96.0 / np.maximum(_l, 1.0)), 0, 255)      # brightness floor on LUMINANCE, so the earthy tint survives                                   # no black shadow blobs
 (OUT / "terrain_colors.bin").write_bytes(col[::-1].astype(np.uint8).tobytes())
 print("terrain", height.shape, height.min(), height.max())
 
