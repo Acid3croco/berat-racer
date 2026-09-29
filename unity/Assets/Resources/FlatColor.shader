@@ -10,6 +10,7 @@ Shader "Berat/FlatColor"
         _Noise ("Surface noise amount", Float) = 0
         _NoiseScale ("Surface noise scale", Float) = 0.8
         _Emission ("Emission", Float) = 0
+        _Detail ("Procedural material detail (tarmac, grass, tiles, brick)", Float) = 1
         _HoleRadius ("Far terrain: hole radius around the player", Float) = 0
         _HoleCenter ("Far terrain: hole centre (xz)", Vector) = (0,0,0,0)
     }
@@ -31,7 +32,7 @@ Shader "Berat/FlatColor"
             #include "Lighting.cginc"
             #include "AutoLight.cginc"
 
-            float _Noise, _NoiseScale, _Emission, _HoleRadius; float4 _HoleCenter;
+            float _Noise, _NoiseScale, _Emission, _HoleRadius, _Detail; float4 _HoleCenter;
 
             struct appdata { float4 vertex : POSITION; fixed4 color : COLOR; };
             struct v2f { float4 pos : SV_POSITION; fixed4 col : COLOR; float3 wp : TEXCOORD0; SHADOW_COORDS(1) UNITY_FOG_COORDS(2) };
@@ -68,6 +69,36 @@ Shader "Berat/FlatColor"
                 {
                     float nz = vnoise(i.wp * _NoiseScale) * 0.65 + vnoise(i.wp * _NoiseScale * 3.7 + 11.0) * 0.35;
                     albedo *= 1.0 + _Noise * grainFade * (nz - 0.5) * 2.0;
+                }
+                if (_Detail > 0 && i.col.a > 0.9)
+                {   // procedural material detail, chosen from the vertex colour and slope (no texture assets): tarmac, grass, roof tiles, brick / render
+                    float mx = max(albedo.r, max(albedo.g, albedo.b)), mn = min(albedo.r, min(albedo.g, albedo.b));
+                    float chroma = (mx - mn) / max(mx, 1e-3);
+                    float isGreen = smoothstep(0.02, 0.06, albedo.g - max(albedo.r, albedo.b) * 1.1);
+                    float isGrey = (1.0 - smoothstep(0.10, 0.22, chroma)) * (1.0 - isGreen);
+                    float isWarm = smoothstep(0.25, 0.5, chroma) * (1.0 - isGreen);
+                    float flatUp = smoothstep(0.82, 0.96, n.y), roofy = smoothstep(0.2, 0.35, n.y) * (1.0 - smoothstep(0.75, 0.9, n.y)), wall = 1.0 - smoothstep(0.15, 0.3, abs(n.y));
+                    float d = 1.0;
+                    // tarmac: aggregate speckle up close, patched repairs further out
+                    float f1 = saturate(1.0 - (camDist - 6.0) / 30.0), f2 = saturate(1.0 - (camDist - 30.0) / 150.0);
+                    d += isGrey * flatUp * (mx < 0.35 ? 1.0 : 0.4) * ((h31(floor(i.wp * float3(46.0, 1.0, 46.0))) - 0.5) * 0.16 * f1 + (vnoise(i.wp * 0.45) - 0.5) * 0.14 * f2);
+                    // grass: blade streaks and broad mottling
+                    float g1 = saturate(1.0 - (camDist - 8.0) / 60.0), g2 = saturate(1.0 - (camDist - 40.0) / 400.0);
+                    d += isGreen * flatUp * ((vnoise(float3(i.wp.x * 7.0, 0.0, i.wp.z * 2.3)) - 0.5) * 0.18 * g1 + (vnoise(i.wp * 0.06) - 0.5) * 0.22 * g2);
+                    // roof tiles: courses across the slope, offset every other row, each tile slightly different
+                    float2 tang = normalize(float2(-n.z, n.x) + 1e-4);
+                    float th = dot(i.wp.xz, tang), rows = i.wp.y * 3.0 / max(0.35, 1.0 - n.y * n.y);
+                    float rf = frac(rows), cf = frac(th * 2.6 + floor(rows) * 0.5);
+                    float tileFade = saturate(1.0 - (camDist - 15.0) / 55.0) * saturate(1.0 - fwidth(rows) * 1.6);
+                    float mortar = (1.0 - smoothstep(0.0, 0.10, rf)) * 0.5 + (1.0 - smoothstep(0.0, 0.07, cf)) * 0.3;
+                    d += isWarm * roofy * tileFade * (-mortar * 0.28 + (h31(float3(floor(th * 2.6 + floor(rows) * 0.5), floor(rows), 3.0)) - 0.5) * 0.14);
+                    // walls: brick courses on warm walls, faint render streaks on pale ones
+                    float wrows = i.wp.y * 6.5, wt = dot(i.wp.xz, normalize(float2(-n.z, n.x) + 1e-4));
+                    float wf = saturate(1.0 - (camDist - 10.0) / 40.0) * saturate(1.0 - fwidth(wrows) * 1.6);
+                    float bm = (1.0 - smoothstep(0.0, 0.12, frac(wrows))) * 0.6 + (1.0 - smoothstep(0.0, 0.05, frac(wt * 4.0 + floor(wrows) * 0.5))) * 0.4;
+                    d += wall * wf * (isWarm * smoothstep(0.12, 0.25, mx) * (-bm * 0.22 + (h31(float3(floor(wt * 4.0 + floor(wrows) * 0.5), floor(wrows), 7.0)) - 0.5) * 0.10)
+                                      + (1.0 - isWarm * smoothstep(0.12, 0.25, mx)) * (vnoise(float3(wt * 1.5, i.wp.y * 0.35, 0.0)) - 0.5) * 0.10);
+                    albedo *= d;
                 }
                 float gloss = 1.0 - i.col.a;                                    // alpha 255 = matte
                 float3 L = normalize(_WorldSpaceLightPos0.xyz);
