@@ -2,7 +2,17 @@ using UnityEngine;
 
 public static class GameAssets
 {
-    static Shader flat;
+    static Shader flat, water;
+    public static Shader Water
+    {
+        get
+        {
+            if (water == null) water = Resources.Load<Shader>("BeratWater");
+            if (water == null) water = Shader.Find("Berat/Water");
+            if (water == null) water = Flat;
+            return water;
+        }
+    }
     /// <summary>The flat vertex-colour shader. Lives in Resources/ so player builds never strip it.</summary>
     public static Shader Flat
     {

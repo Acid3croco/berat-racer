@@ -47,7 +47,7 @@ public class GameBootstrap : MonoBehaviour
         var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
         var camera = camGo.AddComponent<Camera>();
         camera.clearFlags = CameraClearFlags.Skybox; camera.allowHDR = true; camera.allowMSAA = true;
-        camera.nearClipPlane = 0.3f; camera.farClipPlane = 3400f;
+        camera.nearClipPlane = 0.3f; camera.farClipPlane = 60000f;
         camGo.AddComponent<AudioListener>();
         cam = camGo.AddComponent<FollowCamera>(); mainCam = camera;
 
@@ -73,6 +73,7 @@ public class GameBootstrap : MonoBehaviour
         if (inputTest) StartCoroutine(InputTest());
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0) StartCoroutine(PhysTest.HullRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audit") >= 0) { world.AuditObstacles(new Vector2(1037.5f, 1062.5f)); Application.Quit(); }
@@ -128,6 +129,7 @@ public class GameBootstrap : MonoBehaviour
     // ------------------------------------------------------------ lighting / atmosphere
     Light sun;
     /// <summary>Afternoon sun with cascaded soft shadows, gradient ambient, procedural sky and matching aerial haze. All values are linear.</summary>
+    public const float FogDensity = 0.00013f;      // exp2: ~90% visibility at 3 km, 25% at 10 km, gone by 25 km
     void SetupEnvironment()
     {
         var go = new GameObject("Sun");
@@ -143,7 +145,7 @@ public class GameBootstrap : MonoBehaviour
         var skyShader = Resources.Load<Shader>("BeratSky");
         if (skyShader != null) RenderSettings.skybox = new Material(skyShader); else Log.I("gfx", "sky shader missing");
         var haze = new Color(0.42f, 0.62f, 0.90f);
-        RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared; RenderSettings.fogColor = haze; RenderSettings.fogDensity = 0.00036f;
+        RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared; RenderSettings.fogColor = haze; RenderSettings.fogDensity = FogDensity;
 
         QualitySettings.antiAliasing = 4;
         QualitySettings.shadows = ShadowQuality.All; QualitySettings.shadowResolution = ShadowResolution.VeryHigh; QualitySettings.shadowProjection = ShadowProjection.StableFit;
@@ -464,6 +466,57 @@ public class GameBootstrap : MonoBehaviour
         Application.Quit();
     }
     void nextForce() { world.ForceStream(); }
+
+    /// <summary>Streaming showcase: chase view, long view over mid + far terrain, 8 km overview, and the nearest water. Renders to docs/shots/world_*.png.</summary>
+    IEnumerator WorldShots()
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
+        var camera = mainCam; cam.enabled = false; map.enabled = false;
+        var rt = new RenderTexture(1600, 900, 24); camera.targetTexture = rt; camera.fieldOfView = 55f;
+        var tex = new Texture2D(1600, 900, TextureFormat.RGB24, false);
+        var sp = world.Data.Spawn; Vector3 at = new Vector3(sp.x, sp.y, sp.z); Vector3 fwd = Quaternion.Euler(0, sp.heading, 0) * Vector3.forward;
+        // nearest water polygon among the loaded chunks
+        Vector3? water = null; float bestD = 1e9f;
+        foreach (var ch in world.Data.Chunks.Values)
+            foreach (var a in ch.Areas)
+            {
+                if (a.ring.Length < 12) continue;
+                Vector2 c = Vector2.zero; int n = a.ring.Length / 2; for (int i = 0; i < n; i++) c += new Vector2(a.ring[i * 2], a.ring[i * 2 + 1]); c /= n;
+                float d = Vector2.Distance(c, new Vector2(at.x, at.z));
+                if (d < bestD) { bestD = d; water = new Vector3(c.x, a.level, c.y); }
+            }
+        Vector3? stream = null; bestD = 1e9f;
+        foreach (var ch in world.Data.Chunks.Values)
+            foreach (var l in ch.Lines)
+            {
+                if (l.hw < 3f) continue;
+                Vector3 m = new Vector3(l.pts[(l.pts.Length / 6) * 3], l.pts[(l.pts.Length / 6) * 3 + 1], l.pts[(l.pts.Length / 6) * 3 + 2]);
+                float d = Vector2.Distance(new Vector2(m.x, m.z), new Vector2(at.x, at.z));
+                if (d < bestD) { bestD = d; stream = m; }
+            }
+        Log.I("worldshots", $"water area at {(water.HasValue ? water.Value.ToString() : "none")}, wide stream at {(stream.HasValue ? stream.Value.ToString() : "none")}");
+        var views = new System.Collections.Generic.List<(string name, Vector3 pos, Vector3 look, float nearR, float midR)>
+        {
+            ("world_chase", car.transform.position - car.transform.forward * 5.3f + Vector3.up * 2.4f, car.transform.position + Vector3.up * 1.1f + car.transform.forward * 3f, 1500f, 5000f),
+            ("world_long_view", at + Vector3.up * 70f, at + fwd * 6000f + Vector3.up * 40f, 1500f, 5000f),
+            ("world_overview_8km", at + Vector3.up * 7000f - fwd * 6000f, at + fwd * 2000f, 800f, 5000f),
+            ("world_horizon_40km", at + Vector3.up * 1200f, at + fwd * 30000f + Vector3.up * 300f, 800f, 5000f),
+        };
+        if (water.HasValue) views.Add(("world_water", water.Value + new Vector3(0, 35f, -70f), water.Value, 1500f, 5000f));
+        if (stream.HasValue) views.Add(("world_stream", stream.Value + new Vector3(0, 14f, -22f), stream.Value, 1500f, 5000f));
+        foreach (var v in views)
+        {
+            camera.transform.position = v.pos; camera.transform.LookAt(v.look);
+            shotFocus = v.pos; world.ForceStream();
+            yield return world.LoadAround(new Vector3(v.pos.x, 0, v.pos.z), v.nearR, v.midR);
+            world.UpdateStreaming(shotFocus.Value); yield return null; yield return null; yield return new WaitForSecondsRealtime(0.3f);
+            camera.Render();
+            RenderTexture.active = rt; tex.ReadPixels(new Rect(0, 0, 1600, 900), 0, 0); tex.Apply(); RenderTexture.active = null;
+            File.WriteAllBytes(Path.Combine(dir, v.name + ".png"), tex.EncodeToPNG());
+            Log.I("worldshots", $"{v.name}: chunks={world.LoadedMid} near={world.LoadedNear}");
+        }
+        Log.I("worldshots", "done"); Application.Quit();
+    }
     static string Sanitize(string s) { foreach (char ch in Path.GetInvalidFileNameChars()) s = s.Replace(ch, '_'); return s.Replace(' ', '_').Replace('\'', '_'); }
 
     /// <summary>Renders the synth offline to WAV files for a set of driving situations and logs peak/NaN health.</summary>
@@ -564,7 +617,7 @@ public class GameBootstrap : MonoBehaviour
     IEnumerator GroundScan()
     {
         yield return new WaitForSeconds(0.5f);
-        var road = world.Data.Roads[269]; int n = road.pts.Length / 3;
+        RoadData road = null; foreach (var r0 in world.Data.Roads) if (!r0.bridge && (road == null || r0.pts.Length > road.pts.Length)) road = r0; int n = road.pts.Length / 3;
         var pts = new List<Vector3>(); for (int i = 0; i < n; i++) pts.Add(new Vector3(road.pts[i * 3], road.pts[i * 3 + 1], road.pts[i * 3 + 2]));
         var prof = new List<Vector3>();      // x = s, y = ribbon-mode height, z = terrain-mode height
         float acc = 0; Vector3 prev = pts[0];

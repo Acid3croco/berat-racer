@@ -11,6 +11,8 @@ Build/
 # python
 .venv/
 __pycache__/
-# raw downloaded data (regenerate with tools/fetch*.py); the exported game data in unity/Assets/StreamingAssets is committed
+# raw downloaded data (regenerate with tools/fetch*.py) and the generated game data (tools/build_world.py, ~300 MB)
 data/
+tools/data/
+world/
 .DS_Store

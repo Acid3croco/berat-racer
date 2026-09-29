@@ -37,6 +37,7 @@ public static class Tyre
         {
             case Surface.Dirt: return new SurfaceProps { mu = 0.66f, slide = 0.90f, rolling = 0.045f };
             case Surface.Grass: return new SurfaceProps { mu = 0.52f, slide = 0.88f, rolling = 0.070f };
+            case Surface.Water: return new SurfaceProps { mu = 0.42f, slide = 0.86f, rolling = 0.110f };
             default: return new SurfaceProps { mu = 1.00f, slide = 0.82f, rolling = 0.013f };
         }
     }

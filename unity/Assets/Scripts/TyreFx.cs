@@ -48,7 +48,7 @@ public class TyreFx : MonoBehaviour
     {
         if (car == null || skid[0] == null) return;
         Alive = 0;
-        Color dust = car.CurrentSurface == Surface.Dirt ? new Color(0.68f, 0.55f, 0.38f, 0.55f) : car.CurrentSurface == Surface.Grass ? new Color(0.55f, 0.62f, 0.38f, 0.5f) : new Color(0.93f, 0.93f, 0.95f, 0.5f);
+        Color dust = car.CurrentSurface == Surface.Water ? new Color(0.82f, 0.90f, 0.96f, 0.55f) : car.CurrentSurface == Surface.Dirt ? new Color(0.68f, 0.55f, 0.38f, 0.55f) : car.CurrentSurface == Surface.Grass ? new Color(0.55f, 0.62f, 0.38f, 0.5f) : new Color(0.93f, 0.93f, 0.95f, 0.5f);
         for (int i = 0; i < 4; i++)
         {
             float k = car.WheelFx[i];

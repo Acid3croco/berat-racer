@@ -1,28 +1,37 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public enum Surface { Grass, Asphalt, Dirt }
+public enum Surface { Grass, Asphalt, Dirt, Water }
 
 /// <summary>Spatial hash of road segments: tells the car what it is driving on, and where bridge decks are.</summary>
 public class RoadIndex
 {
-    struct Seg { public Vector2 a, b; public float ya, yb, hw; public Surface s; public bool bridge; }
+    struct Seg { public Vector2 a, b; public float ya, yb, hw; public Surface s; public bool bridge; public int owner; }
     const float CellSize = 24f, FadeWidth = 0.6f;
     readonly Dictionary<long, List<Seg>> grid = new Dictionary<long, List<Seg>>();
 
     static long Key(int cx, int cz) => ((long)cx << 32) ^ (uint)cz;
 
-    public RoadIndex(RoadData[] roads)
+    readonly Dictionary<int, List<long>> ownerCells = new Dictionary<int, List<long>>();
+
+    public RoadIndex() { }
+    public RoadIndex(RoadData[] roads) { Add(-2, roads); }
+
+    /// <summary>Registers the owned segments of these roads under an owner id (a chunk), so the whole set can be removed again.</summary>
+    public void Add(int owner, RoadData[] roads)
     {
+        if (!ownerCells.TryGetValue(owner, out var cells)) ownerCells[owner] = cells = new List<long>();
         foreach (var r in roads)
         {
-            for (int i = 0; i + 5 < r.pts.Length; i += 3)
+            int n = r.pts.Length / 3;
+            for (int k = r.lead; k < n - 1 - r.trail; k++)
             {
+                int i = k * 3;
                 var s = new Seg
                 {
                     a = new Vector2(r.pts[i], r.pts[i + 2]), ya = r.pts[i + 1],
                     b = new Vector2(r.pts[i + 3], r.pts[i + 5]), yb = r.pts[i + 4],
-                    hw = r.hw, s = r.dirt ? Surface.Dirt : Surface.Asphalt, bridge = r.bridge
+                    hw = r.hw, s = r.dirt ? Surface.Dirt : Surface.Asphalt, bridge = r.bridge, owner = owner
                 };
                 float m = s.hw + 0.7f;                                          // road half width + fade margin: a query near a cell border must still find the road
                 int x0 = Mathf.FloorToInt((Mathf.Min(s.a.x, s.b.x) - m) / CellSize), x1 = Mathf.FloorToInt((Mathf.Max(s.a.x, s.b.x) + m) / CellSize);
@@ -30,12 +39,20 @@ public class RoadIndex
                 for (int cx = x0; cx <= x1; cx++)
                     for (int cz = z0; cz <= z1; cz++)
                     {
-                        long k = Key(cx, cz);
-                        if (!grid.TryGetValue(k, out var list)) grid[k] = list = new List<Seg>();
-                        list.Add(s);
+                        long key = Key(cx, cz);
+                        if (!grid.TryGetValue(key, out var list)) grid[key] = list = new List<Seg>();
+                        list.Add(s); cells.Add(key);
                     }
             }
         }
+    }
+
+    public void Remove(int owner)
+    {
+        if (!ownerCells.TryGetValue(owner, out var cells)) return;
+        foreach (long key in new HashSet<long>(cells))
+            if (grid.TryGetValue(key, out var list)) { list.RemoveAll(s => s.owner == owner); if (list.Count == 0) grid.Remove(key); }
+        ownerCells.Remove(owner);
     }
 
     /// <summary>
@@ -52,9 +69,14 @@ public class RoadIndex
         foreach (var s in list)
         {
             Vector2 ab = s.b - s.a;
-            float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+            float tRaw = Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f), t = Mathf.Clamp01(tRaw);
             float d = (p - (s.a + ab * t)).magnitude;
             if (d > s.hw + FadeWidth) continue;
+            if (s.bridge)
+            {   // a deck ends square at its abutment: no rounded cap sticking out over the approach road (that made a step of up to half a metre)
+                float slack = 0.25f / Mathf.Max(ab.magnitude, 0.25f);
+                if (tRaw < -slack || tRaw > 1f + slack) continue;
+            }
             float y = Mathf.Lerp(s.ya, s.yb, t);
             if (s.bridge)
             {

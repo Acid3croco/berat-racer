@@ -182,7 +182,7 @@ public static class PhysTest
             float dt = Time.fixedDeltaTime; steps++;
             if (steps < 300) { lastVy = car.Body.linearVelocity.y; lastSpeed = car.Body.linearVelocity.magnitude; lastPos = car.transform.position; continue; }   // let it get going
             float vy = car.Body.linearVelocity.y, av = (vy - lastVy) / dt; lastVy = vy;
-            var cpos = car.transform.position; if (Mathf.Abs(cpos.x) > 3100f || Mathf.Abs(cpos.z) > 3100f) continue;     // ignore the edge of the world
+            var cpos = car.transform.position; if (Mathf.Abs(cpos.x) > WorldData.Half - 100f || Mathf.Abs(cpos.z) > WorldData.Half - 100f) continue;     // ignore the edge of the world
             lp += (av - lp) * (1f - Mathf.Exp(-dt / 0.6f)); lpFast += (av - lpFast) * (1f - Mathf.Exp(-dt / 0.08f));
             double harsh = av - lpFast; harshSq += harsh * harsh;
             { float h0 = car.DebugEnvelope[0]; if (envN >= 2) { float a2 = (h0 - 2 * envP1 + envP2) / (dt * dt); envSq += (double)a2 * a2; envCnt++; } envP2 = envP1; envP1 = h0; envN++; }
@@ -228,26 +228,30 @@ public static class PhysTest
     {
         world = w; car = c; Time.timeScale = 2f;
         yield return new WaitForSecondsRealtime(0.5f);
-        float hdg = Mathf.Atan2(2f - (-30f), 758f - 790f) * Mathf.Rad2Deg;
-        float gy = world.GroundHeight(-30f, 790f, 300f, out _);
-        car.Respawn(new Vector3(-30f, gy + 0.8f, 790f), hdg);
+        yield return world.LoadAround(new Vector3(3f, 0, 756f), 900f, 1500f);
+        RoadData bridge = null; float bd = 1e9f;                // the bridge deck nearest the reported spot
+        foreach (var rd in world.Data.Roads) { if (!rd.bridge) continue; var m = rd.XZ[rd.XZ.Length / 2]; float d = Vector2.Distance(m, new Vector2(3f, 756f)); if (d < bd) { bd = d; bridge = rd; } }
+        if (bridge == null) { Log.I("bridgetest", "no bridge near (3,756)"); Application.Quit(); yield break; }
+        Log.I("bridgetest", $"bridge piece {bd:F0} m from the reported spot, {bridge.XZ.Length} points");
+        var route = Chain(world.Data, bridge, 3);             // the bridge and both approaches, in driving order
+        Vector2 p0 = route[0], p1 = route[Mathf.Min(4, route.Count - 1)];
+        float hdg = Mathf.Atan2(p1.x - p0.x, p1.y - p0.y) * Mathf.Rad2Deg;
+        float gy = world.GroundHeight(p0.x, p0.y, 300f, out _);
+        car.Respawn(new Vector3(p0.x, gy + 0.8f, p0.y), hdg);
         var auto = new Autopilot(world.Data, car) { TargetKmh = 50f };
-        var route = new List<Vector2>();                       // the bridge and both approaches, in driving order
-        foreach (int ri in new[] { 135, 160, 161, 136, 257, 927 })
-        {
-            var rd = world.Data.Roads[ri]; var pts = new List<Vector2>();
-            for (int i = 0; i < rd.pts.Length / 3; i++) pts.Add(new Vector2(rd.pts[i * 3], rd.pts[i * 3 + 2]));
-            if (route.Count > 0 && Vector2.Distance(route[route.Count - 1], pts[0]) > Vector2.Distance(route[route.Count - 1], pts[pts.Count - 1])) pts.Reverse();
-            route.AddRange(pts);
-        }
         auto.FollowPolyline(route);
-        float t0 = Time.time, lastVy = 0, maxA = 0; int minWheels = 4;
+        float t0 = Time.time, lastVy = 0, maxA = 0; int minWheels = 4; bool dumped = false;
         while (Time.time - t0 < 14f)
         {
             auto.Drive(Time.fixedDeltaTime); yield return new WaitForFixedUpdate();
             float av = (car.Body.linearVelocity.y - lastVy) / Time.fixedDeltaTime; lastVy = car.Body.linearVelocity.y;
             if (Time.time - t0 > 1f) maxA = Mathf.Max(maxA, Mathf.Abs(av));
             minWheels = Mathf.Min(minWheels, car.WheelsOnGround);
+            if (!dumped && Time.time - t0 > 6f && car.SpeedKmh < 4f)
+            {   // stalled: say what the car is touching
+                dumped = true; var cp = car.transform.position;
+                foreach (var col in Physics.OverlapSphere(cp + Vector3.up * 0.5f, 3.5f)) Log.I("bridgetest", $"  stalled at ({cp.x:F1},{cp.y:F1},{cp.z:F1}): touching '{col.transform.parent?.name}/{col.name}' {col.GetType().Name} bounds {col.bounds.min} .. {col.bounds.max}");
+            }
             if (Mathf.Abs(((Time.time - t0) * 2f) - Mathf.Round((Time.time - t0) * 2f)) < 0.011f)
             {
                 var p = car.transform.position; float g = world.GroundHeight(p.x, p.z, p.y, out Surface sf); world.Roads.Query(p.x, p.z, p.y, out float deck);
@@ -256,6 +260,35 @@ public static class PhysTest
         }
         Log.I("bridgetest", $"peak vertical acceleration {maxA:F1} m/s2, fewest wheels on ground {minWheels}");
         Application.Quit();
+    }
+
+    /// <summary>The seed road piece plus up to `hops` connected pieces on each side (joined end to end), in driving order.</summary>
+    static List<Vector2> Chain(WorldData data, RoadData seed, int hops)
+    {
+        List<Vector2> Grow(List<Vector2> pts)
+        {
+            var used = new HashSet<RoadData> { seed };
+            for (int h = 0; h < hops; h++)
+            {
+                Vector2 end = pts[pts.Count - 1]; RoadData best = null; bool rev = false; float bestD = 4f;
+                foreach (var r in data.Roads)
+                {
+                    if (used.Contains(r) || r.XZ.Length < 2) continue;
+                    float d0 = Vector2.Distance(r.XZ[0], end), d1 = Vector2.Distance(r.XZ[r.XZ.Length - 1], end);
+                    if (d0 < bestD) { bestD = d0; best = r; rev = false; } else if (d1 < bestD) { bestD = d1; best = r; rev = true; }
+                }
+                if (best == null) break;
+                used.Add(best); var np = new List<Vector2>(best.XZ); if (rev) np.Reverse(); pts.AddRange(np);
+            }
+            return pts;
+        }
+        var fwd = Grow(new List<Vector2>(seed.XZ));
+        var back = Grow(new List<Vector2>(System.Linq.Enumerable.Reverse(seed.XZ)));
+        back.Reverse();
+        var seedPts = seed.XZ.Length;
+        // back = [..., seed] in driving order, fwd = [seed, ...]; join them on the seed
+        var route = new List<Vector2>(back.GetRange(0, back.Count - seedPts)); route.AddRange(fwd);
+        return route;
     }
 
     /// <summary>Whole-car collision: drop the car on its side / roof onto flat ground and onto a slope and check no hull point sinks in.</summary>

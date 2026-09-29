@@ -1,6 +1,6 @@
 # Berat Racer
 
-A low-poly, sim-arcade driving game set on the **real roads and terrain of Bérat (31370), Haute-Garonne**, built from French open geodata: IGN **LiDAR HD** elevation, **BD TOPO** roads and buildings, IGN orthophotos and OpenStreetMap. About 41 km² are playable, in Unity 6 (macOS / Apple Silicon tested).
+A low-poly, sim-arcade driving game set on the **real roads and terrain of Bérat (31370), Haute-Garonne**, built from French open geodata: IGN **LiDAR HD** elevation, **BD TOPO** roads and buildings, IGN orthophotos and OpenStreetMap. **About 1,000 km² (32 x 32 km) are playable** and streamed in chunks, in Unity 6 (macOS / Apple Silicon tested).
 
 ![village overview](docs/shots/view_village_overview.png)
 
@@ -8,18 +8,22 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 |---|---|
 | ![chase](docs/shots/view_chase_spawn.png) | ![church](docs/shots/church_Église_Saint-Pierre.png) |
 | ![pharmacy](docs/shots/pharmacy_Pharmacie_Vert_Nature.png) | ![tyre smoke](docs/shots/tyre_smoke_3.png) |
+| ![long view](docs/shots/world_long_view.png) | ![water](docs/shots/world_water.png) |
+| ![8 km overview](docs/shots/world_overview_8km.png) | ![40 km horizon](docs/shots/world_horizon_40km.png) |
 
 ## What is in it
 
 - **Real world**: the terrain follows the LiDAR bare-earth model; roads are the BD TOPO centrelines draped on it with real widths, level bridge decks (from the LiDAR *surface* model), a network-consistent height profile, painted centre and edge lines, gravel verges.
-- **Procedural buildings**: 3,500 BD TOPO footprints (cut out of every road corridor) with facades chosen per building type (house, barn, shop, pharmacy, town hall, school, church...), gable roofs only where the roof truly fits, regional colours (crépi, brique foraine, canal tiles). Types come from BD TOPO plus OSM places (Pharmacie Vert Nature, Mairie, Église Saint-Pierre with its octagonal tower...). See `docs/berat-style-guide.md`.
+- **Procedural buildings**: BD TOPO footprints (about 60,000 in the whole map) (cut out of every road corridor) with facades chosen per building type (house, barn, shop, pharmacy, town hall, school, church...), gable roofs only where the roof truly fits, regional colours (crépi, brique foraine, canal tiles). Types come from BD TOPO plus OSM places (Pharmacie Vert Nature, Mairie, Église Saint-Pierre with its octagonal tower...). See `docs/berat-style-guide.md`.
+- **A 1,000 km² world, streamed** (`WorldBuilder`, `ChunkMeshes`, `tools/build_world.py`): the map is cut into 400 m chunks. Everything within **5 km** of the car is loaded (16 m terrain, roads, building shells, water); within **1.6 km** it gets full detail (4 m terrain, road markings, facades, trees, hedges, poles, building colliders). The whole map out to **50 km** stays resident as a 64 m terrain with the orthophoto colours (forests and villages included). Chunks are read, parsed and meshed on worker threads; the main thread only creates Unity objects, a few ms per frame, and holds the car still if it ever outruns the terrain.
+- **Water**: BD TOPO ponds, reservoirs, river surfaces, streams and canals, with levels taken from the LiDAR ground and a channel carved into the terrain. Animated, translucent water shader with sun glint and sky reflection; driving through it slows the car (drag, less grip, spray).
 - **Nature and street furniture**: 55,000 trees and 21,000 hedges / shrubs at the LiDAR canopy maxima, lamp posts in the village, utility poles with wires in the country. Nothing solid stands on a road.
 - **Three cars, three characters** (`CarSpec.cs`): a Hot Hatch (RWD), a **Peugeot 406 V6** (FWD saloon, soft ride) and a **Porsche 911 GT3 (992)** (rear-engine, 9000 rpm, big wing and downforce). `F` switches car.
 - **Vehicle dynamics** (`CarController`, `Tyre`, `Drivetrain`): per-wheel angular velocity with slip ratio and slip angle from the contact-patch velocity; a combined-slip tyre curve with load sensitivity and lateral relaxation; engine torque curve, clutch (solved exactly against the driven axle each step), automatic gearbox, open / limited-slip differential; ABS, traction control and slip-angle-limited steering; springs, dampers and anti-roll bars over a contact envelope rolled across the heightfield; the whole hull collides with the ground.
 - **Look**: real sun with cascaded soft shadows, sky-gradient ambient, a procedural sky with clouds, haze, glossy paint and glass, HDR + MSAA + bloom + ACES tone mapping, fine grain on fields / asphalt / walls, far-terrain level of detail.
 - **Speed feel** (`docs/speed-feel-research.md`): FOV 70 -> 100 deg with speed, look-ahead, acceleration pull-back, shake, radial blur + vignette, procedural engine / wind / tyre audio, tyre smoke and skid marks, controller rumble.
 - **Cameras**: chase, close chase, hood, bumper, far chase; free look that orbits the car; rear view.
-- **Map mode**: 10 m ... 1 km zoom (3 steps per decade), pan clamped to the map border, 5 m grid overlay when zoomed in, teleport to the exact terrain height under the crosshair.
+- **Map mode**: 10 m ... 10 km zoom (3 steps per decade), pan with WASD / stick or by dragging with the mouse (a quick click that does not move teleports; holding still does nothing), pan clamped to the map border, 5 m grid overlay when zoomed in, teleport to the exact terrain height under the crosshair.
 - **Bug-report coordinates**: the top-right box shows the 5 x 5 m cell, local metres, elevation and Lambert-93. `K` copies the spot, `J` jumps to coordinates on the clipboard, `-goto x,z` starts there.
 - **Autopilot** that follows the real road network (demo and test driver).
 
@@ -53,24 +57,25 @@ Road benchmark (autopilot, 150 s on the real roads): invisible stops 3 -> 0, ver
 
 ## Run it
 
-1. Install Unity **6000.0.84f1** (Apple Silicon build), open the `unity/` folder, run *Berat ▸ Build macOS* (or `BuildTools.BuildMac` in batch mode). The exported map data is already committed under `unity/Assets/StreamingAssets/berat`, so nothing else is needed.
-2. Launch `Build/BeratRacer.app`. Logs: `~/Library/Logs/BeratRacer/berat.log`.
+1. Generate the map data (about 30-60 min of downloading, ~3 min of processing, ~300 MB in `world/`; see *Build the map data* below). It is not committed.
+2. Install Unity **6000.0.84f1** (Apple Silicon build), open the `unity/` folder, run *Berat ▸ Build macOS* (or `BuildTools.BuildMac` in batch mode).
+3. Launch `Build/BeratRacer.app`. Logs: `~/Library/Logs/BeratRacer/berat.log`.
 
-## Rebuild the map data
+## Build the map data
 
 ```sh
 uv sync
-uv run python tools/fetch.py          # LiDAR HD MNT/MNH rasters + BD TOPO roads/buildings (IGN Géoplateforme)
-uv run python tools/fetch_ortho.py    # orthophoto for ground and roof colours
-uv run python tools/fetch_osm.py      # OSM points of interest
-uv run python tools/export_world.py   # -> unity/Assets/StreamingAssets/berat
+cd tools
+uv run python fetch_big.py        # LiDAR HD MNT/MNH (2 m) + orthophoto (4 m), 900 tiles, resumable  -> tools/data/big
+uv run python fetch_vectors.py    # BD TOPO roads, buildings, hydrography + OSM points of interest, 10 x 10 sectors, resumable
+uv run python build_world.py      # -> world/ (chunks/, far.bin, spawn.json, world.json; copied into the app by the build)
 ```
 
-`tools/fetch.py` has the area (`CX`, `CY`, `HALF`, Lambert-93): change them to build a different place in France.
+`build_world.py` processes the 100 sectors of 3.2 km in parallel, each with a 240 m margin so borders match exactly (`--sectors 4:4,5:5` for a subset, `--jobs N`). The area is `CX`, `CY` in `tools/fetch.py` (Lambert-93) and `HALF` in `fetch_big.py`: change them to build a different place in France.
 
 ## Headless tests
 
-The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-maptest`, `-camtest`, `-shots`, `-carshots`, `-smokeshots`, `-audiotest`, `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
+The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-maptest`, `-camtest`, `-shots`, `-worldshots` (streaming showcase: chase, long view, 8 km overview, 40 km horizon, water), `-carshots`, `-smokeshots`, `-audiotest`, `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
 
 ## Data & attribution
 

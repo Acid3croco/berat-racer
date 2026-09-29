@@ -58,6 +58,7 @@ public class CarController : MonoBehaviour
     public readonly Vector3[] WheelPoint = new Vector3[4];
     public readonly Surface[] SurfaceUnderWheel = new Surface[4];
     public Surface CurrentSurface { get; private set; }
+    bool waitingForGround;
     public event System.Action Respawned;
     public event System.Action<float> Impact;
     public bool AbsActive { get; private set; }
@@ -154,6 +155,13 @@ public class CarController : MonoBehaviour
     {
         if (World == null || !World.Ready || w == null) return;
         float dt = Time.fixedDeltaTime;
+        if (!World.Flat && !World.FootprintLoaded(transform.position))
+        {   // streaming has not delivered the terrain under the car (or it is past the map edge): hold it in place rather than let it fall through
+            if (!waitingForGround) { waitingForGround = true; Log.I("car", $"waiting for terrain at ({transform.position.x:F0},{transform.position.z:F0})"); }
+            Body.linearVelocity = Vector3.zero; Body.angularVelocity = Vector3.zero; Body.AddForce(-Physics.gravity, ForceMode.Acceleration);
+            return;
+        }
+        waitingForGround = false;
         Vector3 vel = Body.linearVelocity; float speed = vel.magnitude, fwdSpeed = ForwardSpeed;
         LongAccel = Mathf.Lerp(LongAccel, Mathf.Clamp((fwdSpeed - prevFwdSpeed) / dt, -25f, 25f), 0.03f); prevFwdSpeed = fwdSpeed;
 
@@ -180,6 +188,12 @@ public class CarController : MonoBehaviour
         }
         WheelsOnGround = grounded;
         CurrentSurface = w[0].surf;
+        int wet = 0; for (int i = 0; i < 4; i++) if (w[i].grounded && w[i].surf == Surface.Water) wet++;
+        if (wet > 0)
+        {   // wading: hydrodynamic drag grows with depth and with the square of speed
+            float depth = Mathf.Clamp(World.WaterDepth(transform.position.x, transform.position.z), 0f, 0.7f);
+            Body.AddForce(-vel * speed * 26f * depth * (wet / 4f), ForceMode.Force);
+        }
         // ---- 2. suspension forces (spring + damper + anti-roll + bump stop)
         for (int i = 0; i < 4; i++)
         {
