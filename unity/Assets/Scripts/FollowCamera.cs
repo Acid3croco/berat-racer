@@ -10,15 +10,15 @@ public class FollowCamera : MonoBehaviour
 {
     public CarController Car;
     public CamMode Mode = CamMode.Chase;
-    public float RestFov = 70f, MaxFov = 100f, FullSpeedKmh = 250f;   // vertical FOV 70 -> 100 deg (research: >100 stretches the edges badly)
+    public float RestFov = 72f, MaxFov = 104f, FullSpeedKmh = 200f;   // vertical FOV 70 -> 100 deg (research: >100 stretches the edges badly)
 
     struct Rig { public string name; public float dist, height, look, fov, shake; public bool rigid; public Vector3 local; public float pitch; }
     Rig[] Rigs = new Rig[5];
     public void Configure(CarSpec sp)
     {
         float L = sp.Length, H = sp.Height, gy = sp.GroundY;
-        Rigs[0] = new Rig { name = "Chase", dist = L * 1.30f, height = H * 1.34f, look = 4f, fov = 0, shake = 1f };
-        Rigs[1] = new Rig { name = "Close chase", dist = L * 0.92f, height = H * 0.95f, look = 5f, fov = 3, shake = 1f };
+        Rigs[0] = new Rig { name = "Chase", dist = L * 1.0f, height = H * 0.40f, look = 5f, fov = 0, shake = 1f };
+        Rigs[1] = new Rig { name = "Close chase", dist = L * 0.76f, height = H * 0.22f, look = 6f, fov = 3, shake = 1f };
         Rigs[2] = new Rig { name = "Hood", rigid = true, local = new Vector3(0, gy + H * 0.86f, sp.A - 0.95f), pitch = -2f, fov = 6, shake = 0.6f };
         Rigs[3] = new Rig { name = "Bumper", rigid = true, local = new Vector3(0, gy + 0.42f, sp.ZFront - 0.02f), pitch = 0f, fov = 8, shake = 0.5f };
         Rigs[4] = new Rig { name = "Far chase", dist = L * 2.5f, height = H * 3.2f, look = 6f, fov = -5, shake = 0.5f };
@@ -27,6 +27,19 @@ public class FollowCamera : MonoBehaviour
     public float AimErrorDeg => Car == null ? 0f : Vector3.Angle(transform.forward, (Car.transform.position + Vector3.up * 1.1f) - transform.position);
     public string ModeName => Rigs[(int)Mode].name;
     public float ModeShownAt { get; private set; } = -10f;
+
+    // g-forces as felt by the driver, sampled every physics step: lateral (cornering), vertical (bumps, compressions, crests) and longitudinal (braking dive)
+    Vector3 prevVel, gSm;                                                        // gSm: x lateral, y vertical, z longitudinal (m/s2, smoothed)
+    public Vector3 GForce => gSm;
+    void FixedUpdate()
+    {
+        if (Car == null) return;
+        Vector3 v = Car.Body.linearVelocity; Vector3 a = (v - prevVel) / Mathf.Max(Time.fixedDeltaTime, 1e-4f); prevVel = v;
+        Vector3 loc = new Vector3(Vector3.Dot(a, Car.transform.right), a.y, Vector3.Dot(a, Car.transform.forward));
+        loc = new Vector3(Mathf.Clamp(loc.x, -40f, 40f), Mathf.Clamp(loc.y, -40f, 40f), Mathf.Clamp(loc.z, -40f, 40f));
+        float k = 1f - Mathf.Exp(-9f * Time.fixedDeltaTime);
+        gSm = Vector3.Lerp(gSm, loc, k);
+    }
 
     Vector3 heading = Vector3.forward;
     float impact, accelSm, yawOff, pitchOff, lastLook;
@@ -78,16 +91,29 @@ public class FollowCamera : MonoBehaviour
         {
             Vector3 dirH = Quaternion.Euler(0, yaw, 0) * heading;                      // direction the camera looks along (horizontal)
             Vector3 focus = Car.transform.position + Vector3.up * 1.1f;
-            Vector3 back = -dirH * (rig.dist + sp * 0.005f + pull);
-            Vector3 offs = back + Vector3.up * (rig.height + sp * 0.003f);
+            Vector3 back = -dirH * (rig.dist + pull * 0.4f);                                // the follow distance stays put at any speed: the FOV carries the speed
+            Vector3 offs = back + Vector3.up * rig.height;
             offs = Quaternion.AngleAxis(pitchOff, Vector3.Cross(Vector3.up, dirH)) * offs;   // orbit up / down
             Vector3 pos = focus + offs;
             transform.position = Vector3.Lerp(transform.position, pos, 1f - Mathf.Exp(-9f * dt));
+            if (Car.World != null && !Car.World.Flat)
+            {   // stay off the ground when close to it
+                float gy = Car.World.GroundHeight(transform.position.x, transform.position.z, transform.position.y, out _) + 0.45f;
+                if (transform.position.y < gy) transform.position = new Vector3(transform.position.x, gy, transform.position.z);
+            }
             // free look orbits AROUND the car: the further you swing away from the default view, the more the look-ahead fades and the aim settles on the car itself
             float free = Mathf.Clamp01(Mathf.Abs(Mathf.DeltaAngle(0f, yaw)) / 20f + Mathf.Abs(pitchOff) / 20f);
             Vector3 lookAt = focus + dirH * (rig.look + sp * 0.045f) * (1f - free);
             transform.rotation = Quaternion.LookRotation(lookAt - transform.position, Vector3.up);
         }
+
+        // g-force feel: the camera moves like the driver's head. Cornering slides it to the outside and leans it, bumps and compressions push it down, crests float it up, braking dives it.
+        float gScale = rig.rigid ? 0.3f : 1f, gk = Mathf.Clamp01(sp / 25f);                        // stationary: no sway from small jitters
+        Vector3 gs = gSm;
+        Vector3 head = transform.right * Mathf.Clamp(-gs.x * 0.012f, -0.35f, 0.35f) * gk + Vector3.up * Mathf.Clamp(-gs.y * 0.010f, -0.22f, 0.22f) * gk;
+        transform.position += head * gScale;
+        float roll = Mathf.Clamp(-gs.x * 0.14f, -3.5f, 3.5f) * gk, pitchG = Mathf.Clamp(-gs.z * 0.10f - gs.y * 0.03f, -2.5f, 3.5f) * gk;
+        transform.rotation = Quaternion.AngleAxis(roll * gScale, transform.forward) * Quaternion.AngleAxis(pitchG * gScale, transform.right) * transform.rotation;
 
         // shake: gentle low-frequency rumble (speed^2, slip) + decaying impact kicks
         float amp = (0.0004f + 0.0022f * spN * spN + 0.0015f * Car.SlipAmount) * rig.shake + 0.07f * impact;
@@ -98,7 +124,7 @@ public class FollowCamera : MonoBehaviour
 
         if (cam != null)
         {
-            float fov = Mathf.Lerp(RestFov, MaxFov, spN) + rig.fov;
+            float fov = Mathf.Lerp(RestFov, MaxFov, Mathf.Pow(spN, 0.8f)) + rig.fov;
             cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, fov, 1f - Mathf.Exp(-4f * dt));
         }
     }
@@ -106,7 +132,7 @@ public class FollowCamera : MonoBehaviour
     public void Snap()
     {
         if (Car == null) return;
-        Vector3 f = Car.transform.forward; f.y = 0; heading = f.normalized; yawOff = pitchOff = 0f; accelSm = 0f;
+        Vector3 f = Car.transform.forward; f.y = 0; heading = f.normalized; yawOff = pitchOff = 0f; accelSm = 0f; gSm = Vector3.zero; prevVel = Car.Body.linearVelocity;
         var rig = Rigs[(int)Mode];
         transform.position = rig.rigid ? Car.transform.TransformPoint(rig.local) : Car.transform.position + Vector3.up * 1.1f - heading * rig.dist + Vector3.up * rig.height;
         transform.rotation = rig.rigid ? Car.transform.rotation : Quaternion.LookRotation(Car.transform.position + Vector3.up * 1.1f - transform.position, Vector3.up);
