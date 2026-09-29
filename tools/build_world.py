@@ -15,7 +15,7 @@ x in [-16000 + 400 ci, +400), z in [-16000 + 400 cj, +400).
 
 Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs 8] [--out DIR]
 """
-import argparse, gzip, hashlib, json, struct, sys, time, collections
+import argparse, gzip, hashlib, json, struct, sys, time, collections, zlib
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
@@ -136,7 +136,9 @@ def road_halfwidth(p):
 def densify(xy, step=2.0):
     d = np.r_[0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
     if d[-1] < 1e-6: return None
-    t = np.arange(0, d[-1], step); t = np.r_[t, d[-1]]
+    t = np.arange(0, d[-1], step)
+    if len(t) > 1 and d[-1] - t[-1] < 0.6 * step: t = t[:-1]                           # no sliver at the end: it would give the ribbon a noisy end tangent
+    t = np.r_[t, d[-1]]
     return np.c_[np.interp(t, d, xy[:, 0]), np.interp(t, d, xy[:, 1])]
 
 def smooth_free(y, win=17):
@@ -180,7 +182,8 @@ def process_roads(win, wbox, feats):
                 y = np.linspace(y0, y1, len(y))
             else: y = smooth_free(y)
             raw.append(dict(xy=xy, y=y, bridge=bridge, hw=hw0, dirt=p["nature"] in ("Chemin", "Route empierrée"),
-                            name=next((p[k] for k in ("nom_1_gauche", "nom_1_droite") if p.get(k)), ""), imp=str(p.get("importance"))))
+                            name=next((p[k] for k in ("nom_1_gauche", "nom_1_droite") if p.get(k)), ""), imp=str(p.get("importance")),
+                            fid=zlib.crc32(p["cleabs"].encode()) & 0x7FFFFFFF, t0=(0.0, 0.0), t1=(0.0, 0.0)))
     if not raw: return raw
     ends = []
     for i, r in enumerate(raw):
@@ -204,6 +207,24 @@ def process_roads(win, wbox, feats):
             s_ = np.r_[0, np.cumsum(np.hypot(np.diff(r["xy"][:, 0]), np.diff(r["xy"][:, 1])))]
             span = max(min(30.0, 0.5 * s_[-1]), 2.0)
             y += d * np.clip(1.0 - (s_ if ends[k][1] == 0 else s_[-1] - s_) / span, 0.0, 1.0)
+    # ---- joins: every end of a cluster snaps to the cluster centre (fading out over 8 m), and where exactly two roads meet along a gentle bend
+    #      both get the SAME tangent at the joint, so their ribbons meet edge to edge instead of leaving a wedge
+    for members in groups.values():
+        if len(members) < 2: continue
+        cen = np.mean([[ends[k][2], ends[k][3]] for k in members], axis=0)
+        inward = []
+        for k in members:
+            r = raw[ends[k][0]]; xy = r["xy"]; first = ends[k][1] == 0
+            u = xy[1] - xy[0] if first else xy[-2] - xy[-1]
+            inward.append(u / max(float(np.hypot(*u)), 1e-6))
+            s_ = np.r_[0, np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))]
+            dist = s_ if first else s_[-1] - s_
+            xy += (cen - (xy[0] if first else xy[-1]))[None, :] * np.clip(1.0 - dist / 8.0, 0.0, 1.0)[:, None]
+        if len(members) == 2:
+            T = inward[1] - inward[0]; n = float(np.hypot(*T))
+            if n > 1.6:                                                             # arms more than ~106 degrees apart: a gentle bend, not a corner
+                T = (float(T[0] / n), float(T[1] / n))
+                for k in members: raw[ends[k][0]]["t0" if ends[k][1] == 0 else "t1"] = T
     return raw
 
 # ------------------------------------------------------------------ colour (ported)
@@ -406,6 +427,14 @@ def process_sector(args):
         ly = seg[np.minimum(ii[m], len(seg) - 1), 2]
         bed = ly - WATER_DEPTH + np.maximum(dd[m] - w["hw"], 0) * 0.35
         h[m] = np.minimum(h[m], bed)
+    for r in raw:                                                                    # under a bridge deck the ground falls away, so the terrain mesh can never poke through the deck
+        if not r["bridge"]: continue
+        seg = densify_pts(np.c_[r["xy"], r["y"]], 1.0) if len(r["xy"]) > 1 else np.c_[r["xy"], r["y"]]
+        dd, ii = cKDTree(seg[:, :2]).query(pts, distance_upper_bound=r["hw"] + 6.0)
+        m = np.isfinite(dd)
+        if not m.any(): continue
+        drop = 1.4 * (1.0 - np.clip((dd[m] - (r["hw"] + 2.5)) / 3.5, 0.0, 1.0))
+        h[m] = np.minimum(h[m], seg[np.minimum(ii[m], len(seg) - 1), 2] - drop)
     if len(carve_pts):
         d, idx = cKDTree(carve_pts[:, :2]).query(pts, distance_upper_bound=16.0)
         hit = np.isfinite(d); ii = np.minimum(idx, len(carve_pts) - 1)
@@ -609,7 +638,8 @@ def process_sector(args):
                 for it in items:
                     r, seg = it[0], it[1]
                     wf(buf, r["hw"]); buf.append((1 if r["dirt"] else 0) | (2 if r["bridge"] else 0)); buf.append(int(r["imp"]) if r["imp"].isdigit() else 0)
-                    buf.append(it[2]); buf.append(it[3])
+                    buf.append(it[2]); buf.append(it[3]); wi(buf, r["fid"])
+                    wf(buf, *(r["t0"] if it[2] == 0 else (0.0, 0.0)), *(r["t1"] if it[3] == 0 else (0.0, 0.0)))
                     wstr(buf, "" if ctx else r["name"]); wi(buf, len(seg)); wfa(buf, np.c_[seg[:, 0], np.round(seg[:, 1], 4), seg[:, 2]].ravel())
             put_roads(road_b.get(key, [])); put_roads(ctx_b.get(key, []), True)
             wi(buf, len(area_b.get(key, [])))

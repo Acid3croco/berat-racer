@@ -74,6 +74,7 @@ public class GameBootstrap : MonoBehaviour
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
+        { var la2 = System.Environment.GetCommandLineArgs(); int si2 = System.Array.IndexOf(la2, "-shotat"); if (si2 >= 0 && si2 + 2 < la2.Length && float.TryParse(la2[si2 + 1], out float sx2) && float.TryParse(la2[si2 + 2], out float sz2)) StartCoroutine(ShotAt(sx2, sz2)); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-minimapshot") >= 0) StartCoroutine(MinimapShot());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-sparkletest") >= 0) StartCoroutine(SparkleTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
@@ -471,6 +472,31 @@ public class GameBootstrap : MonoBehaviour
         Application.Quit();
     }
     void nextForce() { world.ForceStream(); }
+
+    /// <summary>Views of one spot (local x,z): straight down, oblique from the south-west, and low along the nearest road. Saved to docs/shots/at_*.png.</summary>
+    IEnumerator ShotAt(float x, float z)
+    {
+        string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
+        var camera = mainCam; cam.enabled = false; map.enabled = false;
+        var rt = new RenderTexture(1600, 900, 24); camera.targetTexture = rt; camera.fieldOfView = 55f;
+        var tex = new Texture2D(1600, 900, TextureFormat.RGB24, false);
+        shotFocus = new Vector3(x, 0, z);                   // Update() streams around this, not around the car (else it unloads what we are loading)
+        yield return world.LoadAround(new Vector3(x, 0, z), 900f, 1500f);
+        float g = world.Data.TerrainHeight(x, z);
+        Vector2 rdir = Vector2.up; world.Roads.NearestRoad(x, z, 30f, out rdir);
+        var views = new (string n, Vector3 p, Vector3 look)[] {
+            ("top", new Vector3(x, g + 60f, z - 0.1f), new Vector3(x, g, z)),
+            ("oblique", new Vector3(x - 22f, g + 16f, z - 22f), new Vector3(x, g, z)),
+            ("road", new Vector3(x - rdir.x * 22f, g + 2.2f, z - rdir.y * 22f), new Vector3(x + rdir.x * 20f, g + 1f, z + rdir.y * 20f)) };
+        foreach (var v in views)
+        {
+            camera.transform.position = v.p; camera.transform.LookAt(v.look); shotFocus = v.p; world.ForceStream();
+            yield return world.LoadAround(new Vector3(x, 0, z), 900f, 1500f); world.UpdateStreaming(v.p); yield return null; yield return null;
+            camera.Render(); RenderTexture.active = rt; tex.ReadPixels(new Rect(0, 0, 1600, 900), 0, 0); tex.Apply(); RenderTexture.active = null;
+            File.WriteAllBytes(Path.Combine(dir, $"at_{v.n}.png"), tex.EncodeToPNG());
+        }
+        Log.I("shotat", "done"); Application.Quit();
+    }
 
     IEnumerator MinimapShot()
     {

@@ -6,7 +6,8 @@ using UnityEngine;
 
 public class RoadData
 {
-    public float hw; public bool dirt, bridge; public int lead, trail;      // owned segments k satisfy lead <= k < n-1-trail (the rest overlap the neighbours for a seamless ribbon)
+    public float hw; public bool dirt, bridge; public int lead, trail, fid; public Vector2 t0, t1;   // fid: source feature; t0/t1: shared tangent at a joint with the next road (zero = none)
+    // owned segments k satisfy lead <= k < n-1-trail (the rest overlap the neighbours for a seamless ribbon)
     public string name = ""; public string imp = "0"; public float[] pts;
     Vector2[] xz; public Vector2 Min, Max;
     /// <summary>Ground-plane polyline (x, z) of the OWNED part of the road (the overlap points that only shape the ribbon at chunk joins are left out), cached; also fills Min / Max.</summary>
@@ -109,7 +110,7 @@ public class ChunkData
         int n = br.ReadInt32(); var a = new RoadData[n];
         for (int i = 0; i < n; i++)
         {
-            var r = new RoadData { hw = br.ReadSingle() }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte();
+            var r = new RoadData { hw = br.ReadSingle() }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte(); r.fid = br.ReadInt32(); r.t0 = new Vector2(br.ReadSingle(), br.ReadSingle()); r.t1 = new Vector2(br.ReadSingle(), br.ReadSingle());
             r.name = Str(br); r.pts = Floats(br, br.ReadInt32() * 3); a[i] = r;
         }
         return a;

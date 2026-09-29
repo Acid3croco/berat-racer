@@ -17,6 +17,49 @@ public class ChunkMeshes
 
     struct BoxSpec { public Vector3 c, size; public float yaw; }
 
+    /// <summary>All road centrelines around this chunk (own + neighbours) in a coarse grid: is a point on ANOTHER road's carriageway?</summary>
+    class Corridors
+    {
+        struct Seg { public Vector2 a, b; public float hw; public int fid; }
+        readonly Dictionary<long, List<Seg>> grid = new Dictionary<long, List<Seg>>();
+        const float Cell = 16f;
+        static long Key(int x, int z) => ((long)x << 32) ^ (uint)z;
+        public Corridors(RoadData[] a, RoadData[] b)
+        {
+            foreach (var set in new[] { a, b })
+                foreach (var r in set)
+                {
+                    if (r.bridge) continue;
+                    for (int i = 0; i + 5 < r.pts.Length; i += 3)
+                    {
+                        var s = new Seg { a = new Vector2(r.pts[i], r.pts[i + 2]), b = new Vector2(r.pts[i + 3], r.pts[i + 5]), hw = r.hw, fid = r.fid };
+                        float m = s.hw + 1f;
+                        int x0 = Mathf.FloorToInt((Mathf.Min(s.a.x, s.b.x) - m) / Cell), x1 = Mathf.FloorToInt((Mathf.Max(s.a.x, s.b.x) + m) / Cell);
+                        int z0 = Mathf.FloorToInt((Mathf.Min(s.a.y, s.b.y) - m) / Cell), z1 = Mathf.FloorToInt((Mathf.Max(s.a.y, s.b.y) + m) / Cell);
+                        for (int cx = x0; cx <= x1; cx++)
+                            for (int cz = z0; cz <= z1; cz++)
+                            {
+                                if (!grid.TryGetValue(Key(cx, cz), out var l)) grid[Key(cx, cz)] = l = new List<Seg>();
+                                l.Add(s);
+                            }
+                    }
+                }
+        }
+        /// <summary>True if (x,z) lies within `inset` metres inside the carriageway of a road that is not feature `self`.</summary>
+        public bool OnOther(float x, float z, int self, float inset = 0f)
+        {
+            if (!grid.TryGetValue(Key(Mathf.FloorToInt(x / Cell), Mathf.FloorToInt(z / Cell)), out var list)) return false;
+            var p = new Vector2(x, z);
+            foreach (var s in list)
+            {
+                if (s.fid == self) continue;
+                Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+                if ((p - (s.a + ab * t)).magnitude < s.hw - inset) return true;
+            }
+            return false;
+        }
+    }
+
     static Color32 C(int r, int g, int b) => new Color32((byte)r, (byte)g, (byte)b, 255);
     static Color32 Tint(Color32 c, float f) => new Color32((byte)Mathf.Clamp(c.r * f, 0, 255), (byte)Mathf.Clamp(c.g * f, 0, 255), (byte)Mathf.Clamp(c.b * f, 0, 255), 255);
     static readonly Color32 Asphalt = new Color32(94, 94, 98, 255), Shoulder = new Color32(108, 102, 84, 255), Dirt = new Color32(158, 132, 96, 255),
@@ -28,7 +71,7 @@ public class ChunkMeshes
     {
         var m = new ChunkMeshes();
         m.BuildTerrainLow(d);
-        m.BuildRoads(d);
+        m.BuildRoads(d, new Corridors(d.Roads, d.Ctx));
         m.BuildBuildingShells(d);
         m.BuildWater(d);
         return m;
@@ -75,13 +118,15 @@ public class ChunkMeshes
             Vector3 q0 = new Vector3(r.pts[Mathf.Max(i - 1, 0) * 3], 0, r.pts[Mathf.Max(i - 1, 0) * 3 + 2]);
             Vector3 q1 = new Vector3(r.pts[Mathf.Min(i + 1, n - 1) * 3], 0, r.pts[Mathf.Min(i + 1, n - 1) * 3 + 2]);
             Vector3 dir = q1 - q0; dir.y = 0; dir = dir.sqrMagnitude > 1e-6f ? dir.normalized : Vector3.forward;
+            Vector2 joint = i == 0 && r.lead == 0 ? r.t0 : (i == n - 1 && r.trail == 0 ? r.t1 : Vector2.zero);
+            if (joint.sqrMagnitude > 0.5f) { Vector3 jd = new Vector3(joint.x, 0, joint.y); dir = Vector3.Dot(jd, dir) >= 0 ? jd : -jd; }      // both roads at a joint use one tangent: no wedge between their ribbons
             Vector3 side = new Vector3(dir.z, 0, -dir.x) * r.hw;
             p.y += RoadLift + (ri % 6) * 0.0009f;                  // tiny per-road bias so overlapping ribbons never z-fight
             left[i] = p - side; right[i] = p + side;
         }
     }
 
-    void BuildRoads(ChunkData d)
+    void BuildRoads(ChunkData d, Corridors cor)
     {
         var mb = Roads;
         for (int ri = 0; ri < d.Roads.Length; ri++)
@@ -101,7 +146,10 @@ public class ChunkMeshes
                 else if (!r.dirt)                                 // gravel verge on both sides
                 {
                     Vector3 wl0 = (left[k] - right[k]).normalized, wl1 = (left[k + 1] - right[k + 1]).normalized, down = Vector3.down * 0.012f;
+                    Vector3 lm = (left[k] + left[k + 1]) * 0.5f + wl0 * 0.2f, rm = (right[k] + right[k + 1]) * 0.5f - wl0 * 0.2f;
+                    if (!cor.OnOther(lm.x, lm.z, r.fid))                              // no verge across the mouth of a side road, or inside the main road it joins
                     mb.Quad(mb.Vertex(left[k] + down, Shoulder), mb.Vertex(left[k + 1] + down, Shoulder), mb.Vertex(left[k + 1] + wl1 * 0.45f + down * 2f, Shoulder), mb.Vertex(left[k] + wl0 * 0.45f + down * 2f, Shoulder));
+                    if (!cor.OnOther(rm.x, rm.z, r.fid))
                     mb.Quad(mb.Vertex(right[k] + down, Shoulder), mb.Vertex(right[k + 1] + down, Shoulder), mb.Vertex(right[k + 1] - wl1 * 0.45f + down * 2f, Shoulder), mb.Vertex(right[k] - wl0 * 0.45f + down * 2f, Shoulder));
                 }
             }
@@ -190,7 +238,7 @@ public class ChunkMeshes
     public static ChunkMeshes BuildNear(ChunkData d, ChunkMeshes m)
     {
         m.BuildTerrainFull(d);
-        m.BuildMarks(d);
+        m.BuildMarks(d, new Corridors(d.Roads, d.Ctx));
         var local = new RoadIndex(d.Roads); local.Add(-1, d.Ctx);                       // own + neighbouring roads: clearance for everything solid
         var boxes = m.BuildBuildingDetail(d);
         m.BuildStreetFurniture(d, local, boxes);
@@ -216,7 +264,7 @@ public class ChunkMeshes
             }
     }
 
-    void BuildMarks(ChunkData d)
+    void BuildMarks(ChunkData d, Corridors cor)
     {
         var mb = Marks; Vector3 lift = Vector3.up * 0.03f;
         for (int ri = 0; ri < d.Roads.Length; ri++)
@@ -228,6 +276,7 @@ public class ChunkMeshes
                 {
                     int k2 = Mathf.Min(k + 1, left.Length - 1);
                     Vector3 c0 = (left[k] + right[k]) * 0.5f, c1 = (left[k2] + right[k2]) * 0.5f, dv = c1 - c0; if (dv.sqrMagnitude < 1e-4f) continue;
+                    if (cor.OnOther(c0.x, c0.z, r.fid) || cor.OnOther(c1.x, c1.z, r.fid)) continue;              // no centre dash inside a junction
                     Vector3 side = Vector3.Cross(Vector3.up, dv.normalized) * 0.09f;
                     mb.Quad(mb.Vertex(c0 - side + lift, Paint), mb.Vertex(c0 + side + lift, Paint), mb.Vertex(c1 + side + lift, Paint), mb.Vertex(c1 - side + lift, Paint));
                 }
@@ -239,6 +288,7 @@ public class ChunkMeshes
                     {
                         Vector3 e0 = side == 0 ? left[k] : right[k], e1 = side == 0 ? left[k + 1] : right[k + 1];
                         Vector3 in0 = side == 0 ? -wl0 : wl0, in1 = side == 0 ? -wl1 : wl1;
+                        Vector3 em = (e0 + e1) * 0.5f; if (cor.OnOther(em.x, em.z, r.fid)) continue;             // edge lines stop at a side road's mouth and never run across the main road
                         mb.Quad(mb.Vertex(e0 + in0 * 0.14f + lift, Paint), mb.Vertex(e1 + in1 * 0.14f + lift, Paint), mb.Vertex(e1 + in1 * 0.25f + lift, Paint), mb.Vertex(e0 + in0 * 0.25f + lift, Paint));
                     }
                 }
@@ -416,7 +466,8 @@ public class ChunkMeshes
             float tr = Mathf.Clamp(h * 0.03f, 0.12f, 0.35f);
             int shape0 = (int)(hash >> 16 & 7);
             float trunkH = (shape0 < 5 || h < 5f) ? th + (h - th) * 0.075f + 0.7f : th;
-            int b0 = mb.Vertex(new Vector3(x - tr, y, z - tr), trunk), b1 = mb.Vertex(new Vector3(x + tr, y, z - tr), trunk), b2 = mb.Vertex(new Vector3(x + tr, y, z + tr), trunk), b3 = mb.Vertex(new Vector3(x - tr, y, z + tr), trunk);
+            float root = y - 2.5f;                                                                // trunks run well below the surface, so on a slope or a coarse terrain facet they still meet the ground
+            int b0 = mb.Vertex(new Vector3(x - tr, root, z - tr), trunk), b1 = mb.Vertex(new Vector3(x + tr, root, z - tr), trunk), b2 = mb.Vertex(new Vector3(x + tr, root, z + tr), trunk), b3 = mb.Vertex(new Vector3(x - tr, root, z + tr), trunk);
             int t0 = mb.Vertex(new Vector3(x - tr, y + trunkH, z - tr), trunk), t1 = mb.Vertex(new Vector3(x + tr, y + trunkH, z - tr), trunk), t2 = mb.Vertex(new Vector3(x + tr, y + trunkH, z + tr), trunk), t3 = mb.Vertex(new Vector3(x - tr, y + trunkH, z + tr), trunk);
             mb.Quad(b0, b1, t1, t0); mb.Quad(b1, b2, t2, t1); mb.Quad(b2, b3, t3, t2); mb.Quad(b3, b0, t0, t3);
             int shape = (int)(hash >> 16 & 7);
@@ -463,7 +514,7 @@ public class ChunkMeshes
             uint hash = (uint)((i + d.key * 6007) * 2246822519u); float rnd = (hash >> 9 & 255) / 255f;
             var leaf = C((int)(46 + 40 * rnd), (int)(96 + 46 * rnd), (int)(44 + 22 * rnd));
             float rad = Mathf.Clamp(h * 0.62f, 0.55f, 1.4f), hh = Mathf.Clamp(h, 0.9f, 2.4f);
-            int top = mb.Vertex(new Vector3(x, y + hh, z), leaf), bot = mb.Vertex(new Vector3(x, y + 0.05f, z), Tint(leaf, 0.7f)); int r0 = mb.V.Count;
+            int top = mb.Vertex(new Vector3(x, y + hh, z), leaf), bot = mb.Vertex(new Vector3(x, y - 0.5f, z), Tint(leaf, 0.7f)); int r0 = mb.V.Count;      // hedges sink a little into the ground too
             for (int k = 0; k < 6; k++) { float a = k * Mathf.PI / 3 + rnd * 2f; mb.Vertex(new Vector3(x + Mathf.Cos(a) * rad, y + hh * 0.42f, z + Mathf.Sin(a) * rad), k % 2 == 0 ? Tint(leaf, 1.1f) : leaf); }
             for (int k = 0; k < 6; k++) { mb.Tri(top, r0 + k, r0 + (k + 1) % 6); mb.Tri(bot, r0 + (k + 1) % 6, r0 + k); }
             if (hh > 1.3f) AddObstacle(local, new Vector3(x, y, z), rad * 0.75f, hh * 0.8f);

@@ -413,6 +413,47 @@ public class WorldBuilder : MonoBehaviour
         return terrain;
     }
 
+    /// <summary>
+    /// Is this point inside a building footprint (at the height of the walls)? If so `exit` is the nearest spot outside, 2.5 m off the wall.
+    /// A car that ended up inside (teleport onto a roof, tunnelling at speed) is otherwise trapped: the wall colliders push it back in from every side.
+    /// </summary>
+    public bool InsideBuilding(Vector3 p, out Vector3 exit)
+    {
+        exit = p; int ci0 = WorldData.ChunkIndex(p.x), cj0 = WorldData.ChunkIndex(p.z);
+        for (int dj = -1; dj <= 1; dj++)
+            for (int di = -1; di <= 1; di++)
+            {
+                int ci = ci0 + di, cj = cj0 + dj; if (ci < 0 || cj < 0 || ci >= WorldData.NC || cj >= WorldData.NC) continue;
+                if (!Data.Chunks.TryGetValue(cj * WorldData.NC + ci, out var c)) continue;
+                foreach (var b in c.Buildings)
+                {
+                    if (p.y > b.b + b.h + Mathf.Max(b.r, 0f) + 1f || p.y < b.b - 3f) continue;
+                    int n = b.p.Length / 2; if (n < 3) continue;
+                    bool inside = false; float minx = 1e9f, maxx = -1e9f, minz = 1e9f, maxz = -1e9f;
+                    for (int i = 0, j = n - 1; i < n; j = i++)
+                    {
+                        float xi = b.p[i * 2], zi = b.p[i * 2 + 1], xj = b.p[j * 2], zj = b.p[j * 2 + 1];
+                        minx = Mathf.Min(minx, xi); maxx = Mathf.Max(maxx, xi); minz = Mathf.Min(minz, zi); maxz = Mathf.Max(maxz, zi);
+                        if ((zi > p.z) != (zj > p.z) && p.x < (xj - xi) * (p.z - zi) / (zj - zi) + xi) inside = !inside;
+                    }
+                    if (!inside) continue;
+                    // nearest point on the outline, pushed outward (rings are counter-clockwise: the outward normal of edge d is (d.y, -d.x))
+                    float best = 1e9f; Vector2 q = default, nrm = default;
+                    for (int i = 0; i < n; i++)
+                    {
+                        Vector2 a = new Vector2(b.p[i * 2], b.p[i * 2 + 1]), e = new Vector2(b.p[((i + 1) % n) * 2], b.p[((i + 1) % n) * 2 + 1]), ab = e - a;
+                        float t = Mathf.Clamp01(Vector2.Dot(new Vector2(p.x, p.z) - a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+                        Vector2 pt = a + ab * t; float d = (pt - new Vector2(p.x, p.z)).sqrMagnitude;
+                        if (d < best) { best = d; q = pt; nrm = new Vector2(ab.y, -ab.x).normalized; }
+                    }
+                    Vector2 outp = q + nrm * 2.5f;
+                    exit = new Vector3(outp.x, p.y, outp.y);
+                    return true;
+                }
+            }
+        return false;
+    }
+
     /// <summary>Depth of water above the ground at (x,z) (0 when dry).</summary>
     public float WaterDepth(float x, float z)
     {
