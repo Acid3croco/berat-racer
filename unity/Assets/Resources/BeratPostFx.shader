@@ -48,6 +48,27 @@ Shader "Hidden/Berat/PostFx"
         c *= 1.0 - saturate(d * d * 2.2) * _Vig;
         return fixed4(pow(saturate(c), 1.0 / 2.2), 1);
     }
+
+    // FXAA (compact form of Lottes' 3.11): finds the local edge direction from luma and blurs along it. Runs on the final, tonemapped image.
+    float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+    fixed4 fragFxaa (v2f_img i) : SV_Target
+    {
+        float2 t = _MainTex_TexelSize.xy;
+        float3 cM = tex2D(_MainTex, i.uv).rgb;
+        float lM = luma(cM);
+        float lNW = luma(tex2D(_MainTex, i.uv + t * float2(-1, -1)).rgb), lNE = luma(tex2D(_MainTex, i.uv + t * float2(1, -1)).rgb);
+        float lSW = luma(tex2D(_MainTex, i.uv + t * float2(-1, 1)).rgb),  lSE = luma(tex2D(_MainTex, i.uv + t * float2(1, 1)).rgb);
+        float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE))), lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+        if (lMax - lMin < max(0.0312, lMax * 0.125)) return fixed4(cM, 1);                  // flat area: leave it
+        float2 dir = float2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+        float reduce = max((lNW + lNE + lSW + lSE) * 0.25 * 0.125, 1.0 / 128.0);
+        float rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+        dir = clamp(dir * rcp, -8.0, 8.0) * t;
+        float3 a = 0.5 * (tex2D(_MainTex, i.uv + dir * (1.0 / 3.0 - 0.5)).rgb + tex2D(_MainTex, i.uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+        float3 b = a * 0.5 + 0.25 * (tex2D(_MainTex, i.uv + dir * -0.5).rgb + tex2D(_MainTex, i.uv + dir * 0.5).rgb);
+        float lB = luma(b);
+        return fixed4((lB < lMin || lB > lMax) ? a : b, 1);
+    }
     ENDCG
     SubShader
     {
@@ -78,6 +99,13 @@ Shader "Hidden/Berat/PostFx"
             CGPROGRAM
             #pragma vertex vert_img
             #pragma fragment fragFinal
+            ENDCG
+        }
+        Pass
+        {
+            CGPROGRAM
+            #pragma vertex vert_img
+            #pragma fragment fragFxaa
             ENDCG
         }
     }

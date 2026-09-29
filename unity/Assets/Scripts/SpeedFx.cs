@@ -18,6 +18,7 @@ public class SpeedFx : MonoBehaviour
         var sh = Resources.Load<Shader>("BeratPostFx");
         if (sh == null || !sh.isSupported) { Log.I("fx", "PostFx shader missing/unsupported: post effects disabled"); enabled = false; return; }
         mat = new Material(sh);
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-nofxaa") >= 0) Fxaa = false;
         var cam = GetComponent<Camera>(); cam.allowHDR = true; cam.allowMSAA = true;
     }
 
@@ -26,6 +27,8 @@ public class SpeedFx : MonoBehaviour
         float target = (Car == null || Time.timeScale == 0f) ? 0f : Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(StartKmh, FullKmh, Car.SpeedKmh));
         Strength = Mathf.Lerp(Strength, target, 1f - Mathf.Exp(-4f * Time.unscaledDeltaTime));
     }
+
+    public bool Fxaa = true;
 
     void OnRenderImage(RenderTexture src, RenderTexture dst)
     {
@@ -39,7 +42,14 @@ public class SpeedFx : MonoBehaviour
         Graphics.Blit(a, b, mat, 1); Graphics.Blit(b, a, mat, 2);
         Graphics.Blit(a, b, mat, 1); Graphics.Blit(b, a, mat, 2);          // two blur iterations = wide, soft glow
         mat.SetTexture("_Bloom", a);
-        Graphics.Blit(src, dst, mat, 3);
+        if (Fxaa)
+        {
+            var f = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32);
+            f.filterMode = FilterMode.Bilinear;
+            Graphics.Blit(src, f, mat, 3); Graphics.Blit(f, dst, mat, 4);
+            RenderTexture.ReleaseTemporary(f);
+        }
+        else Graphics.Blit(src, dst, mat, 3);
         RenderTexture.ReleaseTemporary(a); RenderTexture.ReleaseTemporary(b);
     }
 }
