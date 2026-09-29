@@ -82,6 +82,7 @@ public class GameBootstrap : MonoBehaviour
         if (inputTest) StartCoroutine(InputTest());
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-camtest") >= 0) StartCoroutine(CamTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smokeshots") >= 0) StartCoroutine(SmokeShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audiotest") >= 0) StartCoroutine(AudioTest());
     }
@@ -417,6 +418,27 @@ public class GameBootstrap : MonoBehaviour
     }
 
     /// <summary>Headless: burnout + drift on the road, render the chase cam to PNGs to check tyre smoke and skid marks.</summary>
+    /// <summary>Orbits the free-look camera around the parked car and checks the car stays at the centre of the view.</summary>
+    IEnumerator CamTest()
+    {
+        yield return new WaitForSeconds(1.5f);
+        int fails = 0;
+        foreach (var mode in new[] { CamMode.Chase, CamMode.Close, CamMode.Far })
+        {
+            while (cam.Mode != mode) cam.NextMode();
+            foreach (var (yaw, pitch, back, name) in new[] { (0f, 0f, false, "default"), (45f, 0f, false, "yaw 45"), (90f, 0f, false, "yaw 90"), (-90f, 20f, false, "yaw -90 pitch 20"), (150f, 0f, false, "yaw 150"), (0f, 40f, false, "pitch 40"), (180f, 0f, false, "rear view (180)") })
+            {
+                cam.Look(new Vector2(-9999, 0)); cam.Look(new Vector2(0, 9999));      // reset offsets to a known state, then set the wanted ones
+                cam.SetFreeLook(yaw, pitch); cam.LookBack(back);
+                for (int i = 0; i < 90; i++) { cam.SetFreeLook(yaw, pitch); yield return null; }
+                float err = cam.AimErrorDeg; bool ok = name == "default" || err < 2.5f; if (!ok) fails++;
+                Log.I("camtest", $"{(ok ? "PASS" : "FAIL")}  {mode,-6} {name,-18} aim error {err:F1} deg from car centre  (distance {Vector3.Distance(cam.transform.position, car.transform.position):F1} m)");
+            }
+        }
+        cam.LookBack(false);
+        Log.I("camtest", fails == 0 ? "ALL PASS" : fails + " FAILED"); Application.Quit();
+    }
+
     IEnumerator SmokeShots()
     {
         string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);

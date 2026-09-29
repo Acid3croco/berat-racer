@@ -20,6 +20,8 @@ public class FollowCamera : MonoBehaviour
         new Rig { name = "Bumper",      rigid = true, local = new Vector3(0, -0.12f, 2.05f) * CarVisual.S, pitch = 0f, fov = 8, shake = 0.5f },
         new Rig { name = "Far chase",   dist = 10.5f, height = 4.4f, look = 6f, fov = -5, shake = 0.5f },
     };
+    /// <summary>Angle (deg) between where the camera looks and the car's centre. Used by the -camtest mode.</summary>
+    public float AimErrorDeg => Car == null ? 0f : Vector3.Angle(transform.forward, (Car.transform.position + Vector3.up * 1.1f) - transform.position);
     public string ModeName => Rigs[(int)Mode].name;
     public float ModeShownAt { get; private set; } = -10f;
 
@@ -37,6 +39,7 @@ public class FollowCamera : MonoBehaviour
         Log.I("camera", "mode -> " + ModeName);
     }
     public void Look(Vector2 d) { yawOff += d.x; pitchOff = Mathf.Clamp(pitchOff - d.y, -15f, 60f); lastLook = Time.unscaledTime; }
+    public void SetFreeLook(float yaw, float pitch) { yawOff = yaw; pitchOff = pitch; lastLook = Time.unscaledTime; }
     public void LookBack(bool on) { lookBack = on; }
 
     void LateUpdate()
@@ -76,7 +79,9 @@ public class FollowCamera : MonoBehaviour
             offs = Quaternion.AngleAxis(pitchOff, Vector3.Cross(Vector3.up, dirH)) * offs;   // orbit up / down
             Vector3 pos = focus + offs;
             transform.position = Vector3.Lerp(transform.position, pos, 1f - Mathf.Exp(-9f * dt));
-            Vector3 lookAt = focus + dirH * (rig.look + sp * 0.045f);
+            // free look orbits AROUND the car: the further you swing away from the default view, the more the look-ahead fades and the aim settles on the car itself
+            float free = Mathf.Clamp01(Mathf.Abs(Mathf.DeltaAngle(0f, yaw)) / 20f + Mathf.Abs(pitchOff) / 20f);
+            Vector3 lookAt = focus + dirH * (rig.look + sp * 0.045f) * (1f - free);
             transform.rotation = Quaternion.LookRotation(lookAt - transform.position, Vector3.up);
         }
 
