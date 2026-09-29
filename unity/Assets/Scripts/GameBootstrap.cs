@@ -483,6 +483,22 @@ public class GameBootstrap : MonoBehaviour
         shotFocus = new Vector3(x, 0, z);                   // Update() streams around this, not around the car (else it unloads what we are loading)
         yield return world.LoadAround(new Vector3(x, 0, z), 900f, 1500f);
         float g = world.Data.TerrainHeight(x, z);
+        if (System.Environment.GetEnvironmentVariable("BERAT_POKE") != null)
+        {   // where does the terrain mesh stand above the drawn road (road y + lift)? one char per metre: '#' terrain > road+3 cm, '.' fine, ' ' no road
+            var sb = new StringBuilder();
+            for (float zz = z + 10; zz >= z - 10; zz -= 1f)
+            {
+                for (float xx = x - 12; xx <= x + 12; xx += 1f)
+                {
+                    world.Roads.Query(xx, zz, 400f, out float dk, out float ry, out float rw);
+                    float top = !float.IsNaN(dk) ? dk : (rw > 0.99f ? ry : float.NaN);
+                    float th = world.Data.TerrainHeight(xx, zz);
+                    sb.Append(float.IsNaN(top) ? ' ' : (th > top + WorldBuilder.RoadLift + 0.0f ? '#' : '.'));
+                }
+                sb.AppendLine();
+            }
+            Log.I("poke", "terrain above road surface ('#')\n" + sb);
+        }
         Vector2 rdir = Vector2.up; world.Roads.NearestRoad(x, z, 30f, out rdir);
         var views = new (string n, Vector3 p, Vector3 look)[] {
             ("top", new Vector3(x, g + 60f, z - 0.1f), new Vector3(x, g, z)),

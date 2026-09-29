@@ -324,7 +324,7 @@ public class WorldBuilder : MonoBehaviour
     float nextCull; Vector3 lastFocus;
     public bool HideTrees; public int LastToggleFrame;
     /// <summary>Debug: comma list of layers to hide (buildings, water, roads, far, terrainlow, trees) to find what sparkles.</summary>
-    public string DebugHide = "";
+    public string DebugHide = System.Environment.GetEnvironmentVariable("BERAT_HIDE") ?? "";
     /// <summary>Test mode: a perfectly flat asphalt plane at FlatY instead of the real terrain (physics test harness).</summary>
     public bool Flat; public float FlatY;
     public bool TerrainPhysicsOnly = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-terrainphys") >= 0;

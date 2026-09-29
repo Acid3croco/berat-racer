@@ -220,11 +220,17 @@ def process_roads(win, wbox, feats):
             s_ = np.r_[0, np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))]
             dist = s_ if first else s_[-1] - s_
             xy += (cen - (xy[0] if first else xy[-1]))[None, :] * np.clip(1.0 - dist / 8.0, 0.0, 1.0)[:, None]
-        if len(members) == 2:
-            T = inward[1] - inward[0]; n = float(np.hypot(*T))
-            if n > 1.6:                                                             # arms more than ~106 degrees apart: a gentle bend, not a corner
-                T = (float(T[0] / n), float(T[1] / n))
-                for k in members: raw[ends[k][0]]["t0" if ends[k][1] == 0 else "t1"] = T
+        # the two arms that run most nearly straight through the node (a fork or T: the trunk and its better-aligned branch) share a tangent
+        best = None
+        for ia in range(len(members)):
+            for ib in range(ia + 1, len(members)):
+                if ends[members[ia]][0] == ends[members[ib]][0]: continue        # two ends of the same road
+                T = inward[ib] - inward[ia]; n = float(np.hypot(*T))
+                if n > 1.6 and (best is None or n > best[0]): best = (n, ia, ib, T)     # arms more than ~106 degrees apart: a gentle bend, not a corner
+        if best is not None:
+            n, ia, ib, T = best; T = (float(T[0] / n), float(T[1] / n))
+            for i in (ia, ib):
+                k = members[i]; raw[ends[k][0]]["t0" if ends[k][1] == 0 else "t1"] = T
     return raw
 
 # ------------------------------------------------------------------ colour (ported)
@@ -440,7 +446,10 @@ def process_sector(args):
         hit = np.isfinite(d); ii = np.minimum(idx, len(carve_pts) - 1)
         hwv = np.where(hit, carve_pts[ii, 3], 0); yv = np.where(hit, carve_pts[ii, 2], 0)
         t = np.clip((d - (hwv + 3.0)) / 6.0, 0, 1); wgt = np.where(hit, 1 - t * t * (3 - 2 * t), 0)
-        h = h * (1 - wgt) + yv * wgt
+        # the road always wins: sink the ground a little below the drawn surface under and beside the ribbon, so a coarse 4 m terrain facet can never
+        # stand above the road where its profile bends sharply (bridge exits, crests)
+        sink = 0.3 * (1.0 - np.clip((d - (hwv + 0.5)) / 3.0, 0.0, 1.0))
+        h = h * (1 - wgt) + (yv - np.where(hit, sink, 0.0)) * wgt
     H = h.reshape(nv, nv)
 
     # ---- ground colour
