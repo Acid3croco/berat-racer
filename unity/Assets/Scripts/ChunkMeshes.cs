@@ -336,7 +336,7 @@ public class ChunkMeshes
 
     /// <summary>
     /// Road markings by French practice, from the real data (carriageway width, lane count, one-way, road kind):
-    ///   - two-way roads: dashed centre line (one lane each way when the data counts one or two lanes; without a lane count, from 5.5 m wide); 4 lanes or more: dashed centre plus a dashed line per lane
+    ///   - every paved two-way road: dashed centre line (one lane each way); no line on dirt tracks or one-way roads; 4 lanes or more: dashed centre plus a dashed line per lane
     ///   - one-way roads and dual carriageways: a dashed line between each pair of lanes, no centre line
     ///   - edge lines: thin dashed from ~5.5 m, solid from ~6.5 m and on dual carriageways / motorways
     ///   - roundabouts: lane lines only when the ring has two lanes or more
@@ -350,11 +350,10 @@ public class ChunkMeshes
             Ribbon(r, ri, cor, joints, false, out var left, out var right); int last = left.Length - 1 - r.trail;
             float width = 2f * r.hw / WorldData.RoadWidthScale; int lanes = r.lanes; bool oneWay = r.oneway != 0, dual = r.kind == 2 || r.kind == 3;
             bool centre = false; int dividers = 0;
-            if (r.kind == 1) { if (lanes >= 2) dividers = lanes - 1; }
+            if (r.kind == 1) { if (lanes >= 2) dividers = lanes - 1; }                                                 // roundabout ring: lane lines only
             else if (oneWay || dual) { if (lanes >= 2) dividers = lanes - 1; else if (lanes == 0 && width >= 6.5f) dividers = 1; }
             else if (lanes >= 4) { centre = true; dividers = 2; }
-            else if (lanes == 1) centre = true;                                                                        // a two-way road with one lane counted: one lane each way, so a centre line
-            else if (width >= (lanes == 0 ? 5.5f : 5f)) centre = true;
+            else centre = true;                                                                                       // every paved two-way road carries a centre line
             bool edgeThin = r.kind != 1 && width >= 5.5f, edgeSolid = r.kind != 1 && (width >= 6.5f || dual);
             if (!centre && dividers == 0 && !edgeThin) continue;
             Vector3 At(int k, float u) { Vector3 across = right[k] - left[k]; float w = across.magnitude; return left[k] + across / Mathf.Max(w, 1e-3f) * Mathf.Clamp(u, 0f, w); }

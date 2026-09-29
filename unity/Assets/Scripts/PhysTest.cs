@@ -226,7 +226,7 @@ public static class PhysTest
     {
         world = w; car = c; Time.timeScale = 4f;
         yield return new WaitForSecondsRealtime(0.5f);
-        var auto = new Autopilot(world.Data, car) { TargetKmh = kmh };
+        var auto = new Autopilot(world.Data, car) { TargetKmh = kmh, ObeyLimits = false };
         float t0 = Time.time, lastVy = car.Body.linearVelocity.y, lp = 0, lpFast = 0, lastSpeed = car.Body.linearVelocity.magnitude, dist = 0;
         double sumSq = 0, harshSq = 0; int n = 0, hops = 0, phantom = 0, steps = 0, respawns = 0, phantomCooldown = 0; float peak = 0; Vector3 lastPos = car.transform.position;
         var events = new List<string>(); var spikes = new List<string>(); int spikeCd = 0, harshCd = 0, envN = 0, envCnt = 0; float envP1 = 0, envP2 = 0; double envSq = 0; var harshList = new List<string>();

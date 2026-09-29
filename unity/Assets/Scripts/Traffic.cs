@@ -30,8 +30,7 @@ public class Traffic : MonoBehaviour
         public GameObject go; public Rigidbody rb; public VehicleParts parts; public VehicleType type;
         public float speedFactor = 1f, gapTime = 1.5f, length = 4.6f, trailerYaw;
         public Rigidbody trailerRb; public readonly List<Vector3> crumbs = new List<Vector3>();
-        public RoadData road; public bool fwd; public float s, v, lane, spin, stuck, age;
-        public RoadData nextRoad; public bool nextFwd; public bool nextSharp; public bool planned;
+        public RoadFollower f; public float v, spin, stuck, age;
         public Vector3 pos; public Vector2 dir; public float yaw, slope;
     }
 
@@ -50,13 +49,7 @@ public class Traffic : MonoBehaviour
     }
 
     // ------------------------------------------------------------------ speed limits
-    public static float LimitKmh(RoadData r)
-    {
-        float limit = r.limit;
-        if (limit <= 0f) limit = r.imp == "1" ? 110f : r.imp == "2" ? 90f : r.imp == "3" || r.imp == "4" ? 80f : 70f;        // data without limits: guess from the road class
-        if (r.avg > 0) limit = Mathf.Min(limit, Mathf.Max(r.avg * 1.3f + 8f, 30f));                                        // winding / narrow roads are slower than the law allows
-        return limit;
-    }
+    public static float LimitKmh(RoadData r) => RoadFollower.LimitKmh(r);
 
     // ------------------------------------------------------------------ frame
     void FixedUpdate()
@@ -64,6 +57,7 @@ public class Traffic : MonoBehaviour
         if (!Enabled || world == null || !world.Ready || player == null) return;
         float dt = Time.fixedDeltaTime;
         Maintain(dt);
+        RefreshVehicles();
         for (int i = 0; i < agents.Count; i++) Step(agents[i], dt);
     }
 
@@ -140,7 +134,7 @@ public class Traffic : MonoBehaviour
     void SpawnAt(RoadData r, float s, bool fwd)
     {
         var type = PickType(r);
-        var a = new Agent { type = type, road = r, fwd = fwd, s = s };
+        var a = new Agent { type = type }; a.f = new RoadFollower(world.Data, rng); a.f.Place(r, s, fwd);
         VehicleParts parts; Transform bodyRoot;
         switch (type)
         {
@@ -192,16 +186,14 @@ public class Traffic : MonoBehaviour
     void Step(Agent a, float dt)
     {
         if (a.go == null) return;
-        float len = a.road.Length, toEnd = a.fwd ? len - a.s : a.s;
-        if (!a.planned && toEnd < 90f) Plan(a);
+        var f = a.f; f.EnsurePlanned();
 
-        // target speed: legal limit, then curves, junctions, the car in front
-        float lim = LimitKmh(a.road);
+        // target speed: legal limit x this driver's habit, then bends, junctions, the car in front
+        float lim = LimitKmh(f.road);
         if (a.type == VehicleType.Truck || a.type == VehicleType.Semi) lim = Mathf.Min(lim, 90f);                    // heavy goods vehicles: 90 km/h at most
         float vt = lim / 3.6f * a.speedFactor;
-        vt = Mathf.Min(vt, CurveSpeed(a) * (a.type == VehicleType.Car ? 1f : 0.8f));
-        if (a.planned && a.nextSharp && toEnd < 45f) vt = Mathf.Min(vt, Mathf.Lerp(6.5f, vt, Mathf.Clamp01((toEnd - 8f) / 37f)));       // slow for a turn or a junction
-        if (Leader(a, out float gap, out float lv))
+        vt = Mathf.Min(vt, f.CurveSpeed() * (a.type == VehicleType.Car ? 1f : 0.8f), f.JunctionSpeed(vt));
+        if (FindLeader(f, new Vector2(a.pos.x, a.pos.z), a.dir, a.length, a, true, out float gap, out float lv))
         {
             float want = 5f + a.v * a.gapTime;
             if (gap < want) vt = Mathf.Min(vt, Mathf.Max(0f, lv - (want - gap) * 0.6f));
@@ -209,9 +201,8 @@ public class Traffic : MonoBehaviour
         }
         a.v = Mathf.MoveTowards(a.v, vt, (vt > a.v ? 2.6f : 6.5f) * dt);
         a.stuck = a.v < 0.3f ? a.stuck + dt : 0f;
-
-        a.s += (a.fwd ? 1f : -1f) * a.v * dt;
-        if (a.fwd ? a.s >= len : a.s <= 0f) Advance(a, a.fwd ? a.s - len : -a.s);
+        f.Move(a.v * dt);
+        if (f.DeadEnd && f.road.oneway != 0 && f.ToEnd < 1f) a.stuck = 99f;                                          // one-way dead end: remove
         Pose(a, dt, false);
         a.rb.MovePosition(a.pos); a.rb.MoveRotation(Quaternion.Euler(-a.slope, a.yaw, 0f));
         // breadcrumbs of the cab's path: the trailer follows them (so it cuts corners like a real semi)
@@ -252,110 +243,74 @@ public class Traffic : MonoBehaviour
     /// <summary>Position and heading from the road: right-hand lane, ground = the road surface.</summary>
     void Pose(Agent a, float dt, bool snap)
     {
-        Vector3 p = a.road.At(a.s, out Vector2 dInc);
-        Vector2 dir = a.fwd ? dInc : -dInc;
-        bool twoWay = a.road.oneway == 0;
-        float laneT = twoWay ? Mathf.Clamp(a.road.hw * 0.5f, 0.9f, LaneMax) : 0f;
-        a.lane = snap ? laneT : Mathf.MoveTowards(a.lane, laneT, 1.5f * dt);
+        var f = a.f; Vector3 p = f.road.At(f.s, out Vector2 dInc);
+        Vector2 dir = f.fwd ? dInc : -dInc;
+        float laneT = RoadFollower.LaneOffset(f.road);
+        f.lane = snap ? laneT : Mathf.MoveTowards(f.lane, laneT, 1.5f * dt);
         Vector2 right = new Vector2(dir.y, -dir.x);
         // heading looks a few metres ahead so the car follows curves smoothly
-        Vector3 ahead = a.road.At(a.s + (a.fwd ? 4f : -4f), out _);
+        Vector3 ahead = f.road.At(f.s + (f.fwd ? 4f : -4f), out _);
         Vector2 toAhead = new Vector2(ahead.x - p.x, ahead.z - p.z);
         float yawT = toAhead.sqrMagnitude > 0.01f ? Mathf.Atan2(toAhead.x, toAhead.y) * Mathf.Rad2Deg : Mathf.Atan2(dir.x, dir.y) * Mathf.Rad2Deg;
         a.yaw = snap ? yawT : Mathf.MoveTowardsAngle(a.yaw, yawT, 140f * dt);
         a.dir = dir;
-        a.pos = new Vector3(p.x + right.x * a.lane, p.y + ChunkMeshes.RoadLift + a.parts.groundOffset, p.z + right.y * a.lane);
+        a.pos = new Vector3(p.x + right.x * f.lane, p.y + ChunkMeshes.RoadLift + a.parts.groundOffset, p.z + right.y * f.lane);
         a.slope = toAhead.magnitude > 0.1f ? Mathf.Atan2(ahead.y - p.y, toAhead.magnitude) * Mathf.Rad2Deg : 0f;
     }
 
-    /// <summary>Speed the car can hold through the tightest bend in the next 60 m (lateral acceleration ~2.4 m/s2).</summary>
-    float CurveSpeed(Agent a)
-    {
-        float sgn = a.fwd ? 1f : -1f, worst = 0f; a.road.At(a.s, out Vector2 d0);
-        d0 = a.fwd ? d0 : -d0; float prevAng = 0f; Vector2 prev = d0;
-        for (int k = 1; k <= 3; k++)
-        {
-            a.road.At(a.s + sgn * 20f * k, out Vector2 dk); dk = a.fwd ? dk : -dk;
-            float ang = Vector2.Angle(prev, dk) * Mathf.Deg2Rad; prev = dk;
-            worst = Mathf.Max(worst, ang / 20f);
-        }
-        return worst < 1e-4f ? 99f : Mathf.Max(5f, Mathf.Sqrt(2.4f / worst));
-    }
+    // ------------------------------------------------------------------ seeing other vehicles
+    struct Veh { public Vector2 pos, dir; public float v, len; public object id; }
+    readonly List<Veh> vehs = new List<Veh>();
 
-    bool Leader(Agent a, out float gap, out float speed)
+    void RefreshVehicles()
     {
-        float bestGap = 1e9f, bestSpeed = 0f; Vector2 pos = new Vector2(a.pos.x, a.pos.z), right = new Vector2(a.dir.y, -a.dir.x);
-        void Consider(Vector2 op, Vector2 od, float ov, float olen)
-        {
-            Vector2 d = op - pos; float along = Vector2.Dot(d, a.dir), lat = Mathf.Abs(Vector2.Dot(d, right));
-            if (along < 0.5f || along > 48f || lat > 2.2f) return;
-            if (ov > 1.5f && Vector2.Dot(od, a.dir) < 0.3f) return;                                   // oncoming, in the other lane
-            float g = along - 0.5f * (a.length + olen); if (g < bestGap) { bestGap = g; bestSpeed = ov * Mathf.Max(0f, Vector2.Dot(od, a.dir)); }
-        }
-        foreach (var o in agents) if (o != a) Consider(new Vector2(o.pos.x, o.pos.z), o.dir, o.v, o.length);
+        vehs.Clear();
+        foreach (var o in agents) vehs.Add(new Veh { pos = new Vector2(o.pos.x, o.pos.z), dir = o.dir, v = o.v, len = o.length, id = o });
         if (player != null)
         {
             Vector3 pv = player.Body.linearVelocity; float ps = new Vector2(pv.x, pv.z).magnitude;
-            Consider(new Vector2(player.transform.position.x, player.transform.position.z), ps > 0.5f ? new Vector2(pv.x, pv.z) / ps : a.dir, ps, 4.5f);
+            Vector2 pd = ps > 1f ? new Vector2(pv.x, pv.z) / ps : new Vector2(player.transform.forward.x, player.transform.forward.z).normalized;
+            vehs.Add(new Veh { pos = new Vector2(player.transform.position.x, player.transform.position.z), dir = pd, v = ps, len = 4.5f, id = player });
+        }
+    }
+
+    /// <summary>
+    /// What is in the way along MY lane path (looked at every 4 m up to ~45 m, bends and junctions included)? Another vehicle heading the same way is a leader to keep a gap to;
+    /// a stopped one is an obstacle; one crossing my path is given way to when it comes from my right (priorité à droite).
+    /// Oncoming vehicles in the opposite lane are not in the way. `self` is skipped (agent or the player's car).
+    /// </summary>
+    public bool FindLeader(RoadFollower f, Vector2 pos, Vector2 dirSelf, float lengthSelf, object self, bool includePlayer, out float gap, out float speed)
+    {
+        float bestGap = 1e9f, bestSpeed = 0f; Vector2 right = new Vector2(dirSelf.y, -dirSelf.x);
+        float reach = 46f;
+        for (float dist = 4f; dist <= reach; dist += 4f)
+        {
+            Vector3 q = f.Ahead(dist, out Vector2 tdir); Vector2 qp = new Vector2(q.x, q.z);
+            foreach (var o in vehs)
+            {
+                if (ReferenceEquals(o.id, self)) continue;
+                if (!includePlayer && o.id == (object)player) continue;
+                float lateral = Vector2.Distance(qp, o.pos);
+                float reachOther = 1.35f + 0.5f * Mathf.Min(o.len, 6f) * Mathf.Abs(Vector2.Dot(o.dir, tdir)) * 0.6f;      // half a width, plus a bit of length when it points along the path
+                if (lateral > 1.15f + reachOther) continue;
+                float align = Vector2.Dot(o.dir, tdir);
+                float g;
+                if (align > 0.5f || o.v < 0.6f)
+                {   // same direction (or stopped): keep a gap to it
+                    Vector2 d = o.pos - pos; if (Vector2.Dot(d, dirSelf) < 0.5f) continue;
+                    g = dist - 0.5f * (lengthSelf + o.len);
+                    if (g < bestGap) { bestGap = g; bestSpeed = o.v * Mathf.Max(0f, align); }
+                }
+                else if (align < -0.5f) continue;                                                        // oncoming in its own lane
+                else
+                {   // crossing my path: priority to the right
+                    float lat = Vector2.Dot(o.pos - pos, right);
+                    if (lat > 0.5f && Vector2.Dot(o.pos - pos, dirSelf) > -2f) { g = dist - 3f; if (g < bestGap) { bestGap = g; bestSpeed = 0f; } }
+                }
+            }
+            if (bestGap < 1e8f) break;                                                                      // the nearest obstacle along the path decides
         }
         gap = bestGap; speed = bestSpeed;
         return bestGap < 1e8f;
-    }
-
-    // ------------------------------------------------------------------ routing
-    struct Option { public RoadData r; public bool fwd; public float weight; public float turn; }
-
-    /// <summary>Choose the next road piece at the end of this one (every possible exit is equally likely, one-way roads are honoured).</summary>
-    void Plan(Agent a)
-    {
-        a.planned = true; a.nextRoad = null;
-        var opts = Options(a);
-        if (opts.Count == 0) { a.nextSharp = false; return; }
-        float total = 0f; foreach (var o in opts) total += o.weight;
-        float pick = (float)rng.NextDouble() * total; Option chosen = opts[0];
-        foreach (var o in opts) { pick -= o.weight; if (pick <= 0f) { chosen = o; break; } }
-        a.nextRoad = chosen.r; a.nextFwd = chosen.fwd; a.nextSharp = opts.Count > 1 || chosen.turn > 25f;
-    }
-
-    List<Option> Options(Agent a)
-    {
-        var res = new List<Option>();
-        Vector3 e = a.fwd ? a.road.EndPoint : a.road.StartPoint;
-        a.road.At(a.fwd ? a.road.Length : 0f, out Vector2 dInc);
-        Vector2 dirOut = a.fwd ? dInc : -dInc;                                                      // direction of travel at the end of this piece
-        foreach (var r in world.Data.Roads)
-        {
-            if (r == a.road || r.dirt || r.hw < 1.6f || r.Length < 3f) continue;
-            for (int end = 0; end < 2; end++)
-            {
-                bool enterFwd = end == 0;                                                          // entering at the start means travelling in the increasing direction
-                if ((enterFwd && r.oneway == 2) || (!enterFwd && r.oneway == 1)) continue;
-                Vector3 q = enterFwd ? r.StartPoint : r.EndPoint;
-                if ((q.x - e.x) * (q.x - e.x) + (q.z - e.z) * (q.z - e.z) > 2.5f * 2.5f) continue;
-                r.At(enterFwd ? 0.5f : Mathf.Max(0f, r.Length - 0.5f), out Vector2 dIn);
-                Vector2 dirIn = enterFwd ? dIn : -dIn;
-                float turn = Vector2.Angle(dirOut, dirIn);
-                if (turn > 115f) continue;
-                res.Add(new Option { r = r, fwd = enterFwd, turn = turn, weight = 1f });
-            }
-        }
-        return res;
-    }
-
-    void Advance(Agent a, float overflow)
-    {
-        if (!a.planned) Plan(a);
-        if (a.nextRoad != null)
-        {
-            a.road = a.nextRoad; a.fwd = a.nextFwd;
-            a.s = a.fwd ? Mathf.Min(overflow, a.road.Length) : Mathf.Max(a.road.Length - overflow, 0f);
-        }
-        else
-        {   // dead end: turn round in the opposite lane
-            a.fwd = !a.fwd; a.s = a.fwd ? Mathf.Min(overflow, a.road.Length) : Mathf.Max(a.road.Length - overflow, 0f);
-            if (a.road.oneway != 0) a.stuck = 99f;                                                 // one-way dead end: remove
-            a.v = Mathf.Min(a.v, 4f);
-        }
-        a.planned = false; a.nextRoad = null; a.nextSharp = false;
     }
 }

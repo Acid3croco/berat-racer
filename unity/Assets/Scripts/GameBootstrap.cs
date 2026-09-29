@@ -66,8 +66,8 @@ public class GameBootstrap : MonoBehaviour
         { int gi = System.Array.IndexOf(launchArgs, "-goto"); if (gi >= 0 && gi + 1 < launchArgs.Length && Grid.TryParse(string.Join(" ", launchArgs, gi + 1, Mathf.Min(2, launchArgs.Length - gi - 1)), out float gx, out float gz)) { TeleportCar(gx, gz); } }
         if (System.Array.IndexOf(launchArgs, "-autopilot") >= 0)
         {
-            auto = new Autopilot(world.Data, car); autoOn = true; auto.TargetKmh = 95f;
-            int ai2 = System.Array.IndexOf(launchArgs, "-autoKmh"); if (ai2 >= 0 && ai2 + 1 < launchArgs.Length && float.TryParse(launchArgs[ai2 + 1], out float ak2)) auto.TargetKmh = ak2;
+            auto = new Autopilot(world.Data, car); autoOn = true;
+            int ai2 = System.Array.IndexOf(launchArgs, "-autoKmh"); if (ai2 >= 0 && ai2 + 1 < launchArgs.Length && float.TryParse(launchArgs[ai2 + 1], out float ak2)) { auto.TargetKmh = ak2; auto.ObeyLimits = false; }      // an explicit speed overrides the limits
             Log.I("auto", $"autopilot demo started at {auto.TargetKmh:F0} km/h target (P / Circle to take over)");
         }
         if (smoke) StartCoroutine(SmokeTest());
@@ -76,6 +76,7 @@ public class GameBootstrap : MonoBehaviour
         if (shotsMode) StartCoroutine(Shots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
         { var la2 = System.Environment.GetCommandLineArgs(); int si2 = System.Array.IndexOf(la2, "-shotat"); if (si2 >= 0 && si2 + 2 < la2.Length && float.TryParse(la2[si2 + 1], out float sx2) && float.TryParse(la2[si2 + 2], out float sz2)) StartCoroutine(ShotAt(sx2, sz2)); }
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-autotest") >= 0) StartCoroutine(AutoTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-mapshots") >= 0) StartCoroutine(MapShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-trafficshots") >= 0) StartCoroutine(TrafficShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-minimapshot") >= 0) StartCoroutine(MinimapShot());
@@ -182,7 +183,7 @@ public class GameBootstrap : MonoBehaviour
         cam.SetCar(car);
         map.Init(world, car, cam, mainCam);
         if (traffic == null && System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-notraffic") < 0 && !scriptedTest && !smoke) traffic = gameObject.AddComponent<Traffic>();
-        if (traffic != null) traffic.Init(world, car);
+        if (traffic != null) { traffic.Init(world, car); Autopilot.TrafficRef = traffic; }
         if (minimap == null) minimap = gameObject.AddComponent<MiniMap>();
         minimap.Init(world, car, map);
         audio = carGo.AddComponent<CarAudio>(); audio.Car = car;
@@ -553,6 +554,37 @@ public class GameBootstrap : MonoBehaviour
         Application.Quit();
     }
 
+    /// <summary>
+    /// Autopilot soak test (-autotest [seconds]): drives from the spawn point with traffic, logs the car's position once a second (game time) and reports how far and how widely it got,
+    /// how often it got stuck or turned round, and which 100 m cells it visited more than 3 times (a loop).
+    /// </summary>
+    IEnumerator AutoTest()
+    {
+        var args = System.Environment.GetCommandLineArgs(); int ai = System.Array.IndexOf(args, "-autotest");
+        float total = 180f; if (ai + 1 < args.Length && float.TryParse(args[ai + 1], out float tt)) total = tt;
+        Time.timeScale = 4f;
+        yield return new WaitForSecondsRealtime(1f);
+        auto = new Autopilot(world.Data, car); autoOn = true;
+        var visits = new Dictionary<long, int>(); var cells = new HashSet<long>(); float dist = 0f; Vector3 last = car.transform.position; long lastCell = long.MinValue; float t0 = Time.time, tick = t0;
+        while (Time.time - t0 < total)
+        {
+            yield return null;
+            var p = car.transform.position; dist += Vector2.Distance(new Vector2(p.x, p.z), new Vector2(last.x, last.z)); last = p;
+            long cell = ((long)Mathf.FloorToInt(p.x / 100f) << 20) ^ (uint)Mathf.FloorToInt(p.z / 100f);
+            if (cell != lastCell) { visits.TryGetValue(cell, out int c); visits[cell] = c + 1; lastCell = cell; }
+            cells.Add(cell);
+            if (Time.time - tick >= 1f)
+            {
+                tick = Time.time;
+                var f = auto.Follower;
+                Log.I("autotest", $"t={Time.time - t0:F0} pos=({p.x:F0},{p.z:F0}) {car.SpeedKmh:F0} km/h piece {(f != null ? f.road.fid : 0)} s {(f != null ? f.s : 0):F0} traffic {(traffic != null ? traffic.Count : 0)}");
+            }
+        }
+        int loops = 0; foreach (var kv in visits) if (kv.Value > 3) loops++;
+        Log.I("autotest", $"RESULT {total:F0} s: {dist:F0} m driven (avg {dist / total * 3.6f:F0} km/h), {cells.Count} distinct 100 m cells, {loops} cells entered more than 3 times, stuck {auto.StuckEvents}, turn-arounds {auto.TurnArounds}, relocations {auto.Relocations}");
+        Application.Quit();
+    }
+
     IEnumerator MinimapShot()
     {
         string dir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "docs", "shots")); Directory.CreateDirectory(dir);
@@ -800,7 +832,7 @@ public class GameBootstrap : MonoBehaviour
         Log.I("smoke", "scripted drive start; screenshots -> " + Path.GetFullPath(dir));
         for (smokeT = 0; smokeT < smokeSeconds; smokeT += Time.deltaTime)
         {
-            if (!autoOn && smokeT > 1f) { auto = new Autopilot(world.Data, car); autoOn = true; var a2 = System.Environment.GetCommandLineArgs(); int ai = System.Array.IndexOf(a2, "-autoKmh"); if (ai >= 0 && ai + 1 < a2.Length && float.TryParse(a2[ai + 1], out float ak)) auto.TargetKmh = ak; }
+            if (!autoOn && smokeT > 1f) { auto = new Autopilot(world.Data, car); autoOn = true; var a2 = System.Environment.GetCommandLineArgs(); int ai = System.Array.IndexOf(a2, "-autoKmh"); if (ai >= 0 && ai + 1 < a2.Length && float.TryParse(a2[ai + 1], out float ak)) { auto.TargetKmh = ak; auto.ObeyLimits = false; } }
             steerIn = car.Steer; thrIn = car.Throttle;
             foreach (float t in new[] { 4f, 12f, 20f })
                 if (smokeT >= t && smokeT - Time.deltaTime < t) ScreenCapture.CaptureScreenshot(Path.Combine(dir, $"shot_{(int)t}.png"));
