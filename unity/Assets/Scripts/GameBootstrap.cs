@@ -247,8 +247,8 @@ public class GameBootstrap : MonoBehaviour
             if (kb.fKey.wasPressedThisFrame) CycleCar();
             if (kb.yKey.wasPressedThisFrame && traffic != null) traffic.SetEnabled(!traffic.Enabled);
             if (kb.vKey.wasPressedThisFrame) { QualitySettings.vSyncCount = 1 - QualitySettings.vSyncCount; Log.I("gfx", "vsync " + (QualitySettings.vSyncCount == 1 ? "ON" : "OFF")); copiedNote = "vsync " + (QualitySettings.vSyncCount == 1 ? "on" : "off"); copiedAt = Time.unscaledTime; }
-            if (kb.gKey.wasPressedThisFrame) car.SetModel(car.ModelIndex + 1);
-            if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 4); Log.I("car", "assist mode " + car.AssistMode); }
+            if (kb.gKey.wasPressedThisFrame) CycleModel();
+            if (kb.tKey.wasPressedThisFrame) CycleAssist();
             if (audio != null && (kb.leftBracketKey.wasPressedThisFrame || kb.rightBracketKey.wasPressedThisFrame))
             { audio.Volume = Mathf.Clamp(audio.Volume + (kb.rightBracketKey.wasPressedThisFrame ? 0.05f : -0.05f), 0f, 1f); Log.I("audio", $"volume {audio.Volume * 100:F0}%"); }
             if (kb.nKey.wasPressedThisFrame && audio != null) { audio.Synth.Muted = !audio.Synth.Muted; Log.I("audio", "muted=" + audio.Synth.Muted); }
@@ -281,6 +281,12 @@ public class GameBootstrap : MonoBehaviour
     }
 
     /// <summary>C / D-pad up: next camera.  Right stick or hold right mouse: look around.  Hold B / R3: rear view.</summary>
+    static readonly string[] AssistInfo = { "no driver aids", "traction control + ABS", "traction control + ABS + stability control", "arcade: forgiving, stability + steering help" };
+    string toast; float toastAt = -10f;
+    void Announce(string text) { toast = text; toastAt = Time.unscaledTime; Log.I("hud", text.Replace("\n", " | ")); }
+    void CycleAssist() { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 4); Announce($"ASSIST: {car.AssistMode.ToString().ToUpper()}\n{AssistInfo[(int)car.AssistMode]}"); }
+    void CycleModel() { car.SetModel(car.ModelIndex + 1); Announce($"DRIVING MODEL: {DrivingModels.Names[car.ModelIndex]}"); }
+
     void HandleCameraInput()
     {
         var kb = Keyboard.current; var mouse = Mouse.current; var gp = pad;
@@ -291,6 +297,8 @@ public class GameBootstrap : MonoBehaviour
         {
             if (gp.dpad.up.wasPressedThisFrame) cam.NextMode();
             if (gp.dpad.right.wasPressedThisFrame) CycleCar();
+            if (gp.dpad.left.wasPressedThisFrame) CycleAssist();
+            if (gp.dpad.down.wasPressedThisFrame) CycleModel();
             Vector2 rs = gp.rightStick.ReadValue();
             if (rs.magnitude > 0.2f) cam.Look(rs * 170f * Time.unscaledDeltaTime);
             back |= gp.rightStickButton.isPressed;
@@ -928,6 +936,14 @@ public class GameBootstrap : MonoBehaviour
         {
             GUI.Label(new Rect(20, 20, Screen.width - 40, 200), "Load failed: " + world.Error + "\nSee " + Log.Path_, small);
             return;
+        }
+        if (Time.unscaledTime - toastAt < 2.5f && toast != null)
+        {
+            float a = Mathf.Clamp01((2.5f - (Time.unscaledTime - toastAt)) * 2f);
+            var ts = new GUIStyle(big) { alignment = TextAnchor.UpperCenter, fontSize = 34, wordWrap = true };
+            var r = new Rect(0, Screen.height * 0.16f, Screen.width, 140);
+            ts.normal.textColor = new Color(0, 0, 0, a * 0.8f); GUI.Label(new Rect(r.x + 2, r.y + 2, r.width, r.height), toast, ts);
+            ts.normal.textColor = new Color(1, 1, 1, a); GUI.Label(r, toast, ts);
         }
         if (world == null || !world.Ready)
         {
