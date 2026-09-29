@@ -399,6 +399,7 @@ public class ChunkMeshes
         return boxes;
     }
 
+    const float WallDepth = 1.2f;
     static void AddCollisionPrism(BuildingData bd, MeshBuilder mb, float y0, float y1)
     {
         if (bd.cn == null || bd.cp == null) return;
@@ -406,10 +407,22 @@ public class ChunkMeshes
         foreach (int cnt in bd.cn)
         {
             ring.Clear(); for (int k = 0; k < cnt; k++) ring.Add(new Vector2(bd.cp[(off + k) * 2], bd.cp[(off + k) * 2 + 1])); off += cnt;
+            // signed area: which side of an edge is the inside?
+            float area = 0f; for (int k = 0; k < cnt; k++) { Vector2 p0 = ring[k], p1 = ring[(k + 1) % cnt]; area += p0.x * p1.y - p1.x * p0.y; }
+            float inSign = area >= 0f ? 1f : -1f;                                                // CCW ring (x east, z north): the inside is on the left of the walking direction
             for (int k = 0; k < cnt; k++)
             {
-                Vector2 a = ring[k], b = ring[(k + 1) % cnt];
-                mb.Quad(mb.Vertex(new Vector3(a.x, y0, a.y), c), mb.Vertex(new Vector3(b.x, y0, b.y), c), mb.Vertex(new Vector3(b.x, y1, b.y), c), mb.Vertex(new Vector3(a.x, y1, a.y), c));
+                // Each wall is a SOLID slab reaching WallDepth metres into the building (not a zero-thickness sheet: a slow car could slip through a sheet and then be pushed
+                // further in instead of back out). The outer face is exactly the visual wall.
+                Vector2 a = ring[k], b = ring[(k + 1) % cnt], e = b - a; float len = e.magnitude; if (len < 0.05f) continue;
+                Vector2 inward = new Vector2(-e.y, e.x) / len * inSign * WallDepth;
+                Vector3 a0 = new Vector3(a.x, y0, a.y), b0 = new Vector3(b.x, y0, b.y), a1 = new Vector3(a.x, y1, a.y), b1 = new Vector3(b.x, y1, b.y);
+                Vector3 ia0 = a0 + new Vector3(inward.x, 0, inward.y), ib0 = b0 + new Vector3(inward.x, 0, inward.y), ia1 = a1 + new Vector3(inward.x, 0, inward.y), ib1 = b1 + new Vector3(inward.x, 0, inward.y);
+                int v_a0 = mb.Vertex(a0, c), v_b0 = mb.Vertex(b0, c), v_b1 = mb.Vertex(b1, c), v_a1 = mb.Vertex(a1, c), v_ia0 = mb.Vertex(ia0, c), v_ib0 = mb.Vertex(ib0, c), v_ib1 = mb.Vertex(ib1, c), v_ia1 = mb.Vertex(ia1, c);
+                // Unity draws / collides the CLOCKWISE side of a triangle: for a wall walked with the inside on its left, that means the vertex order below (outer face first, all faces point out of the slab)
+                mb.Quad(v_a1, v_b1, v_b0, v_a0); mb.Quad(v_ib0, v_ia0, v_a0, v_b0);                 // outer face, floor
+                mb.Quad(v_ib1, v_b1, v_a1, v_ia1); mb.Quad(v_ib1, v_ia1, v_ia0, v_ib0);             // top, inner face
+                mb.Quad(v_ia0, v_ia1, v_a1, v_a0); mb.Quad(v_ib0, v_b0, v_b1, v_ib1);               // the two ends
             }
             var tri = MeshBuilder.Triangulate(ring); int bi = mb.V.Count;
             foreach (var q in ring) mb.Vertex(new Vector3(q.x, y1, q.y), c);

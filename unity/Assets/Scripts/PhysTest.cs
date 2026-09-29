@@ -347,6 +347,78 @@ public static class PhysTest
         return route;
     }
 
+    /// <summary>
+    /// Building hitbox test (-hitboxtest): drive the car straight into the wall of real houses at 25 and 60 km/h and measure how far the car body ends up INSIDE the footprint
+    /// (the four bottom corners of its collision box against the building outline), and whether the car can back out afterwards.
+    /// </summary>
+    public static IEnumerator HitboxRun(WorldBuilder w, CarController c)
+    {
+        world = w; car = c; CarController.NoBuildingEscape = true;
+        Time.timeScale = 3f;
+        yield return new WaitForSecondsRealtime(0.5f);
+        var box = car.GetComponent<BoxCollider>();
+        var picked = new List<BuildingData>();
+        var all = new List<BuildingData>(world.Data.Buildings); all.Sort((u, v) => (Mathf.Abs(u.p[0]) + Mathf.Abs(u.p[1])).CompareTo(Mathf.Abs(v.p[0]) + Mathf.Abs(v.p[1])));      // nearest the village centre first: the same houses every run
+        foreach (var b in all)
+        {
+            if (b.k != "house" || b.p.Length < 8 || b.h < 4f) continue;
+            int n = b.p.Length / 2; float area = 0; for (int i = 0; i < n; i++) { int j = (i + 1) % n; area += b.p[i * 2] * b.p[j * 2 + 1] - b.p[j * 2] * b.p[i * 2 + 1]; }
+            if (Mathf.Abs(area) * 0.5f < 60f) continue;
+            if (Mathf.Abs(b.p[0]) > 900f || Mathf.Abs(b.p[1]) > 900f) continue;
+            picked.Add(b); if (picked.Count >= 10) break;
+        }
+        Log.I("hitbox", $"testing {picked.Count} houses");
+        int fails = 0, runs = 0;
+        foreach (var b in picked)
+            foreach (float kmh in new[] { 25f, 60f })
+            {
+                int n = b.p.Length / 2; var ring = new List<Vector2>(); for (int i = 0; i < n; i++) ring.Add(new Vector2(b.p[i * 2], b.p[i * 2 + 1]));
+                // longest wall, outward normal
+                int bi = 0; float bl = 0; for (int i = 0; i < n; i++) { float l = (ring[(i + 1) % n] - ring[i]).magnitude; if (l > bl) { bl = l; bi = i; } }
+                Vector2 a = ring[bi], e = ring[(bi + 1) % n], mid = (a + e) / 2, d = (e - a).normalized, nrm = new Vector2(d.y, -d.x);
+                Vector2 cen = Vector2.zero; foreach (var q in ring) cen += q; cen /= n; if (Vector2.Dot(nrm, mid - cen) < 0) nrm = -nrm;
+                float run = kmh > 40f ? 45f : 20f; Vector2 start = mid + nrm * run;
+                yield return world.LoadAround(new Vector3(mid.x, 0, mid.y), 500f, 800f);
+                float gy = world.GroundHeight(start.x, start.y, b.b + 5f, out _);
+                float heading = Mathf.Atan2(-nrm.x, -nrm.y) * Mathf.Rad2Deg;
+                car.Respawn(new Vector3(start.x, gy + 1.0f, start.y), heading); car.ResetDynamics(); car.Throttle = car.Brake = car.Steer = 0;
+                yield return new WaitForSeconds(0.6f);
+                float maxDepth = 0f, t0 = Time.time; bool hit = false; float hitT = 0; var trace = new List<string>();
+                while (Time.time - t0 < 7f)
+                {
+                    car.Steer = 0; car.Brake = 0; car.Throttle = hit ? 0.5f : Mathf.Clamp01((kmh - Kmh) / 6f);
+                    yield return new WaitForFixedUpdate();
+                    if (!hit && Kmh < kmh * 0.5f && Time.time - t0 > 1.5f) { hit = true; hitT = Time.time; }
+                    if (Time.frameCount % 12 == 0)
+                    {
+                        Vector3 cq = car.transform.position; string near = "";
+                        foreach (var col in Physics.OverlapBox(cq + Vector3.up * 0.5f, new Vector3(1.0f, 0.8f, 2.4f), car.transform.rotation)) if (col.transform != car.transform) near += col.name + "/" + col.GetType().Name + " ";
+                        trace.Add($"   t={Time.time - t0:F2} pos ({cq.x:F1},{cq.y:F1},{cq.z:F1}) {Kmh:F0} km/h wheels {car.WheelsOnGround} touching: {near}");
+                    }
+                    foreach (int sx in new[] { -1, 1 })
+                        foreach (int sz in new[] { -1, 1 })
+                        {
+                            Vector3 wp = car.transform.TransformPoint(box.center + new Vector3(sx * box.size.x * 0.5f, -box.size.y * 0.5f + 0.1f, sz * box.size.z * 0.5f));
+                            Vector2 pt = new Vector2(wp.x, wp.z);
+                            bool inside = false; float minEdge = 1e9f;
+                            for (int i = 0, j = n - 1; i < n; j = i++)
+                            {
+                                Vector2 p0 = ring[i], p1 = ring[j];
+                                if ((p0.y > pt.y) != (p1.y > pt.y) && pt.x < (p1.x - p0.x) * (pt.y - p0.y) / (p1.y - p0.y) + p0.x) inside = !inside;
+                                Vector2 ab = p1 - p0; float t = Mathf.Clamp01(Vector2.Dot(pt - p0, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f)); minEdge = Mathf.Min(minEdge, (pt - (p0 + ab * t)).magnitude);
+                            }
+                            if (inside) maxDepth = Mathf.Max(maxDepth, minEdge);
+                        }
+                }
+                Vector3 cp = car.transform.position; bool centreInside = false;
+                for (int i = 0, j = n - 1; i < n; j = i++) { Vector2 p0 = ring[i], p1 = ring[j]; if ((p0.y > cp.z) != (p1.y > cp.z) && cp.x < (p1.x - p0.x) * (cp.z - p0.y) / (p1.y - p0.y) + p0.x) centreInside = !centreInside; }
+                runs++; bool bad = maxDepth > 0.35f || centreInside; if (bad) { fails++; Log.I("hitbox", $"   wall from ({a.x:F1},{a.y:F1}) to ({e.x:F1},{e.y:F1}), start ({start.x:F1},{start.y:F1}), height {b.h:F1}, ring points {n}, collision rings {(b.cn != null ? b.cn.Length : 0)}"); foreach (var tl in trace) Log.I("hitbox", tl); }
+                Log.I("hitbox", $"{(bad ? "BAD " : "ok  ")} house at ({mid.x:F0},{mid.y:F0}) {kmh:F0} km/h: deepest corner {maxDepth:F2} m inside the wall, car centre inside: {centreInside}, hit {(hit ? "yes" : "no")}, final speed {Kmh:F0}");
+            }
+        Log.I("hitbox", $"RESULT {fails} of {runs} runs put the car body more than 35 cm into a building");
+        Application.Quit();
+    }
+
     /// <summary>Whole-car collision: drop the car on its side / roof onto flat ground and onto a slope and check no hull point sinks in.</summary>
     public static IEnumerator HullRun(WorldBuilder w, CarController c)
     {

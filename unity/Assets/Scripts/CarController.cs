@@ -58,7 +58,7 @@ public class CarController : MonoBehaviour
     public readonly Vector3[] WheelPoint = new Vector3[4];
     public readonly Surface[] SurfaceUnderWheel = new Surface[4];
     public Surface CurrentSurface { get; private set; }
-    bool waitingForGround; int insideCheck;
+    bool waitingForGround; int insideCheck; public static bool NoBuildingEscape;
     public event System.Action Respawned;
     public event System.Action<float> Impact;
     public bool AbsActive { get; private set; }
@@ -162,7 +162,7 @@ public class CarController : MonoBehaviour
             return;
         }
         waitingForGround = false;
-        if (!World.Flat && (++insideCheck & 7) == 0 && World.InsideBuilding(transform.position, out Vector3 outside))
+        if (!World.Flat && !NoBuildingEscape && (++insideCheck & 7) == 0 && World.InsideBuilding(transform.position, out Vector3 outside))
         {   // trapped in a building (map teleport onto a roof, tunnelling at speed): step out through the nearest wall
             float gy = World.GroundHeight(outside.x, outside.z, outside.y, out _);
             Log.I("car", $"inside a building at ({transform.position.x:F1},{transform.position.z:F1}) -> moved out to ({outside.x:F1},{outside.z:F1})");
