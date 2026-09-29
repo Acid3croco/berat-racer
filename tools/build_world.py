@@ -19,10 +19,11 @@ indices RELATIVE to it (ci = floor((x - x0) / 400)). Sectors 0..9 x 0..9 read th
 data/big/hg (see HG_README.txt). Terrain heights of a chunk are base + uint16 * step (step >= 5 mm, larger for mountain chunks).
 
 Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs 8] [--out DIR] [--list data/big/hg_sectors.json] [--far-cache F]
+       [--far-cell 64] [--skip-existing] [--min-free-gb G] [--stop-file F]   (whole region: --list data/big/region_sectors.json --far-cell 128 --out ../world_region)
        (the world geometry always comes from --list; --sectors only selects which of them to (re)build)
 """
-import argparse, functools, shutil, gzip, math, hashlib, json, struct, sys, time, collections, zlib
-from concurrent.futures import ProcessPoolExecutor
+import argparse, functools, glob, os, shutil, gzip, math, hashlib, json, struct, sys, time, collections, zlib
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -35,6 +36,7 @@ from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point, Polygon, box, shape
 from shapely.strtree import STRtree
 from fetch import CX, CY
+from vec_io import exists_vec, read_vec
 from road_smooth import round_corners
 
 HALF = 16000
@@ -115,9 +117,9 @@ def load_vectors(name, si, sj):
     for dj in (-1, 0, 1):
         for di in (-1, 0, 1):
             i, j = si + di, sj + dj
-            f = BIG / "vec" / f"{name}_{i}_{j}.json"
-            if not f.exists(): continue
-            for feat in json.loads(f.read_text()):
+            base = BIG / "vec" / f"{name}_{i}_{j}"
+            if not exists_vec(base): continue
+            for feat in read_vec(base):
                 key = feat["properties"].get("cleabs") or feat.get("id")
                 if key in seen: continue
                 seen.add(key); out.append(feat)
@@ -125,12 +127,13 @@ def load_vectors(name, si, sj):
 
 @functools.lru_cache(maxsize=1)
 def load_pois():
-    """OSM points of interest of both downloads (original block and Haute-Garonne bbox), de-duplicated on (type, id)."""
+    """OSM points of interest of every download (original block, Haute-Garonne bbox, one file per other departement), de-duplicated on (type, id)."""
     seen, out = set(), []
-    for name in ("osm_poi.json", "osm_poi_hg.json"):
-        f = BIG / "vec" / name
+    files = [BIG / "vec" / n for n in ("osm_poi.json", "osm_poi_hg.json")] + sorted((BIG / "vec").glob("osm_poi_hg_*.json.gz"))
+    for f in files:
         if not f.exists(): continue
-        for e in json.loads(f.read_text())["elements"]:
+        text = gzip.open(f, "rt", encoding="utf-8").read() if f.suffix == ".gz" else f.read_text()
+        for e in json.loads(text)["elements"]:
             if (e["type"], e["id"]) in seen: continue
             seen.add((e["type"], e["id"])); out.append(e)
     return out
@@ -499,7 +502,7 @@ def runs_by_chunk(pts_xz, values=None):
     return [o for o in out if o[2] - o[1] >= 2]
 
 def process_sector(args):
-    si, sj, out_dir, ci0, cj0 = args                                                 # (ci0, cj0): chunk index of the world origin
+    si, sj, out_dir, ci0, cj0, far_cell = args                                                 # (ci0, cj0): chunk index of the world origin
     t0 = time.time()
     out_dir = Path(out_dir)
     ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
@@ -785,10 +788,11 @@ def process_sector(args):
             n_chunks += 1
 
     # ---- far terrain patch: 64 m vertices over the owned square (51 x 51, borders shared with the neighbours)
-    fv = np.arange(SECTOR // FAR_CELL + 1) * FAR_CELL
+    fv = np.arange(SECTOR // far_cell + 1) * far_cell
     fgx, fgz = np.meshgrid(ox + fv, oz + fv)
-    coarse = uniform_filter(win.mnt, 16, mode="nearest")                              # 32 m box before sampling every 64 m
+    coarse = uniform_filter(win.mnt, far_cell // 4, mode="nearest")                   # box of a quarter cell (32 m at 64 m) before sampling
     fh = win.sample(coarse, fgx.ravel(), fgz.ravel(), 2).reshape(fgx.shape)
+    if far_cell > FAR_CELL: far_raw = uniform_filter(far_raw, size=(far_cell // 16, far_cell // 16, 1), mode="nearest")     # coarser far grid: average the colour instead of aliasing it
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
     stats = dict(sector=(si, sj), chunks=n_chunks, roads=len(raw), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
@@ -811,6 +815,14 @@ def fill_far(far_h, far_c, covered):
     c[~covered] = FAR_NEUTRAL
     return h, c
 
+def chunks_done(out, si, sj, ci0, cj0, script_mtime):
+    """True when all 64 m_ chunk files of the sector exist and are newer than this script."""
+    for cj in range(sj * CPS, (sj + 1) * CPS):
+        for ci in range(si * CPS, (si + 1) * CPS):
+            f = out / "chunks" / f"m_{ci - ci0}_{cj - cj0}.bin.gz"
+            if not f.exists() or f.stat().st_mtime <= script_mtime: return False
+    return True
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sectors", default="", help="comma list si:sj to (re)build (default: every sector of --list)")
@@ -818,18 +830,23 @@ def main():
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--far-cache", default=str(DEFAULT_FAR_CACHE), help="npz keeping the far arrays between partial rebuilds")
+    ap.add_argument("--far-cell", type=int, default=FAR_CELL, help="far terrain vertex spacing in metres (divides 3200, multiple of 16)")
+    ap.add_argument("--skip-existing", action="store_true", help="skip a sector whose 64 m_ chunk files exist, are newer than this script and whose far patch is in the far cache")
+    ap.add_argument("--min-free-gb", type=float, default=0.0, help="stop submitting new sectors when the free disk space of --out falls below this (0 = no check)")
+    ap.add_argument("--stop-file", default="", help="stop submitting new sectors as soon as this file exists")
     a = ap.parse_args()
+    far_cell = a.far_cell
+    assert SECTOR % far_cell == 0 and far_cell % 16 == 0, "--far-cell must divide 3200 and be a multiple of 16"
     out = Path(a.out); (out / "chunks").mkdir(parents=True, exist_ok=True)
     world = [tuple(s) for s in json.loads(Path(a.list).read_text())["sectors"]]
     si_min, si_max = min(s[0] for s in world), max(s[0] for s in world)
     sj_min, sj_max = min(s[1] for s in world), max(s[1] for s in world)
     x0, z0 = -HALF + SECTOR * si_min, -HALF + SECTOR * sj_min
     ncx, ncz = CPS * (si_max - si_min + 1), CPS * (sj_max - sj_min + 1)
-    per = SECTOR // FAR_CELL
-    far_nx, far_nz = ncx * CHUNK // FAR_CELL + 1, ncz * CHUNK // FAR_CELL + 1
+    per = SECTOR // far_cell
+    far_nx, far_nz = ncx * CHUNK // far_cell + 1, ncz * CHUNK // far_cell + 1
     secs = [tuple(map(int, s.split(":"))) for s in a.sectors.split(",")] if a.sectors else world
     for s in secs: assert s in world, f"sector {s} is not in {a.list}"
-    jobs = [(i, j, str(out / "chunks"), CPS * si_min, CPS * sj_min) for i, j in secs]
 
     far_path = Path(a.far_cache)
     far_h = np.zeros((far_nz, far_nx), np.float32); far_c = np.zeros((far_nz, far_nx, 3), np.uint8); covered = np.zeros((far_nz, far_nx), bool)
@@ -837,27 +854,55 @@ def main():
         z = np.load(far_path)
         if z["h"].shape == far_h.shape: far_h, far_c, covered = z["h"], z["c"], z["covered"]
         else: print("far cache has another shape, ignored")
-    def save_cache(): np.savez(far_path, h=far_h, c=far_c, covered=covered)
+    def save_cache():
+        tmp = far_path.with_name(far_path.stem + ".tmp.npz")
+        np.savez(tmp, h=far_h, c=far_c, covered=covered); os.replace(tmp, far_path)
 
-    failed, t0 = [], time.time()
-    with ProcessPoolExecutor(a.jobs) as ex:
-        futs = [ex.submit(process_safe, j) for j in jobs]
-        for n, fu in enumerate(futs, 1):
-            si, sj, fh, fc, st = fu.result()
+    if a.skip_existing:
+        mtime = Path(__file__).stat().st_mtime
+        todo = [s for s in secs if not (chunks_done(out, *s, CPS * si_min, CPS * sj_min, mtime) and covered[(s[1] - sj_min) * per, (s[0] - si_min) * per])]
+        print(f"--skip-existing: {len(secs) - len(todo)} of {len(secs)} sectors already done", flush=True)
+        secs = todo
+    jobs = [(i, j, str(out / "chunks"), CPS * si_min, CPS * sj_min, far_cell) for i, j in secs]
+
+    def stop_reason():
+        if a.stop_file and Path(a.stop_file).exists(): return f"stop file {a.stop_file}"
+        free = shutil.disk_usage(out).free / 2**30
+        if a.min_free_gb and free < a.min_free_gb: return f"free disk {free:.1f} GB < {a.min_free_gb} GB"
+        return None
+
+    failed, t0, n_done, stopped = [], time.time(), 0, None
+    pending, todo_iter = set(), iter(jobs)
+    with ProcessPoolExecutor(a.jobs, max_tasks_per_child=40) as ex:
+        exhausted = False
+        while True:
+            while not exhausted and not stopped and len(pending) < a.jobs + 1:              # keep the pool busy without queuing everything, so a stop takes effect quickly
+                stopped = stop_reason()
+                if stopped: print(f"STOPPING (no new sectors): {stopped}", flush=True); break
+                j = next(todo_iter, None)
+                if j is None: exhausted = True; break
+                pending.add(ex.submit(process_safe, j))
+            if not pending: break
+            done = next(iter(wait(pending, return_when=FIRST_COMPLETED)[0]))
+            pending.discard(done)
+            try: si, sj, fh, fc, st = done.result()
+            except Exception as e:                                                             # worker died (e.g. out of memory): the pool is unusable
+                print(f"POOL BROKEN {e!r}: saving the far cache, re-run with --skip-existing", flush=True); save_cache(); raise
+            n_done += 1
             if fh is None:
-                failed.append((si, sj)); print(f"[{n}/{len(jobs)}] FAILED {si}:{sj} {st['error']}\n{st['trace']}", flush=True); continue
+                failed.append((si, sj)); print(f"[{n_done}/{len(jobs)}] FAILED {si}:{sj} {st['error']}\n{st['trace']}", flush=True); continue
             r, c = (sj - sj_min) * per, (si - si_min) * per
             far_h[r:r + per + 1, c:c + per + 1] = fh; far_c[r:r + per + 1, c:c + per + 1] = fc; covered[r:r + per + 1, c:c + per + 1] = True
-            print(f"[{n}/{len(jobs)}] {st}  elapsed {time.time() - t0:.0f}s", flush=True)
-            if n % 100 == 0: save_cache()
+            print(f"[{n_done}/{len(jobs)}] {st}  elapsed {time.time() - t0:.0f}s", flush=True)
+            if n_done % 25 == 0: save_cache()
     save_cache()
     fh_, fc_ = fill_far(far_h, far_c, covered)
     with open(out / "far.bin", "wb") as fo:
-        fo.write(struct.pack("<iiffff", far_nx, far_nz, FAR_CELL, x0, z0, 0.0))
+        fo.write(struct.pack("<iiffff", far_nx, far_nz, far_cell, x0, z0, 0.0))
         fo.write(fh_.astype("<f4").tobytes()); fo.write(fc_.tobytes())
-    (out / "world.json").write_text(json.dumps(dict(x0=x0, z0=z0, ncx=ncx, ncz=ncz, chunk=CHUNK, cell=CELL, cv=CV, farCell=FAR_CELL, farNx=far_nx, farNz=far_nz, lambertE=CX, lambertN=CY)))
+    (out / "world.json").write_text(json.dumps(dict(x0=x0, z0=z0, ncx=ncx, ncz=ncz, chunk=CHUNK, cell=CELL, cv=CV, farCell=far_cell, farNx=far_nx, farNz=far_nz, lambertE=CX, lambertN=CY)))
     shutil.copy(DEFAULT_SPAWN, out / "spawn.json")
-    print("done, failed sectors:", failed)
+    print("stopped early:" if stopped else "done,", stopped or "", "failed sectors:", failed, flush=True)
 
 if __name__ == "__main__":
     main()

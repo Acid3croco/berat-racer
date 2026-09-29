@@ -14,7 +14,8 @@ using UnityEngine;
 public class WorldBuilder : MonoBehaviour
 {
     public const float MidRadius = 5000f, MidKeep = 5700f, NearRadius = 1600f, NearKeep = 1950f;
-    const int FarTile = 1600, MaxInFlight = 4;
+    const int MaxInFlight = 4;
+    int FarTile = 1600;                                                    // far terrain tile size (m): grows with the world so the tile count stays around a thousand
 
     public WorldData Data;
     public RoadIndex Roads = new RoadIndex();
@@ -144,9 +145,11 @@ public class WorldBuilder : MonoBehaviour
     int farTilesX, farTilesZ; int[] farNeeded;
     void BuildFarTiles()
     {
+        FarTile = 1600; while ((WorldData.NCX * (long)WorldData.ChunkSize / FarTile) * (WorldData.NCZ * (long)WorldData.ChunkSize / FarTile) > 1300) FarTile *= 2;
         int cpt = FarTile / WorldData.ChunkSize;                                                            // chunks per tile side
         farTilesX = Mathf.CeilToInt(WorldData.NCX / (float)cpt); farTilesZ = Mathf.CeilToInt(WorldData.NCZ / (float)cpt);
         int per = Mathf.RoundToInt(FarTile / Data.FarCell), n = per + 1, NX = Data.FarNx, NZ = Data.FarNz;
+        farMat.SetFloat("_HoleRadius", 0f);
         farTiles = new GameObject[farTilesX * farTilesZ]; farCovered = new int[farTiles.Length]; farNeeded = new int[farTiles.Length];
         foreach (int key in exists) farNeeded[(key / WorldData.NCX / cpt) * farTilesX + (key % WorldData.NCX) / cpt]++;
         var root = new GameObject("far terrain").transform; root.SetParent(transform, false);
@@ -170,7 +173,7 @@ public class WorldBuilder : MonoBehaviour
                     }
                 farTiles[tz * farTilesX + tx] = MakeObject($"far_{tx}_{tz}", root, mb.ToMesh("far"), farMat, false, false); made++;
             }
-        Log.I("world", $"far terrain: {made} tiles");
+        Log.I("world", $"far terrain: {made} tiles of {FarTile} m");
     }
 
     void UpdateFarCoverage(Chunk c, int delta)
@@ -178,7 +181,7 @@ public class WorldBuilder : MonoBehaviour
         int cpt = FarTile / WorldData.ChunkSize, t = (c.cj / cpt) * farTilesX + (c.ci / cpt);
         if (farTiles == null || t >= farTiles.Length || farTiles[t] == null) return;
         farCovered[t] += delta;
-        farTiles[t].SetActive(farCovered[t] < farNeeded[t]);
+        // (far tiles stay visible; the shader cuts a hole where the detailed chunks are)
     }
 
     // ------------------------------------------------------------------ streaming
@@ -363,6 +366,11 @@ public class WorldBuilder : MonoBehaviour
         if (Time.unscaledTime < nextCull) return;
         nextCull = Time.unscaledTime + 0.35f; lastFocus = focus;
         Stream(focus, MidRadius * MidScale, NearRadius, MidKeep * MidScale, NearKeep, false);
+        {   // the far terrain has a hole around the player, as wide as the loaded detail allows: never past a chunk that is still on its way
+            float hole = MidRadius * MidScale - 350f;
+            foreach (var r in reqs) if (!r.near) hole = Mathf.Min(hole, r.prio - 150f);
+            farMat.SetVector("_HoleCenter", new Vector4(focus.x, 0f, focus.z, 0f)); farMat.SetFloat("_HoleRadius", Mathf.Max(hole, 0f));
+        }
 
         if (DebugHide.Contains("far")) { foreach (var t in farTiles) if (t != null) t.SetActive(false); }
         var f2 = new Vector2(focus.x, focus.z);

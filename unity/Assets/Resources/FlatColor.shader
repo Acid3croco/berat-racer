@@ -10,6 +10,8 @@ Shader "Berat/FlatColor"
         _Noise ("Surface noise amount", Float) = 0
         _NoiseScale ("Surface noise scale", Float) = 0.8
         _Emission ("Emission", Float) = 0
+        _HoleRadius ("Far terrain: hole radius around the player", Float) = 0
+        _HoleCenter ("Far terrain: hole centre (xz)", Vector) = (0,0,0,0)
     }
     SubShader
     {
@@ -29,7 +31,7 @@ Shader "Berat/FlatColor"
             #include "Lighting.cginc"
             #include "AutoLight.cginc"
 
-            float _Noise, _NoiseScale, _Emission;
+            float _Noise, _NoiseScale, _Emission, _HoleRadius; float4 _HoleCenter;
 
             struct appdata { float4 vertex : POSITION; fixed4 color : COLOR; };
             struct v2f { float4 pos : SV_POSITION; fixed4 col : COLOR; float3 wp : TEXCOORD0; SHADOW_COORDS(1) UNITY_FOG_COORDS(2) };
@@ -55,6 +57,7 @@ Shader "Berat/FlatColor"
 
             fixed4 frag (v2f i) : SV_Target
             {
+                if (_HoleRadius > 0.0) { float2 dh = i.wp.xz - _HoleCenter.xz; if (dot(dh, dh) < _HoleRadius * _HoleRadius) discard; }       // far terrain: the detailed chunks cover this disc
                 float3 n = normalize(cross(ddy(i.wp), ddx(i.wp)));
                 float3 V = normalize(_WorldSpaceCameraPos - i.wp);
                 n *= sign(dot(n, V));                                           // always face the viewer
