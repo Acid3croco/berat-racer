@@ -180,6 +180,7 @@ public class GameBootstrap : MonoBehaviour
         carVisual = CarVisual.Build(carGo.transform, carMat, spec);
         car = carGo.AddComponent<CarController>();
         car.Init(world, carVisual.wheels, spec);
+        { var la = System.Environment.GetCommandLineArgs(); int mi = System.Array.IndexOf(la, "-model"); if (mi >= 0 && mi + 1 < la.Length && int.TryParse(la[mi + 1], out int mv)) car.SetModel(mv); }
         car.Impact += v => rumbleImpact = Mathf.Max(rumbleImpact, Mathf.Clamp01(v / 10f));
         cam.SetCar(car);
         map.Init(world, car, cam, mainCam);
@@ -246,6 +247,7 @@ public class GameBootstrap : MonoBehaviour
             if (kb.fKey.wasPressedThisFrame) CycleCar();
             if (kb.yKey.wasPressedThisFrame && traffic != null) traffic.SetEnabled(!traffic.Enabled);
             if (kb.vKey.wasPressedThisFrame) { QualitySettings.vSyncCount = 1 - QualitySettings.vSyncCount; Log.I("gfx", "vsync " + (QualitySettings.vSyncCount == 1 ? "ON" : "OFF")); copiedNote = "vsync " + (QualitySettings.vSyncCount == 1 ? "on" : "off"); copiedAt = Time.unscaledTime; }
+            if (kb.gKey.wasPressedThisFrame) car.SetModel(car.ModelIndex + 1);
             if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 4); Log.I("car", "assist mode " + car.AssistMode); }
             if (audio != null && (kb.leftBracketKey.wasPressedThisFrame || kb.rightBracketKey.wasPressedThisFrame))
             { audio.Volume = Mathf.Clamp(audio.Volume + (kb.rightBracketKey.wasPressedThisFrame ? 0.05f : -0.05f), 0f, 1f); Log.I("audio", $"volume {audio.Volume * 100:F0}%"); }
@@ -942,7 +944,7 @@ public class GameBootstrap : MonoBehaviour
         if (minimap != null) minimap.DrawGUI();
         if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 138, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
         DrawPositionBox();
-        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
+        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   model {DrivingModels.Names[car.ModelIndex].Split(' ')[0]}  assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
             GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)

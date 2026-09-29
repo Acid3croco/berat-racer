@@ -37,14 +37,14 @@ public class CarController : MonoBehaviour
     public float SpeedKmh => Body.linearVelocity.magnitude * 3.6f;
     public float ForwardSpeed => Vector3.Dot(Body.linearVelocity, transform.forward);
     public Rigidbody Body { get; private set; }
-    public int WheelsOnGround { get; private set; }
+    public int WheelsOnGround { get; set; }
     /// <summary>0..1 how hard the tyres are sliding (drives squeal and camera shake).</summary>
-    public float SlipAmount { get; private set; }
-    public float LongAccel { get; private set; }
-    public float Rpm => drivetrain.Rpm;
-    public int Gear => drivetrain.Gear;
-    public float EngineLoad => drivetrain.Load;
-    public bool Shifting => drivetrain.Shifting;
+    public float SlipAmount { get; set; }
+    public float LongAccel { get; set; }
+    public float Rpm => Model != null ? Model.Rpm : drivetrain.Rpm;
+    public int Gear => Model != null ? Model.Gear : drivetrain.Gear;
+    public float EngineLoad => Model != null ? Model.Load : drivetrain.Load;
+    public bool Shifting => Model != null ? Model.Shifting : drivetrain.Shifting;
     public float ClutchEngagement => drivetrain.Clutch;
     public bool ClutchLocked => drivetrain.Locked;
     public float EngineTorque => drivetrain.TorqueE;
@@ -57,7 +57,20 @@ public class CarController : MonoBehaviour
     public readonly float[] DebugComp = new float[4];
     public readonly Vector3[] WheelPoint = new Vector3[4];
     public readonly Surface[] SurfaceUnderWheel = new Surface[4];
-    public Surface CurrentSurface { get; private set; }
+    public Surface CurrentSurface { get; set; }
+    // ---- pluggable driving model (null = the built-in realistic simulation below)
+    public DrivingModel Model { get; private set; }
+    public int ModelIndex { get; private set; }
+    public Transform[] WheelVisuals { get; private set; }
+    public void SetModel(int index)
+    {
+        index = ((index % DrivingModels.Count) + DrivingModels.Count) % DrivingModels.Count;
+        Model?.Detach();
+        Model = DrivingModels.Create(index); ModelIndex = index;
+        if (Model != null) { Model.Attach(this); Model.OnReset(); }
+        ResetDynamics();
+        Log.I("car", $"driving model: {DrivingModels.Names[index]}");
+    }
     bool waitingForGround; int insideCheck; public static bool NoBuildingEscape;
     public event System.Action Respawned;
     public event System.Action<float> Impact;
@@ -81,7 +94,7 @@ public class CarController : MonoBehaviour
     // ------------------------------------------------------------------ setup
     public void Init(WorldBuilder world, Transform[] wheelVisuals, CarSpec spec)
     {
-        World = world; Spec = spec;
+        World = world; Spec = spec; WheelVisuals = wheelVisuals;
         Mass = spec.Mass; WheelR = spec.WheelR; WheelBase = spec.Wheelbase; TrackWidth = 0.5f * (spec.TrackF + spec.TrackR); FrontZ = spec.A; RearZ = -spec.B;
         Body = GetComponent<Rigidbody>();
         var box = gameObject.AddComponent<BoxCollider>();
@@ -148,6 +161,7 @@ public class CarController : MonoBehaviour
             WheelFx[i] = WheelSlip[i] = WheelKappa[i] = 0;
         }
         drivetrain.Reset(); steerSm = steerCentre = driveSm = brakeSm = 0; SlipAmount = LongAccel = 0; prevFwdSpeed = 0; tcsCut = 0;
+        Model?.OnReset();
     }
 
     // ------------------------------------------------------------------ physics step
@@ -179,6 +193,7 @@ public class CarController : MonoBehaviour
             Respawn(new Vector3(float.IsNaN(transform.position.x) ? 0 : transform.position.x, floor + 1.2f, float.IsNaN(transform.position.z) ? 0 : transform.position.z));
             return;
         }
+        if (Model != null) { Model.FixedStep(dt); return; }                                                  // another driving model owns the step
         Vector3 up = transform.up;
         bool upright = up.y > 0.25f;
         if (!upright && speed < 3f) { flipTimer += dt; if (flipTimer > 2.5f) { Respawn(transform.position + Vector3.up * 1f); return; } } else flipTimer = 0f;
@@ -404,6 +419,7 @@ public class CarController : MonoBehaviour
     /// Whole-hull ground contact. Any hull point that ends up below the ground is pushed out along the surface normal
     /// (stiff spring, one-sided damper) and dragged by Coulomb friction, so bumpers, sills and the roof interact with slopes as well as the wheels do.
     /// </summary>
+    public void HullContact(float dt) => BellyContact(dt);
     void BellyContact(float dt)
     {
         foreach (var lp in belly)

@@ -28,6 +28,12 @@ public class CarSpec
     public float Acc0100Lo, Acc0100Hi, TopLo, TopHi, BrakeLo, BrakeHi, SkidLo, SkidHi;
 
     // ---- derived
+    public float TorqueAt(float rpm)
+    {
+        if (rpm <= TqRpm[0]) return TqNm[0];
+        for (int i = 1; i < TqRpm.Length; i++) if (rpm <= TqRpm[i]) return Mathf.Lerp(TqNm[i - 1], TqNm[i], (rpm - TqRpm[i - 1]) / (TqRpm[i] - TqRpm[i - 1]));
+        return TqNm[TqNm.Length - 1];
+    }
     public float A => Wheelbase * (1f - FrontWeight);               // CG to front axle
     public float B => Wheelbase * FrontWeight;                      // CG to rear axle
     public float ZFront => A + FrontOverhang;
