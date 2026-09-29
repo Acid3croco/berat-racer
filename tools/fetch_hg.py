@@ -6,15 +6,16 @@ Per new sector (si, sj) (grid of fetch_vectors.py, indices may be negative), wri
   ortho_{si}_{sj}.jpg  3.2 km, 800 x 800 px (4 m), the server JPEG as received.
   tile (i, j) = floor((x - X0) / 1600) / floor((y - Y0) / 1600) with X0, Y0 of the existing grid, i east, j north; tiles 2si..2si+1, 2sj..2sj+1 belong to sector (si, sj).
   coverage.jsonl    one JSON line per finished tile (append-only): kind, i, j, status, nan_frac, fallback_frac.
-Vectors: data/big/vec/{layer}_{si}_{sj}.json (as fetch_vectors.py) and data/big/vec/osm_poi_hg.json.
+Vectors: data/big/vec/{layer}_{si}_{sj}.json.gz (gzip level 6; older ones .json, read with vec_io.read_vec) (as fetch_vectors.py) and data/big/vec/osm_poi_hg.json.
 Usage: uv run python fetch_hg.py [data/big/hg_sectors{_09_12}.json]   (default: Haute-Garonne; other departements: run hg_sectors.py 09 12 first).
 Existing files are skipped: re-running resumes. Stops if free disk < 15 GB.
 """
-import io, json, shutil, sys, threading, time
+import gzip, io, json, shutil, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import numpy as np, rasterio, requests
 from fetch import CX, CY
+from vec_io import exists_vec
 from fetch_vectors import LAYERS as VLAYERS, wfs, SECTOR
 
 X0, Y0 = CX - 16000, CY - 16000
@@ -23,7 +24,8 @@ OUT = Path("data/big/hg"); OUT.mkdir(parents=True, exist_ok=True)
 VEC = Path("data/big/vec"); VEC.mkdir(parents=True, exist_ok=True)
 LID = {"mnt": "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93", "mnh": "IGNF_LIDAR-HD_MNH_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93"}
 RGE = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES"
-MIN_FREE = 15 * 2**30
+MIN_FREE = 13 * 2**30                                                      # hard floor; the region driver gates whole departements at 14 GB
+COV = "coverage_region.jsonl"                                                # region runs must not touch the old coverage.jsonl
 lock, stop = threading.Lock(), threading.Event()
 
 def get(params, tries=6):
@@ -49,7 +51,7 @@ def save_npz(f, a):
     tmp = f.with_name(f.stem + ".tmp.npz"); np.savez_compressed(tmp, a=a); tmp.rename(f)
 
 def log_cov(rec):
-    with lock, open(OUT / "coverage.jsonl", "a") as fh: fh.write(json.dumps(rec) + "\n")
+    with lock, open(OUT / COV, "a") as fh: fh.write(json.dumps(rec) + "\n")
 
 def raster(kind, i, j):
     if kind == "ortho":
@@ -102,17 +104,17 @@ def rjob(a):
 
 def vjob(a):
     name, si, sj = a
-    f = VEC / f"{name}_{si}_{sj}.json"
-    if f.exists() or not disk_ok(): return
+    f = VEC / f"{name}_{si}_{sj}.json.gz"
+    if exists_vec(VEC / f"{name}_{si}_{sj}") or not disk_ok(): return
     x, y = X0 + si * SECTOR, Y0 + sj * SECTOR
     feats = wfs(VLAYERS[name], f"{x},{y},{x+SECTOR},{y+SECTOR}")
-    f.with_suffix(".tmp").write_text(json.dumps(feats)); f.with_suffix(".tmp").rename(f)
+    tmp = f.with_name(f.name + ".tmp"); tmp.write_bytes(gzip.compress(json.dumps(feats).encode(), 6)); tmp.rename(f)
 
 TAG = ""
 def osm(bbox):
     """OSM POIs for the whole bbox, in a 4 x 4 grid of Overpass queries, merged (same filter as fetch_vectors.py)."""
-    f = VEC / f"osm_poi_hg{TAG}.json"
-    if f.exists(): return
+    f = VEC / f"osm_poi_hg{TAG}.json.gz"
+    if f.exists() or (VEC / f"osm_poi_hg{TAG}.json").exists(): return
     from pyproj import Transformer
     t = Transformer.from_crs(2154, 4326, always_xy=True)
     (lo0, la0), (lo1, la1) = t.transform(bbox[0], bbox[1]), t.transform(bbox[2], bbox[3])
@@ -135,7 +137,7 @@ def osm(bbox):
             else: raise RuntimeError(f"osm cell {a},{b} failed")
             print(f"osm cell {a},{b}: total {len(els)}", flush=True)
             time.sleep(3)
-    f.with_suffix(".tmp").write_text(json.dumps({"elements": list(els.values())})); f.with_suffix(".tmp").rename(f)
+    tmp = f.with_name(f.name + ".tmp"); tmp.write_bytes(gzip.compress(json.dumps({"elements": list(els.values())}).encode(), 6)); tmp.rename(f)
 
 if __name__ == "__main__":
     sf = sys.argv[1] if len(sys.argv) > 1 else "data/big/hg_sectors.json"          # sector list from hg_sectors.py [codes...]
@@ -168,5 +170,5 @@ if __name__ == "__main__":
     th2 = threading.Thread(target=osm_t); th2.start()
     run(4, rjob, rj, "raster")
     th.join(); th2.join()
-    json.dump(dict(failures=fails, osm_error=osm_err), open(OUT / "failures.json", "w"), indent=1)
+    json.dump(dict(failures=fails, osm_error=osm_err), open(OUT / f"failures{TAG}.json", "w"), indent=1)
     print("DONE failures:", len(fails), fails[:10], flush=True)
