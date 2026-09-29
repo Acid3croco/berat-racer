@@ -48,17 +48,17 @@ if __name__ == "__main__":
     dirp = sys.argv[1]; w = json.load(open(Path(dirp) / "world.json")); print(w)
     files = sorted((Path(dirp) / "chunks").glob("m_*"))
     print(len(files), "m chunks")
-    H, maxstep, nparse = {}, 0, 0
+    H, S, maxstep, nparse = {}, {}, 0, 0
     for f in files:
         _, ci, cj = f.name.split(".")[0].split("_"); ci, cj = int(ci), int(cj)
-        d = parse_mid(gzip.open(f).read()); assert (d["ci"], d["cj"]) == (ci, cj); H[ci, cj] = d["H"]; maxstep = max(maxstep, d["step"]); nparse += 1
+        d = parse_mid(gzip.open(f).read()); assert (d["ci"], d["cj"]) == (ci, cj); H[ci, cj] = d["H"]; S[ci, cj] = d["step"]; maxstep = max(maxstep, d["step"]); nparse += 1
     print("parsed", nparse, "max step", maxstep)
     # seams: chunk (ci,cj) east column == chunk (ci+1,cj) west column
     worst = 0
     for (ci, cj), h in H.items():
-        if (ci + 1, cj) in H: worst = max(worst, np.abs(h[:, -1] - H[ci + 1, cj][:, 0]).max())
-        if (ci, cj + 1) in H: worst = max(worst, np.abs(h[-1, :] - H[ci, cj + 1][0, :]).max())
-    print("max seam mismatch (m)", worst)
+        for n_, e in (((ci + 1, cj), np.abs(h[:, -1] - H.get((ci + 1, cj), h)[:, 0]).max()), ((ci, cj + 1), np.abs(h[-1, :] - H.get((ci, cj + 1), h)[0, :]).max())):
+            if n_ in H: worst = max(worst, e / max(S[ci, cj], S[n_]))
+    print("max seam mismatch in units of the coarser chunk step (<=1 = pure quantisation)", worst)
     # original sectors vs ../world (relative -> absolute: subtract x0 chunk offset)
     off_i, off_j = round((w["x0"] + 16000) / 400), round((w["z0"] + 16000) / 400)
     same = diff = 0; bad = []

@@ -259,7 +259,7 @@ public class ChunkMeshes
         m.BuildTerrainFull(d);
         m.BuildMarks(d, new Corridors(d.Roads, d.Ctx));
         var local = new RoadIndex(d.Roads); local.Add(-1, d.Ctx);                       // own + neighbouring roads: clearance for everything solid
-        var boxes = m.BuildBuildingDetail(d);
+        var boxes = m.BuildBuildingDetail(d, local);
         m.BuildStreetFurniture(d, local, boxes);
         m.BuildTrees(d, local);
         m.BuildShrubs(d, local);
@@ -314,7 +314,7 @@ public class ChunkMeshes
         }
     }
 
-    List<BoxSpec> BuildBuildingDetail(ChunkData d)
+    List<BoxSpec> BuildBuildingDetail(ChunkData d, RoadIndex local)
     {
         var boxes = new List<BoxSpec>(); var pts = new List<Vector2>();
         foreach (var bd in d.Buildings)
@@ -325,7 +325,7 @@ public class ChunkMeshes
             var look = LookOf(bd);
             int fei = Mathf.Clamp(bd.fe, 0, n - 1); Vector2 fm = (pts[fei] + pts[(fei + 1) % n]) * 0.5f;
             float yg = Mathf.Clamp(d.Height(fm.x, fm.y), y0 + 0.4f, y1 - 2f);      // doors sit on the ground at the road-facing wall
-            Facade.Build(bd, pts, look.style, yg, y1, Facades, look.rng);
+            Facade.Build(bd, pts, look.style, yg, y1, Facades, look.rng, local.EdgeClearance);
             boxes.Add(FitBox(pts, y0, y1 + Mathf.Max(bd.r, 0)));
             AddCollisionPrism(bd, Collision, y0, y1 + Mathf.Max(bd.r, 0));
         }

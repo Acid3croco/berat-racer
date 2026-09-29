@@ -111,7 +111,7 @@ public static class Facade
         Q(mb, e, tc + w * 0.28f, tc + w * 0.34f, yg + 1.0f, yg + 1.1f, 0.055f, C(220, 200, 120)); // handle
     }
 
-    public static void Build(BuildingData bd, List<Vector2> ring, FacadeStyle s, float yg, float top, MeshBuilder mb, System.Random rng)
+    public static void Build(BuildingData bd, List<Vector2> ring, FacadeStyle s, float yg, float top, MeshBuilder mb, System.Random rng, System.Func<float, float, float> roadClearance = null)
     {
         int n = ring.Count;
         Vector2 cen = Vector2.zero; foreach (var p in ring) cen += p; cen /= n;
@@ -184,7 +184,7 @@ public static class Facade
             }
         }
         if (s.tower && bd.tw != null && bd.tw.Length == 3) OctTower(mb, new Vector2(bd.tw[0], bd.tw[1]), yg, yg + bd.tw[2], s);
-        if (s.flag) Flag(mb, ring, fe, yg, top);
+        if (s.flag) Flag(mb, ring, fe, yg, top, roadClearance);
     }
 
     // ---------------------------------------------------------------- special edges
@@ -292,13 +292,30 @@ public static class Facade
         for (int k = 0; k < N; k++) mb.Tri(ctr, ring[k], ring[(k + 1) % N]);
     }
 
-    static void Flag(MeshBuilder mb, List<Vector2> ring, int fe, float yg, float top)
+    static bool PointInRing(List<Vector2> r, Vector2 q)
+    {
+        bool inside = false;
+        for (int i = 0, j = r.Count - 1; i < r.Count; j = i++)
+            if ((r[i].y > q.y) != (r[j].y > q.y) && q.x < (r[j].x - r[i].x) * (q.y - r[i].y) / (r[j].y - r[i].y) + r[i].x) inside = !inside;
+        return inside;
+    }
+
+    static void Flag(MeshBuilder mb, List<Vector2> ring, int fe, float yg, float top, System.Func<float, float, float> roadClearance)
     {
         Vector2 a = ring[fe], b = ring[(fe + 1) % ring.Count];
         Vector2 p = Vector2.Lerp(a, b, 0.5f), d = (b - a).normalized, nrm = new Vector2(d.y, -d.x);
         Vector2 cen = Vector2.zero; foreach (var q in ring) cen += q; cen /= ring.Count;
         if (Vector2.Dot(nrm, p - cen) < 0) nrm = -nrm;
-        Vector2 pole = p + nrm * 1.6f + d * 3.2f;                      // stands on the ground beside the entrance
+        // stands on the ground beside the entrance: the first spot that is off every road (edge clearance >= 1.3 m) and outside the building; no flag if there is none
+        Vector2 pole = default; bool found = false;
+        foreach (var (front, along) in new[] { (1.6f, 3.2f), (1.6f, -3.2f), (1.2f, 5.5f), (1.2f, -5.5f), (0.8f, 8f), (0.8f, -8f), (0.7f, 0f), (0.5f, 11f), (0.5f, -11f) })
+        {
+            Vector2 c = p + nrm * front + d * along;
+            if (roadClearance != null && roadClearance(c.x, c.y) < 1.3f) continue;
+            if (PointInRing(ring, c)) continue;
+            pole = c; found = true; break;
+        }
+        if (!found) return;
         float y0 = yg - 0.05f;
         mb.Box(new Vector3(pole.x, y0 + 3.3f, pole.y), new Vector3(0.09f, 6.6f, 0.09f), C(210, 210, 210));
         Color32[] fc = { C(0, 85, 164), C(245, 245, 245), C(239, 65, 53) };      // tricolore
