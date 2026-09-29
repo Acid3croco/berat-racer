@@ -8,8 +8,8 @@ using UnityEngine.InputSystem;
 /// </summary>
 public class MapView : MonoBehaviour
 {
-    // zoom levels: 3 per decade on a log scale, 10 m .. 1 km  (10, 21.5, 46.4, 100, 215, 464, 1000)
-    static readonly float[] Levels = { 10f, 21.5443f, 46.4159f, 100f, 215.443f, 464.159f, 1000f };
+    // zoom levels: 3 per decade on a log scale, 10 m .. 10 km  (10, 21.5, 46.4, 100, 215, 464, 1000, 2154, 4642, 10000)
+    static readonly float[] Levels = { 10f, 21.5443f, 46.4159f, 100f, 215.443f, 464.159f, 1000f, 2154.43f, 4641.59f, 10000f };
     const int StartLevel = 3;
     const float Edge = WorldData.Half - 6f;
     int level = StartLevel; float lastStep; int openedFrame = -1;
@@ -24,6 +24,9 @@ public class MapView : MonoBehaviour
     Vector2 pos; float alt = 100f, groundSmooth;
     Vector3 aimPoint; bool aimValid; Vector2 aimScreen; float mouseUntil; Vector2 lastMouse;
     bool clampedX, clampedZ;
+    // mouse drag: hold + move pans the map; only a quick click that never moved teleports
+    Vector2 lastMousePrev; bool held, dragging; Vector2 pressScreen; float pressTime; Vector2 dragDelta;
+    const float ClickMaxSeconds = 0.35f, DragPixels = 6f;
     GameObject carMarker, pin; float prevFov, prevFar, prevTimeScale = 1f; bool prevFog;
     GUIStyle label, title, gridLab;
 
@@ -60,10 +63,10 @@ public class MapView : MonoBehaviour
         level = StartLevel; alt = Levels[level]; groundSmooth = world.Data.TerrainHeight(pos.x, pos.y);
         follow.enabled = false;
         prevFov = cam.fieldOfView; prevFar = cam.farClipPlane; prevFog = RenderSettings.fog;
-        cam.fieldOfView = 55f; cam.farClipPlane = 9000f; RenderSettings.fog = false;
+        cam.fieldOfView = 55f; cam.farClipPlane = 30000f; RenderSettings.fog = false;
         prevTimeScale = Time.timeScale; Time.timeScale = 0f;
         carMarker.SetActive(true); pin.SetActive(true);
-        mouseUntil = 0; lastMouse = Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero;
+        mouseUntil = 0; lastMouse = lastMousePrev = Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero; held = dragging = false;
         ApplyCamera();
         Log.I("map", $"OPEN at car ({pos.x:F0},{pos.y:F0}) alt {alt:F0} m");
     }
@@ -111,10 +114,25 @@ public class MapView : MonoBehaviour
             float sc = mouse.scroll.ReadValue().y;
             if (Mathf.Abs(sc) > 0.01f && Time.unscaledTime - lastStep > 0.09f) { step += sc > 0 ? -1 : 1; lastStep = Time.unscaledTime; }   // one notch = one level
             Vector2 mp = mouse.position.ReadValue();
+            dragDelta = Vector2.zero;
             if ((mp - lastMouse).sqrMagnitude > 4f) mouseUntil = Time.unscaledTime + 3f;
             lastMouse = mp;
-            confirm |= mouse.leftButton.wasPressedThisFrame;
-            if (mouse.leftButton.wasPressedThisFrame) mouseUntil = Time.unscaledTime + 3f;
+            if (mouse.leftButton.wasPressedThisFrame) { held = true; dragging = false; pressScreen = mp; pressTime = Time.unscaledTime; mouseUntil = Time.unscaledTime + 3f; }
+            if (held && mouse.leftButton.isPressed)
+            {
+                if (!dragging && (mp - pressScreen).magnitude > DragPixels) dragging = true;
+                if (dragging)
+                {
+                    float wpp = 2f * alt * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) / Screen.height;   // metres per screen pixel at this altitude
+                    dragDelta = -(mp - lastMousePrev) * wpp; mouseUntil = Time.unscaledTime + 3f;
+                }
+            }
+            if (held && mouse.leftButton.wasReleasedThisFrame)
+            {
+                confirm |= !dragging && Time.unscaledTime - pressTime <= ClickMaxSeconds;     // holding still for long, or any drag, does nothing
+                held = false; dragging = false;
+            }
+            lastMousePrev = mp;
             cancel |= mouse.rightButton.wasPressedThisFrame;
         }
         if (pan.magnitude > 1f) pan.Normalize();
@@ -127,7 +145,7 @@ public class MapView : MonoBehaviour
         alt = Mathf.Exp(Mathf.Lerp(Mathf.Log(alt), Mathf.Log(Levels[level]), 1f - Mathf.Exp(-10f * dt)));   // smooth log-space glide between levels
         world.HideTrees = alt < 45f;                                                                        // camera would sit inside the canopy
         float speed = alt * 1.1f * (fast ? 3f : 1f);
-        Vector2 np = pos + pan * speed * dt;
+        Vector2 np = pos + pan * speed * dt + dragDelta;
         // stop at the map border (camera never leaves the mapped area)
         clampedX = Mathf.Abs(np.x) > Edge; clampedZ = Mathf.Abs(np.y) > Edge;
         pos = new Vector2(Mathf.Clamp(np.x, -Edge, Edge), Mathf.Clamp(np.y, -Edge, Edge));
@@ -252,6 +270,6 @@ public class MapView : MonoBehaviour
         GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(box, Texture2D.whiteTexture); GUI.color = Color.white;
         GUI.Label(new Rect(box.x + 10, box.y + 6, box.width - 20, 26), info + $"      altitude {alt:F0} m  (zoom {level + 1}/{Levels.Length})" + (clampedX || clampedZ ? "      [map edge]" : ""), label);
         GUI.Label(new Rect(box.x + 10, box.y + 32, box.width - 20, 50),
-            "Pan: WASD / arrows / left stick (Shift / L3 = fast)     Zoom (10 m … 1 km, 3 steps per decade): scroll / Q,E / L1,R1 / L2,R2\nTeleport: Enter, Space, click / Cross      Close: M / Select / Esc / right-click / Circle", label);
+            "Pan: WASD / arrows / left stick (Shift / L3 = fast)     Drag with the mouse to pan (a quick click without moving teleports)     Zoom (10 m … 10 km, 3 steps per decade): scroll / Q,E / L1,R1 / L2,R2\nTeleport: Enter, Space, click / Cross      Close: M / Select / Esc / right-click / Circle", label);
     }
 }
