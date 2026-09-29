@@ -114,7 +114,7 @@ public class FollowCamera : MonoBehaviour
         Vector3 gs = gSm;
         Vector3 hdgH = new Vector3(heading.x, 0, heading.z).normalized;
         Vector3 head = transform.right * Mathf.Clamp(-gs.x * 0.004f, -0.10f, 0.10f) * gk                                  // cornering: at most a few cm to the outside
-                     + Vector3.down * Mathf.Clamp(gs.y * 0.030f, -0.15f, 0.40f) * gk                                      // compression (bottom of a hill, bumps): squashed down; crest: floats up a little
+                     + Vector3.down * Mathf.Clamp(gs.y * 0.030f, -0.30f, 0.40f) * gk                                      // compression (bottom of a hill, start of a climb, landing): squashed down; crest or take-off (about -1 g in the air): floats up
                      + hdgH * (Mathf.Clamp(-gs.z * 0.018f, -0.25f, 0.55f) * gk + impact * 0.5f);                          // braking / hitting a wall: the camera rushes toward the car
         transform.position += head * gScale;
         float pitchG = Mathf.Clamp(-gs.z * 0.10f - gs.y * 0.03f, -2.5f, 3.5f) * gk;
