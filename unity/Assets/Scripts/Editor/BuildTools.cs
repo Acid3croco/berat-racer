@@ -10,7 +10,7 @@ public static class BuildTools
     {
         PlayerSettings.productName = "Berat Racer"; PlayerSettings.companyName = "local";
         PlayerSettings.colorSpace = ColorSpace.Gamma;
-        PlayerSettings.defaultScreenWidth = 1920; PlayerSettings.defaultScreenHeight = 1080;
+        PlayerSettings.defaultScreenWidth = 1600; PlayerSettings.defaultScreenHeight = 900; PlayerSettings.resizableWindow = true;
         PlayerSettings.fullScreenMode = FullScreenMode.Windowed;
         PlayerSettings.runInBackground = true;
         Directory.CreateDirectory("Assets/Scenes");

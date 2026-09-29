@@ -27,6 +27,7 @@ public static class CarVisual
             var wb = new MeshBuilder(); float tw = sp.TyreWidth(i), R = sp.WheelR; float side = i % 2 == 0 ? -1f : 1f;
             wb.CylinderX(Vector3.zero, R, tw, 14, Tyre);
             float face = side * (tw * 0.5f + 0.004f);
+            wb.CylinderX(new Vector3(face - side * 0.004f, 0, 0), R * 0.92f, 0.012f, 14, new Color32(44, 44, 48, 255));                       // sidewall band
             wb.CylinderX(new Vector3(face, 0, 0), R * 0.66f, 0.02f, 14, sp.Style == BodyStyle.Sports ? C(40, 40, 44) : Rim);
             for (int k = 0; k < 5; k++)
             {
@@ -82,6 +83,25 @@ public static class CarVisual
         return pts;
     }
 
+
+    /// <summary>A square-section bar from a to b (used for pillars that must follow the glass edge exactly).</summary>
+    static void Strut(MeshBuilder mb, Vector3 a, Vector3 b, float thick, Color32 c)
+    {
+        Vector3 d = b - a; mb.BoxQ((a + b) * 0.5f, new Vector3(thick, thick, d.magnitude + thick * 0.5f), Quaternion.LookRotation(d, Vector3.up), c);
+    }
+
+    /// <summary>A and C pillars on both sides, from the glass corner points; optional B pillar in black between the doors.</summary>
+    static void Pillars(MeshBuilder mb, CarSpec sp, Color32 paint, Vector3 a0, Vector3 a1, Vector3 c0, Vector3 c1, float bT, float bLow, float bHigh, float bHw)
+    {
+        foreach (float s in new[] { -1f, 1f })
+        {
+            Vector3 W(Vector3 v) => new Vector3(s * v.z, v.y, v.x);                       // P() returns silhouette coordinates (z along the car, y, half width)
+            Strut(mb, W(a0), W(a1), 0.07f, paint);
+            Strut(mb, W(c0), W(c1), 0.09f, paint);
+            if (bT > 0f) mb.Box(new Vector3(s * bHw, Y(sp, (bLow + bHigh) * 0.5f), Z(sp, bT)), new Vector3(0.05f, bHigh - bLow, 0.07f), Plastic);
+        }
+    }
+
     static void Mirrors(MeshBuilder mb, CarSpec sp, float t, float h, float hw, Color32 paint)
     {
         foreach (float s in new[] { -1f, 1f })
@@ -112,11 +132,8 @@ public static class CarVisual
         // greenhouse (tinted glass) and painted roof
         mb.Prism(new List<Vector3> { P(sp,0.300f,0.94f,hw*0.90f), P(sp,0.400f,1.33f,hw*0.75f), P(sp,0.580f,1.37f,hw*0.75f), P(sp,0.745f,1.00f,hw*0.88f) }, Glass);
         mb.Prism(new List<Vector3> { P(sp,0.398f,1.325f,hw*0.76f), P(sp,0.412f,1.385f,hw*0.72f), P(sp,0.575f,1.392f,hw*0.72f), P(sp,0.585f,1.325f,hw*0.76f) }, paint);
-        // A / C pillars in body colour
-        foreach (float s in new[] { -1f, 1f })
-        {
-            mb.BoxQ(new Vector3(s * hw * 0.83f, Y(sp, 1.13f), Z(sp, 0.345f)), new Vector3(0.06f, 0.46f, 0.08f), Quaternion.Euler(-62f, 0, 0), paint);
-        }
+        // A / C pillars follow the glass edge; black B pillar
+        Pillars(mb, sp, paint, P(sp,0.300f,0.94f,hw*0.90f), P(sp,0.400f,1.33f,hw*0.75f), P(sp,0.745f,1.00f,hw*0.88f), P(sp,0.580f,1.37f,hw*0.75f), 0.52f, 0.98f, 1.33f, hw*0.80f);
         // lower plastic strips, lights, grille, plates
         mb.Box(new Vector3(0, Y(sp, 0.30f), Z(sp, 0.004f)), new Vector3(hw * 1.76f, 0.16f, 0.03f), Plastic);
         mb.Box(new Vector3(0, Y(sp, 0.30f), Z(sp, 0.996f)), new Vector3(hw * 1.76f, 0.16f, 0.03f), Plastic);
@@ -144,10 +161,7 @@ public static class CarVisual
         mb.Prism(Hull(sp, top, 0.16f, hw * 0.93f), paint);
         mb.Prism(new List<Vector3> { P(sp,0.255f,0.93f,hw*0.90f), P(sp,0.370f,1.36f,hw*0.75f), P(sp,0.690f,1.40f,hw*0.75f), P(sp,0.925f,1.03f,hw*0.86f) }, Glass);
         mb.Prism(new List<Vector3> { P(sp,0.368f,1.355f,hw*0.76f), P(sp,0.385f,1.425f,hw*0.72f), P(sp,0.700f,1.43f,hw*0.72f), P(sp,0.715f,1.355f,hw*0.76f) }, paint);
-        foreach (float s in new[] { -1f, 1f })
-        {
-            mb.BoxQ(new Vector3(s * hw * 0.83f, Y(sp, 1.14f), Z(sp, 0.31f)), new Vector3(0.06f, 0.46f, 0.08f), Quaternion.Euler(-60f, 0, 0), paint);
-        }
+        Pillars(mb, sp, paint, P(sp,0.255f,0.93f,hw*0.90f), P(sp,0.370f,1.36f,hw*0.75f), P(sp,0.925f,1.03f,hw*0.86f), P(sp,0.690f,1.40f,hw*0.75f), 0.53f, 1.00f, 1.36f, hw*0.80f);
         mb.Box(new Vector3(0, Y(sp, 1.09f), Z(sp, 0.965f)), new Vector3(hw * 1.5f, 0.05f, 0.24f), Plastic);                    // roof spoiler
         mb.Box(new Vector3(0, Y(sp, 0.30f), Z(sp, 0.004f)), new Vector3(hw * 1.76f, 0.16f, 0.03f), Plastic);
         mb.Box(new Vector3(0, Y(sp, 0.30f), Z(sp, 0.996f)), new Vector3(hw * 1.76f, 0.16f, 0.03f), Plastic);
@@ -176,7 +190,6 @@ public static class CarVisual
         mb.Prism(new List<Vector3> { P(sp,0.420f,1.195f,hw*0.735f), P(sp,0.44f,1.28f,hw*0.70f), P(sp,0.560f,1.283f,hw*0.70f), P(sp,0.640f,1.235f,hw*0.735f) }, carbon);   // carbon roof
         foreach (float s in new[] { -1f, 1f })
         {   // pillars and front fender humps
-            mb.BoxQ(new Vector3(s * hw * 0.81f, Y(sp, 1.03f), Z(sp, 0.37f)), new Vector3(0.06f, 0.46f, 0.08f), Quaternion.Euler(-58f, 0, 0), paint);
             mb.Box(new Vector3(s * hw * 0.80f, Y(sp, 0.735f), Z(sp, 0.115f)), new Vector3(0.40f, 0.07f, 0.42f), paint);                  // raised front wing
             mb.CylinderZ(new Vector3(s * hw * 0.72f, Y(sp, 0.735f), Z(sp, 0.030f)), 0.085f, 0.09f, 12, Lens);                            // round headlamps
             mb.CylinderZ(new Vector3(s * hw * 0.72f, Y(sp, 0.735f), Z(sp, 0.030f) - 0.004f), 0.05f, 0.09f, 10, C(60, 64, 70));
@@ -190,6 +203,7 @@ public static class CarVisual
         mb.Box(new Vector3(0, Y(sp, 0.34f), Z(sp, 0.001f)), new Vector3(hw * 1.28f, 0.16f, 0.05f), black);                                // lower intake
         mb.Box(new Vector3(0, Y(sp, 0.31f), Z(sp, 0.996f)), new Vector3(hw * 1.74f, 0.09f, 0.06f), carbon);
         mb.Box(new Vector3(0, Y(sp, 0.86f), Z(sp, 0.985f)), new Vector3(hw * 1.72f, 0.038f, 0.05f), C(120, 16, 20));                      // light bar (lens)
+        Pillars(mb, sp, paint, P(sp,0.305f,0.80f,hw*0.90f), P(sp,0.420f,1.20f,hw*0.72f), P(sp,0.900f,0.93f,hw*0.90f), P(sp,0.680f,1.22f,hw*0.74f), 0f, 0f, 0f, 0f);
         // swan-neck rear wing
         float wz = Z(sp, 0.945f), wy = Y(sp, 1.30f);
         foreach (float s in new[] { -1f, 1f })
