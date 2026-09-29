@@ -89,7 +89,9 @@ public class CarController : MonoBehaviour
     float steerSm, steerCentre, driveSm, brakeSm, prevFwdSpeed, flipTimer, tcsCut;
     Vector3[] belly; readonly float[] prevBrakeTq = new float[4];
 
-    public float MaxSteerRad(float v) => Spec.MaxSteerDeg * Mathf.Deg2Rad / Mathf.Pow(1f + (v / 22f) * (v / 22f), 0.75f);
+    /// <summary>Largest front steering angle at speed v. The arcade styles keep far more lock at speed (the aids catch the rest); the realistic ones taper like a real rack + driver.</summary>
+    public bool ArcadeStyle => AssistMode == Assist.Arcade || Model is ArcadeModel;
+    public float MaxSteerRad(float v) { float k = ArcadeStyle ? 60f : 22f; return Spec.MaxSteerDeg * Mathf.Deg2Rad / Mathf.Pow(1f + (v / k) * (v / k), 0.75f); }
 
     // ------------------------------------------------------------------ setup
     public void Init(WorldBuilder world, Transform[] wheelVisuals, CarSpec spec)
@@ -362,7 +364,7 @@ public class CarController : MonoBehaviour
             if (lv.z > 1f)
             {
                 float gammaF = Mathf.Atan2(lv.x + FrontZ * la.y, lv.z);
-                float lim = AssistMode == Assist.Arcade ? 0.17f : AssistMode == Assist.Full ? 0.21f : 0.29f;
+                float lim = AssistMode == Assist.Arcade ? 0.30f : AssistMode == Assist.Full ? 0.21f : 0.29f;
                 lim *= Mathf.Lerp(3.5f, 1f, Mathf.InverseLerp(4f, 20f, speed));                                   // slow: the tyres cannot plough, so the wheel is nearly unlimited; fast: full protection
                 float limited = Mathf.Clamp(dCmd, gammaF - lim, gammaF + lim);
                 float wgt = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(3f, 9f, speed));
