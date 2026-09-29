@@ -13,12 +13,19 @@ plus world.json (grid geometry, spawn).
 Local coordinates: x = east, z = north (metres from the Berat centre), y = elevation (m NGF). Chunk (ci, cj) covers
 x in [-16000 + 400 ci, +400), z in [-16000 + 400 cj, +400).
 
-Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs 8] [--out DIR]
+Haute-Garonne extension: the sector list is data/big/hg_sectors.json (indices may be negative; sector (si, sj) covers x in
+[-16000 + 3200 si, +3200), z likewise). The world origin (x0, z0) is the south-west corner of the sector list; chunk files are named with
+indices RELATIVE to it (ci = floor((x - x0) / 400)). Sectors 0..9 x 0..9 read the float32 .npy tiles, all others the compressed files of
+data/big/hg (see HG_README.txt). Terrain heights of a chunk are base + uint16 * step (step >= 5 mm, larger for mountain chunks).
+
+Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs 8] [--out DIR] [--list data/big/hg_sectors.json] [--far-cache F]
+       (the world geometry always comes from --list; --sectors only selects which of them to (re)build)
 """
-import argparse, gzip, hashlib, json, struct, sys, time, collections, zlib
+import argparse, functools, shutil, gzip, math, hashlib, json, struct, sys, time, collections, zlib
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
+from PIL import Image
 import shapely
 from pyproj import Transformer
 from rasterio import features
@@ -31,18 +38,37 @@ from fetch import CX, CY
 
 HALF = 16000
 SECTOR = 3200                    # m
-NS = 2 * HALF // SECTOR          # 10 sectors per side
+NS = 2 * HALF // SECTOR          # 10 sectors per side of the original block (stored as .npy tiles)
 CHUNK = 400                      # m
 CPS = SECTOR // CHUNK            # 8 chunks per sector side
-NC = 2 * HALF // CHUNK           # 80 chunks per side
 CELL = 4                         # terrain vertex spacing (m)
 CV = CHUNK // CELL + 1           # 101 vertices per chunk side
 FAR_CELL = 64
 MARGIN = 240
 BIG = Path("data/big")
-DEFAULT_OUT = Path("../world")
+DEFAULT_OUT = Path("../world_hg")
+DEFAULT_SPAWN = Path("../world/spawn.json")
+DEFAULT_LIST = BIG / "hg_sectors.json"
+DEFAULT_FAR_CACHE = BIG / "far_hg.npz"
+FAR_NEUTRAL = (96, 104, 88)       # far colour outside the covered sectors
 
 # ------------------------------------------------------------------ rasters
+
+def read_tile(kind, i, j, tile_m):
+    """One raster tile (i, j) of `kind` (tile index = floor((x + HALF) / tile_m), may be negative), north row first, or None if the file is missing.
+    The original 10 x 10 sector block lives in float32 .npy files, every other sector in the compressed files of data/big/hg."""
+    si, sj = i * tile_m // SECTOR, j * tile_m // SECTOR                               # sector owning the tile
+    if 0 <= si < NS and 0 <= sj < NS:
+        f = BIG / f"{kind}_{i}_{j}.npy"
+        return np.load(f) if f.exists() else None
+    if kind == "ortho":
+        f = BIG / "hg" / f"ortho_{i}_{j}.jpg"
+        return np.asarray(Image.open(f).convert("RGB")) if f.exists() else None
+    f = BIG / "hg" / f"{kind}_{i}_{j}.npz"
+    if not f.exists(): return None
+    a = np.load(f)["a"]
+    if kind == "mnt": return np.where(a == 65535, np.nan, a / 20.0 - 100).astype(np.float32)
+    return (a / 10.0).astype(np.float32)
 
 class Window:
     """Raster window around one sector: mnt / mnh at 2 m and ortho at 4 m, assembled from the tile files. Origin = north-west corner."""
@@ -67,9 +93,8 @@ class Window:
         px = tile_m // res
         for j in range((self.z0 + HALF) // tile_m, (self.z1 + HALF - 1) // tile_m + 1):
             for i in range((self.x0 + HALF) // tile_m, (self.x0 + self.size + HALF - 1) // tile_m + 1):
-                f = BIG / f"{kind}_{i}_{j}.npy"
-                if not (0 <= i < HALF * 2 // tile_m and 0 <= j < HALF * 2 // tile_m and f.exists()): continue
-                a = np.load(f)
+                a = read_tile(kind, i, j, tile_m)
+                if a is None: continue
                 tx0, tz1 = -HALF + i * tile_m, -HALF + (j + 1) * tile_m                    # tile north-west corner
                 c0, r0 = (tx0 - self.x0) // res, (self.z1 - tz1) // res                    # position of the tile in the window (may be negative)
                 sc0, sr0 = max(-c0, 0), max(-r0, 0)
@@ -90,11 +115,23 @@ def load_vectors(name, si, sj):
         for di in (-1, 0, 1):
             i, j = si + di, sj + dj
             f = BIG / "vec" / f"{name}_{i}_{j}.json"
-            if not (0 <= i < NS and 0 <= j < NS and f.exists()): continue
+            if not f.exists(): continue
             for feat in json.loads(f.read_text()):
                 key = feat["properties"].get("cleabs") or feat.get("id")
                 if key in seen: continue
                 seen.add(key); out.append(feat)
+    return out
+
+@functools.lru_cache(maxsize=1)
+def load_pois():
+    """OSM points of interest of both downloads (original block and Haute-Garonne bbox), de-duplicated on (type, id)."""
+    seen, out = set(), []
+    for name in ("osm_poi.json", "osm_poi_hg.json"):
+        f = BIG / "vec" / name
+        if not f.exists(): continue
+        for e in json.loads(f.read_text())["elements"]:
+            if (e["type"], e["id"]) in seen: continue
+            seen.add((e["type"], e["id"])); out.append(e)
     return out
 
 def local(coords):
@@ -372,7 +409,7 @@ def runs_by_chunk(pts_xz, values=None):
     return [o for o in out if o[2] - o[1] >= 2]
 
 def process_sector(args):
-    si, sj, out_dir = args
+    si, sj, out_dir, ci0, cj0 = args                                                 # (ci0, cj0): chunk index of the world origin
     t0 = time.time()
     out_dir = Path(out_dir)
     ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
@@ -401,18 +438,6 @@ def process_sector(args):
             for seg in np.split(idx, np.where(np.diff(idx) != 1)[0] + 1) if len(idx) else []:
                 if len(seg) >= 3: cut.append(dict(xy=w["xy"][seg], y=w["y"][seg], hw=w["hw"]))
         wlines = cut
-
-    if si == 5 and sj == 5:                                                          # spawn: the main road nearest the village centre
-        best = None
-        for r in raw:
-            if r["dirt"] or r["bridge"]: continue
-            dist = np.hypot(r["xy"][:, 0], r["xy"][:, 1]); k = int(dist.argmin())
-            score = dist[k] + (0 if r["imp"] in ("1", "2", "3", "4") else 40)
-            if k + 1 < len(dist) and (best is None or score < best[0]): best = (score, k, r)
-        _, k, r = best
-        p0, p1 = r["xy"][k], r["xy"][k + 1]
-        heading = float(np.degrees(np.arctan2(p1[0] - p0[0], p1[1] - p0[1])))
-        (out_dir.parent / "spawn.json").write_text(json.dumps(dict(x=float(p0[0]), y=float(r["y"][k]) + 1.0, z=float(p0[1]), heading=heading, road=r["name"])))
 
     # ---- terrain on the window's vertex grid (aligned to 4 m)
     nv = win.size // CELL + 1
@@ -462,7 +487,7 @@ def process_sector(args):
     low_col = uniform_filter(far_raw, size=(4, 4, 1), mode="nearest")               # 16 m LOD colours
 
     # ---- buildings
-    pois = json.loads((BIG / "vec" / "osm_poi.json").read_text())["elements"] if (BIG / "vec" / "osm_poi.json").exists() else []
+    pois = load_pois()
     road_tree = cKDTree(road_pts[:, :2]) if len(road_pts) else None
     owned = box(ox, oz, ox + SECTOR, oz + SECTOR); owned_wide = owned.buffer(6)
     buildings, bpolys = [], []
@@ -582,7 +607,7 @@ def process_sector(args):
         sd_, si_ = road_tree.query(np.c_[sx_, sz_], distance_upper_bound=8.0)
         sk = ~(np.isfinite(sd_) & (sd_ < road_pts[np.minimum(si_, len(road_pts) - 1), 3] + 1.2))
     else: sk = np.ones(len(sx_), bool)
-    rs = np.random.default_rng(3 + si * 10 + sj)
+    rs = np.random.default_rng(3 + si * 10 + sj if si >= 0 and sj >= 0 else [3, si + 1000, sj + 1000])   # seeds must not be negative
     sk &= rs.random(len(sx_)) < min(1.0, 17000 / max(int(sk.sum()), 1))
     shrubs = np.c_[sx_[sk], win.sample(win.mnt, sx_[sk], sz_[sk], 2), sz_[sk], sm[lr, lc][sk]].astype("<f4")
 
@@ -639,8 +664,9 @@ def process_sector(args):
             key = (ci, cj)
             r0, c0 = (cj - sj * CPS) * (CHUNK // CELL) + MARGIN // CELL, (ci - si * CPS) * (CHUNK // CELL) + MARGIN // CELL
             th = H[r0:r0 + CV, c0:c0 + CV]; tc = C[r0:r0 + CV, c0:c0 + CV]
-            base = float(th.min()); q = np.clip(np.round((th - base) / 0.005), 0, 65535).astype("<u2")
-            buf = bytearray(b"BM02"); wi(buf, ci); wi(buf, cj); wi(buf, CV); wf(buf, base)
+            base = float(th.min()); step = max(0.005, math.ceil((float(th.max()) - base) / 65535 * 1000 - 1e-9) / 1000)
+            q = np.clip(np.round((th - base) / step), 0, 65535).astype("<u2")
+            buf = bytearray(b"BM02"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
             buf += q.tobytes(); buf += tc.astype(np.uint8).tobytes()
             buf += np.clip(low_col[r0:r0 + CV:4, c0:c0 + CV:4], 0, 255).astype(np.uint8).tobytes()
             def put_roads(items, ctx=False):
@@ -662,10 +688,10 @@ def process_sector(args):
                 wi(buf, len(b["p"]) // 2); wfa(buf, b["p"]); wf(buf, b["b"], b["h"], b["r"]); wi(buf, len(b["rc"])); wfa(buf, b["rc"])
                 buf += bytes(b["c"]) + bytes(b["w"]); wstr(buf, b["k"]); wstr(buf, b["n"]); wi(buf, b["fe"]); wi(buf, len(b["tw"])); wfa(buf, b["tw"])
                 wi(buf, len(b["cp"]) // 2); wfa(buf, b["cp"]); wi(buf, len(b["cn"])); buf += np.asarray(b["cn"], "<i4").tobytes()
-            write_gz(out_dir / f"m_{ci}_{cj}.bin.gz", buf)
+            write_gz(out_dir / f"m_{ci - ci0}_{cj - cj0}.bin.gz", buf)
             nb = bytearray(b"BN01"); ti, sh = tree_b.get(key, []), shrub_b.get(key, [])
             wi(nb, len(ti)); wfa(nb, trees[ti].ravel()); wi(nb, len(sh)); wfa(nb, shrubs[sh].ravel())
-            write_gz(out_dir / f"n_{ci}_{cj}.bin.gz", nb)
+            write_gz(out_dir / f"n_{ci - ci0}_{cj - cj0}.bin.gz", nb)
             n_chunks += 1
 
     # ---- far terrain patch: 64 m vertices over the owned square (51 x 51, borders shared with the neighbours)
@@ -679,33 +705,69 @@ def process_sector(args):
 
 # ------------------------------------------------------------------ assemble
 
+def process_safe(args):
+    """process_sector that never raises: a failed sector is reported and the run goes on."""
+    try: return process_sector(args)
+    except Exception as e:
+        import traceback
+        return args[0], args[1], None, None, dict(error=repr(e), trace=traceback.format_exc())
+
+def fill_far(far_h, far_c, covered):
+    """Outside the covered vertices: nearest covered height (no cliffs) and a neutral colour."""
+    h, c = far_h.copy(), far_c.copy()
+    if covered.all() or not covered.any(): return h, c
+    iy, ix = distance_transform_edt(~covered, return_distances=False, return_indices=True)
+    h = h[iy, ix]
+    c[~covered] = FAR_NEUTRAL
+    return h, c
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sectors", default="", help="comma list si:sj (default: all 100)")
+    ap.add_argument("--sectors", default="", help="comma list si:sj to (re)build (default: every sector of --list)")
+    ap.add_argument("--list", default=str(DEFAULT_LIST), help="sector list json (defines the world geometry)")
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--out", default=str(DEFAULT_OUT))
+    ap.add_argument("--far-cache", default=str(DEFAULT_FAR_CACHE), help="npz keeping the far arrays between partial rebuilds")
     a = ap.parse_args()
     out = Path(a.out); (out / "chunks").mkdir(parents=True, exist_ok=True)
-    secs = [tuple(map(int, s.split(":"))) for s in a.sectors.split(",")] if a.sectors else [(i, j) for j in range(NS) for i in range(NS)]
-    jobs = [(i, j, str(out / "chunks")) for i, j in secs]
-    far_n = NS * SECTOR // FAR_CELL + 1
-    far_path = BIG / "far.npz"
-    far_h = np.zeros((far_n, far_n), np.float32); far_c = np.zeros((far_n, far_n, 3), np.uint8)
-    if far_path.exists():
-        z = np.load(far_path); far_h, far_c = z["h"], z["c"]
+    world = [tuple(s) for s in json.loads(Path(a.list).read_text())["sectors"]]
+    si_min, si_max = min(s[0] for s in world), max(s[0] for s in world)
+    sj_min, sj_max = min(s[1] for s in world), max(s[1] for s in world)
+    x0, z0 = -HALF + SECTOR * si_min, -HALF + SECTOR * sj_min
+    ncx, ncz = CPS * (si_max - si_min + 1), CPS * (sj_max - sj_min + 1)
     per = SECTOR // FAR_CELL
-    t0 = time.time()
+    far_nx, far_nz = ncx * CHUNK // FAR_CELL + 1, ncz * CHUNK // FAR_CELL + 1
+    secs = [tuple(map(int, s.split(":"))) for s in a.sectors.split(",")] if a.sectors else world
+    for s in secs: assert s in world, f"sector {s} is not in {a.list}"
+    jobs = [(i, j, str(out / "chunks"), CPS * si_min, CPS * sj_min) for i, j in secs]
+
+    far_path = Path(a.far_cache)
+    far_h = np.zeros((far_nz, far_nx), np.float32); far_c = np.zeros((far_nz, far_nx, 3), np.uint8); covered = np.zeros((far_nz, far_nx), bool)
+    if far_path.exists():
+        z = np.load(far_path)
+        if z["h"].shape == far_h.shape: far_h, far_c, covered = z["h"], z["c"], z["covered"]
+        else: print("far cache has another shape, ignored")
+    def save_cache(): np.savez(far_path, h=far_h, c=far_c, covered=covered)
+
+    failed, t0 = [], time.time()
     with ProcessPoolExecutor(a.jobs) as ex:
-        for n, (si, sj, fh, fc, st) in enumerate(ex.map(process_sector, jobs), 1):
-            far_h[sj * per:sj * per + per + 1, si * per:si * per + per + 1] = fh
-            far_c[sj * per:sj * per + per + 1, si * per:si * per + per + 1] = fc
+        futs = [ex.submit(process_safe, j) for j in jobs]
+        for n, fu in enumerate(futs, 1):
+            si, sj, fh, fc, st = fu.result()
+            if fh is None:
+                failed.append((si, sj)); print(f"[{n}/{len(jobs)}] FAILED {si}:{sj} {st['error']}\n{st['trace']}", flush=True); continue
+            r, c = (sj - sj_min) * per, (si - si_min) * per
+            far_h[r:r + per + 1, c:c + per + 1] = fh; far_c[r:r + per + 1, c:c + per + 1] = fc; covered[r:r + per + 1, c:c + per + 1] = True
             print(f"[{n}/{len(jobs)}] {st}  elapsed {time.time() - t0:.0f}s", flush=True)
-    np.savez(far_path, h=far_h, c=far_c)
+            if n % 100 == 0: save_cache()
+    save_cache()
+    fh_, fc_ = fill_far(far_h, far_c, covered)
     with open(out / "far.bin", "wb") as fo:
-        fo.write(struct.pack("<iff", far_n, FAR_CELL, -HALF))
-        fo.write(far_h.astype("<f4").tobytes()); fo.write(far_c.tobytes())
-    (out / "world.json").write_text(json.dumps(dict(half=HALF, chunk=CHUNK, nc=NC, cell=CELL, cv=CV, farCell=FAR_CELL, farN=far_n, lambertE=CX, lambertN=CY)))
-    print("done")
+        fo.write(struct.pack("<iiffff", far_nx, far_nz, FAR_CELL, x0, z0, 0.0))
+        fo.write(fh_.astype("<f4").tobytes()); fo.write(fc_.tobytes())
+    (out / "world.json").write_text(json.dumps(dict(x0=x0, z0=z0, ncx=ncx, ncz=ncz, chunk=CHUNK, cell=CELL, cv=CV, farCell=FAR_CELL, farNx=far_nx, farNz=far_nz, lambertE=CX, lambertN=CY)))
+    shutil.copy(DEFAULT_SPAWN, out / "spawn.json")
+    print("done, failed sectors:", failed)
 
 if __name__ == "__main__":
     main()

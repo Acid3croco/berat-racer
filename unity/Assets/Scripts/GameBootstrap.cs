@@ -382,10 +382,10 @@ public class GameBootstrap : MonoBehaviour
 
         map.DebugSetPos(3190f, 0f);
         yield return Hold(kb, Key.D, 0.8f);
-        Check("border clamp east", map.Pos.x <= WorldData.Half - 5f && map.Pos.x > 3150f, $"x={map.Pos.x:F1} (limit {WorldData.Half - 6f:F0})");
+        Check("border clamp east", map.Pos.x <= WorldData.MaxX - 5f && map.Pos.x > 3150f, $"x={map.Pos.x:F1} (limit {WorldData.MaxX - 6f:F0})");
         map.DebugSetPos(0f, -3190f);
         yield return Hold(kb, Key.S, 0.8f);
-        Check("border clamp south", map.Pos.y >= -(WorldData.Half - 5f) && map.Pos.y < -3150f, $"z={map.Pos.y:F1}");
+        Check("border clamp south", map.Pos.y >= WorldData.Z0 + 5f && map.Pos.y < -3150f, $"z={map.Pos.y:F1}");
 
         map.DebugSetPos(700f, 400f);
         yield return null; yield return null;
@@ -811,7 +811,7 @@ public class GameBootstrap : MonoBehaviour
     /// <summary>Places the car on the ground at (x, z), aligned to the nearest road if there is one within 7 m.</summary>
     void TeleportCar(float x, float z)
     {
-        x = Mathf.Clamp(x, -WorldData.Half + 8f, WorldData.Half - 8f); z = Mathf.Clamp(z, -WorldData.Half + 8f, WorldData.Half - 8f);
+        x = Mathf.Clamp(x, WorldData.X0 + 8f, WorldData.MaxX - 8f); z = Mathf.Clamp(z, WorldData.Z0 + 8f, WorldData.MaxZ - 8f);
         float yaw = car.transform.eulerAngles.y;
         if (world.Roads.NearestRoad(x, z, 7f, out Vector2 dir)) { float a = Mathf.Atan2(dir.x, dir.y) * Mathf.Rad2Deg; yaw = Mathf.Abs(Mathf.DeltaAngle(a, yaw)) <= 90f ? a : a + 180f; }
         float g = world.GroundHeight(x, z, world.Data.TerrainHeight(x, z) + 1f, out _);

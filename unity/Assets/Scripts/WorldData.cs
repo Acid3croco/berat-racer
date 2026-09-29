@@ -24,6 +24,7 @@ public class RoadData
     }
 }
 public class BuildingData { public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; public float[] cp; public int[] cn; }
+[Serializable] public class WorldInfo { public float x0, z0; public int ncx, ncz; }
 [Serializable] public class SpawnData { public float x, y, z, heading; public string road; }
 public class WaterArea { public float level; public float[] ring; public float[] ys; }      // ring = x,z pairs; ys = surface height per vertex; level = their mean
 public class WaterLine { public float hw; public int lead, trail; public float[] pts; }
@@ -74,11 +75,11 @@ public class ChunkData
         {
             if (new string(br.ReadChars(4)) != "BM02") throw new InvalidDataException(path);
             var d = new ChunkData { ci = br.ReadInt32(), cj = br.ReadInt32() };
-            d.key = d.cj * WorldData.NC + d.ci; d.x0 = -WorldData.Half + d.ci * WorldData.ChunkSize; d.z0 = -WorldData.Half + d.cj * WorldData.ChunkSize;
+            d.key = d.cj * WorldData.NCX + d.ci; d.x0 = WorldData.X0 + d.ci * WorldData.ChunkSize; d.z0 = WorldData.Z0 + d.cj * WorldData.ChunkSize;
             int cv = br.ReadInt32(); if (cv != CV) throw new InvalidDataException("terrain size " + cv);
-            float baseH = br.ReadSingle();
+            float baseH = br.ReadSingle(), step = WorldData.Legacy ? 0.005f : br.ReadSingle();      // the height range of a chunk sets the step (mountain chunks span hundreds of metres)
             d.H = new float[CV * CV]; var q = br.ReadBytes(CV * CV * 2);
-            for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * 0.005f;
+            for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * step;
             d.Col = br.ReadBytes(CV * CV * 3); d.LowCol = br.ReadBytes(LV * LV * 3);
             d.Roads = ReadRoads(br, false); d.Ctx = ReadRoads(br, true);
             int na = br.ReadInt32(); d.Areas = new WaterArea[na];
@@ -130,8 +131,14 @@ public class ChunkData
 /// <summary>Everything the game knows about the world: the resident whole-map far terrain and the currently loaded chunks.</summary>
 public class WorldData
 {
-    public const float Half = 16000f, Cell = 4f;
-    public const int ChunkSize = 400, NC = 80, CV = 101;
+    public const float Cell = 4f;
+    public const int ChunkSize = 400, CV = 101;
+    // world extents come from world.json; without one it is the original 32 x 32 km block (legacy format)
+    public static float X0 = -16000f, Z0 = -16000f; public static int NCX = 80, NCZ = 80; public static bool Legacy = true;
+    public static float MaxX => X0 + NCX * ChunkSize;
+    public static float MaxZ => Z0 + NCZ * ChunkSize;
+    public static bool InBounds(float x, float z, float margin = 0f) => x > X0 + margin && x < MaxX - margin && z > Z0 + margin && z < MaxZ - margin;
+    public static Vector2 ChunkCenter(int ci, int cj) => new Vector2(X0 + (ci + 0.5f) * ChunkSize, Z0 + (cj + 0.5f) * ChunkSize);
     static string dir;
     /// <summary>Generated world: StreamingAssets/berat inside a build, or ../world next to the Unity project when running from the editor. BERAT_WORLD overrides both.</summary>
     public static string Dir
@@ -147,7 +154,7 @@ public class WorldData
         }
     }
 
-    public int FarN; public float FarCell;
+    public int FarNx, FarNz; public float FarCell;
     public float[] FarH; public byte[] FarC;
     public SpawnData Spawn;
     public readonly Dictionary<int, ChunkData> Chunks = new Dictionary<int, ChunkData>();
@@ -155,18 +162,26 @@ public class WorldData
     public static WorldData Load()
     {
         var w = new WorldData();
+        string wj = Path.Combine(Dir, "world.json");
+        if (File.Exists(wj))
+        {
+            var info = JsonUtility.FromJson<WorldInfo>(File.ReadAllText(wj));
+            if (info.ncx > 0) { X0 = info.x0; Z0 = info.z0; NCX = info.ncx; NCZ = info.ncz; Legacy = false; }
+        }
         using (var br = new BinaryReader(File.OpenRead(Path.Combine(Dir, "far.bin"))))
         {
-            w.FarN = br.ReadInt32(); w.FarCell = br.ReadSingle(); br.ReadSingle();
-            var bytes = br.ReadBytes(w.FarN * w.FarN * 4); w.FarH = new float[w.FarN * w.FarN]; Buffer.BlockCopy(bytes, 0, w.FarH, 0, bytes.Length);
-            w.FarC = br.ReadBytes(w.FarN * w.FarN * 3);
+            if (Legacy) { w.FarNx = w.FarNz = br.ReadInt32(); w.FarCell = br.ReadSingle(); br.ReadSingle(); }
+            else { w.FarNx = br.ReadInt32(); w.FarNz = br.ReadInt32(); w.FarCell = br.ReadSingle(); br.ReadSingle(); br.ReadSingle(); br.ReadSingle(); }
+            var bytes = br.ReadBytes(w.FarNx * w.FarNz * 4); w.FarH = new float[w.FarNx * w.FarNz]; Buffer.BlockCopy(bytes, 0, w.FarH, 0, bytes.Length);
+            w.FarC = br.ReadBytes(w.FarNx * w.FarNz * 3);
         }
         w.Spawn = JsonUtility.FromJson<SpawnData>(File.ReadAllText(Path.Combine(Dir, "spawn.json")));
         return w;
     }
 
-    public static int ChunkIndex(float v) => Mathf.FloorToInt((v + Half) / ChunkSize);
-    public static int ChunkKey(float x, float z) { int ci = ChunkIndex(x), cj = ChunkIndex(z); return ci < 0 || cj < 0 || ci >= NC || cj >= NC ? -1 : cj * NC + ci; }
+    public static int ChunkIndexX(float x) => Mathf.FloorToInt((x - X0) / ChunkSize);
+    public static int ChunkIndexZ(float z) => Mathf.FloorToInt((z - Z0) / ChunkSize);
+    public static int ChunkKey(float x, float z) { int ci = ChunkIndexX(x), cj = ChunkIndexZ(z); return ci < 0 || cj < 0 || ci >= NCX || cj >= NCZ ? -1 : cj * NCX + ci; }
 
     /// <summary>Terrain height: the loaded chunk's 4 m grid (already carved under roads and water), else the coarse far terrain.</summary>
     public float TerrainHeight(float x, float z)
@@ -179,9 +194,9 @@ public class WorldData
 
     public float FarHeight(float x, float z)
     {
-        float fx = Mathf.Clamp((x + Half) / FarCell, 0, FarN - 1.001f), fz = Mathf.Clamp((z + Half) / FarCell, 0, FarN - 1.001f);
+        float fx = Mathf.Clamp((x - X0) / FarCell, 0, FarNx - 1.001f), fz = Mathf.Clamp((z - Z0) / FarCell, 0, FarNz - 1.001f);
         int ix = (int)fx, iz = (int)fz; float tx = fx - ix, tz = fz - iz;
-        return Mathf.Lerp(Mathf.Lerp(FarH[iz * FarN + ix], FarH[iz * FarN + ix + 1], tx), Mathf.Lerp(FarH[(iz + 1) * FarN + ix], FarH[(iz + 1) * FarN + ix + 1], tx), tz);
+        return Mathf.Lerp(Mathf.Lerp(FarH[iz * FarNx + ix], FarH[iz * FarNx + ix + 1], tx), Mathf.Lerp(FarH[(iz + 1) * FarNx + ix], FarH[(iz + 1) * FarNx + ix + 1], tx), tz);
     }
 
     // ---- snapshots of what is loaded (rebuilt lazily after chunks come and go)

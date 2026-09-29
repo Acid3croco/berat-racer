@@ -35,7 +35,8 @@ public class WorldBuilder : MonoBehaviour
         public bool cancelled;
     }
     readonly Dictionary<int, Chunk> chunks = new Dictionary<int, Chunk>();
-    readonly HashSet<int> missing = new HashSet<int>();
+    readonly HashSet<int> missing = new HashSet<int>();          // chunks that failed to load
+    HashSet<int> exists;                                          // chunks that have a file (one directory listing at start)
     readonly List<Chunk> inflight = new List<Chunk>();          // chunks with a worker task running; finished ones get their Unity objects on the main thread
     GameObject[] farTiles; int[] farCovered;
 
@@ -69,7 +70,8 @@ public class WorldBuilder : MonoBehaviour
         try
         {
             Data = WorldData.Load();
-            Log.I("world", $"far terrain {Data.FarN}x{Data.FarN} @ {Data.FarCell:F0} m, spawn=({Data.Spawn.x:F0},{Data.Spawn.z:F0}) hdg={Data.Spawn.heading:F0}");
+            Log.I("world", $"world {WorldData.NCX}x{WorldData.NCZ} chunks ({(WorldData.Legacy ? "legacy" : "world.json")}), far terrain {Data.FarNx}x{Data.FarNz} @ {Data.FarCell:F0} m, spawn=({Data.Spawn.x:F0},{Data.Spawn.z:F0}) hdg={Data.Spawn.heading:F0}");
+            ScanChunks();
             BuildFarTiles();
             treePool = new CapsuleCollider[System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-notcol") >= 0 ? 0 : 110];
             for (int i = 0; i < treePool.Length; i++)
@@ -101,7 +103,7 @@ public class WorldBuilder : MonoBehaviour
             int wantMid = 0, haveMid = 0, wantNear = 0, haveNear = 0;
             ForEachAround(focus, midR, (ci, cj, d) =>
             {
-                int key = cj * WorldData.NC + ci; if (missing.Contains(key)) return;
+                int key = cj * WorldData.NCX + ci; if (missing.Contains(key)) return;
                 wantMid++; if (chunks.TryGetValue(key, out var c) && c.state >= State.Mid) haveMid++;
                 if (d < nearR) { wantNear++; if (chunks.TryGetValue(key, out var c2) && c2.state == State.Near) haveNear++; }
             });
@@ -115,32 +117,49 @@ public class WorldBuilder : MonoBehaviour
     void ForEachAround(Vector3 focus, float radius, System.Action<int, int, float> f)
     {
         int r = Mathf.CeilToInt(radius / WorldData.ChunkSize) + 1;
-        int c0 = WorldData.ChunkIndex(focus.x), r0 = WorldData.ChunkIndex(focus.z);
+        int c0 = WorldData.ChunkIndexX(focus.x), r0 = WorldData.ChunkIndexZ(focus.z);
         for (int cj = r0 - r; cj <= r0 + r; cj++)
             for (int ci = c0 - r; ci <= c0 + r; ci++)
             {
-                if (ci < 0 || cj < 0 || ci >= WorldData.NC || cj >= WorldData.NC) continue;
-                var center = new Vector2(-WorldData.Half + (ci + 0.5f) * WorldData.ChunkSize, -WorldData.Half + (cj + 0.5f) * WorldData.ChunkSize);
+                if (ci < 0 || cj < 0 || ci >= WorldData.NCX || cj >= WorldData.NCZ) continue;
+                var center = WorldData.ChunkCenter(ci, cj);
                 float d = Vector2.Distance(center, new Vector2(focus.x, focus.z)) - WorldData.ChunkSize * 0.7f;
                 if (d < radius) f(ci, cj, d);
             }
     }
 
     // ------------------------------------------------------------------ far terrain
+    void ScanChunks()
+    {
+        exists = new HashSet<int>();
+        foreach (var f in Directory.GetFiles(Path.Combine(WorldData.Dir, "chunks"), "m_*.bin.gz"))
+        {   // m_{ci}_{cj}.bin.gz
+            var parts = Path.GetFileName(f).Split('_'); if (parts.Length != 3) continue;
+            int ci, cj; if (int.TryParse(parts[1], out ci) && int.TryParse(parts[2].Split('.')[0], out cj)) exists.Add(cj * WorldData.NCX + ci);
+        }
+        Log.I("world", $"{exists.Count} chunk files");
+    }
+
+    int farTilesX, farTilesZ; int[] farNeeded;
     void BuildFarTiles()
     {
-        int tiles = Mathf.RoundToInt(2 * WorldData.Half / FarTile), per = Mathf.RoundToInt(FarTile / Data.FarCell), n = per + 1, N = Data.FarN;
-        farTiles = new GameObject[tiles * tiles]; farCovered = new int[tiles * tiles];
+        int cpt = FarTile / WorldData.ChunkSize;                                                            // chunks per tile side
+        farTilesX = Mathf.CeilToInt(WorldData.NCX / (float)cpt); farTilesZ = Mathf.CeilToInt(WorldData.NCZ / (float)cpt);
+        int per = Mathf.RoundToInt(FarTile / Data.FarCell), n = per + 1, NX = Data.FarNx, NZ = Data.FarNz;
+        farTiles = new GameObject[farTilesX * farTilesZ]; farCovered = new int[farTiles.Length]; farNeeded = new int[farTiles.Length];
+        foreach (int key in exists) farNeeded[(key / WorldData.NCX / cpt) * farTilesX + (key % WorldData.NCX) / cpt]++;
         var root = new GameObject("far terrain").transform; root.SetParent(transform, false);
-        for (int tz = 0; tz < tiles; tz++)
-            for (int tx = 0; tx < tiles; tx++)
+        int made = 0;
+        for (int tz = 0; tz < farTilesZ; tz++)
+            for (int tx = 0; tx < farTilesX; tx++)
             {
+                if (farNeeded[tz * farTilesX + tx] == 0) continue;                                          // no chunks there: nothing to show
                 var mb = new MeshBuilder();
                 for (int z = 0; z < n; z++)
                     for (int x = 0; x < n; x++)
                     {
-                        int gx = Mathf.Min(tx * per + x, N - 1), gz = Mathf.Min(tz * per + z, N - 1), gi = gz * N + gx;
-                        mb.Vertex(new Vector3(-WorldData.Half + gx * Data.FarCell, Data.FarH[gi] - 6f, -WorldData.Half + gz * Data.FarCell), new Color32(Data.FarC[gi * 3], Data.FarC[gi * 3 + 1], Data.FarC[gi * 3 + 2], 255));
+                        int gx = Mathf.Min(tx * per + x, NX - 1), gz = Mathf.Min(tz * per + z, NZ - 1), gi = gz * NX + gx;
+                        mb.Vertex(new Vector3(WorldData.X0 + gx * Data.FarCell, Data.FarH[gi] - 6f, WorldData.Z0 + gz * Data.FarCell), new Color32(Data.FarC[gi * 3], Data.FarC[gi * 3 + 1], Data.FarC[gi * 3 + 2], 255));
                     }
                 for (int z = 0; z < per; z++)
                     for (int x = 0; x < per; x++)
@@ -148,17 +167,17 @@ public class WorldBuilder : MonoBehaviour
                         int a = z * n + x, b = a + n, c = a + 1, e = b + 1;
                         if (((x + z) & 1) == 0) { mb.Tri(a, b, e); mb.Tri(a, e, c); } else { mb.Tri(a, b, c); mb.Tri(c, b, e); }
                     }
-                var go = MakeObject($"far_{tx}_{tz}", root, mb.ToMesh("far"), farMat, false, false);
-                farTiles[tz * tiles + tx] = go;
+                farTiles[tz * farTilesX + tx] = MakeObject($"far_{tx}_{tz}", root, mb.ToMesh("far"), farMat, false, false); made++;
             }
+        Log.I("world", $"far terrain: {made} tiles");
     }
 
     void UpdateFarCoverage(Chunk c, int delta)
     {
-        int tiles = farTiles.Length > 0 ? Mathf.RoundToInt(Mathf.Sqrt(farTiles.Length)) : 0; if (tiles == 0) return;
-        int per = FarTile / WorldData.ChunkSize, t = (c.cj / per) * tiles + (c.ci / per);
+        int cpt = FarTile / WorldData.ChunkSize, t = (c.cj / cpt) * farTilesX + (c.ci / cpt);
+        if (farTiles == null || t >= farTiles.Length || farTiles[t] == null) return;
         farCovered[t] += delta;
-        farTiles[t].SetActive(farCovered[t] < per * per);
+        farTiles[t].SetActive(farCovered[t] < farNeeded[t]);
     }
 
     // ------------------------------------------------------------------ streaming
@@ -173,7 +192,7 @@ public class WorldBuilder : MonoBehaviour
         reqs.Clear();
         ForEachAround(focus, midR, (ci, cj, d) =>
         {
-            int key = cj * WorldData.NC + ci;
+            int key = cj * WorldData.NCX + ci;
             if (missing.Contains(key)) return;
             if (!chunks.TryGetValue(key, out var c)) { reqs.Add(new Req { prio = d, ci = ci, cj = cj }); return; }
             if (c.state == State.Mid && d < nearR) reqs.Add(new Req { prio = d * 0.5f, ci = ci, cj = cj, near = true });
@@ -183,7 +202,7 @@ public class WorldBuilder : MonoBehaviour
         foreach (var r in reqs)
         {
             if (busy >= MaxInFlight * (unlimited ? 3 : 1)) break;
-            if (r.near) StartNear(chunks[r.cj * WorldData.NC + r.ci]); else if (!StartMid(r.ci, r.cj)) continue;
+            if (r.near) StartNear(chunks[r.cj * WorldData.NCX + r.ci]); else if (!StartMid(r.ci, r.cj)) continue;
             busy++;
         }
         // unload
@@ -202,9 +221,9 @@ public class WorldBuilder : MonoBehaviour
 
     bool StartMid(int ci, int cj)
     {
-        int key = cj * WorldData.NC + ci; string path = PathOf("m", ci, cj);
-        if (!File.Exists(path)) { missing.Add(key); return false; }
-        var c = new Chunk { key = key, ci = ci, cj = cj, state = State.Loading, center = new Vector2(-WorldData.Half + (ci + 0.5f) * WorldData.ChunkSize, -WorldData.Half + (cj + 0.5f) * WorldData.ChunkSize) };
+        int key = cj * WorldData.NCX + ci; string path = PathOf("m", ci, cj);
+        if (!exists.Contains(key)) { missing.Add(key); return false; }
+        var c = new Chunk { key = key, ci = ci, cj = cj, state = State.Loading, center = WorldData.ChunkCenter(ci, cj) };
         chunks[key] = c;
         c.task = Task.Run(() => { c.pendingData = ChunkData.ParseMid(path); return ChunkMeshes.BuildMid(c.pendingData); });
         inflight.Add(c);
@@ -344,7 +363,7 @@ public class WorldBuilder : MonoBehaviour
         nextCull = Time.unscaledTime + 0.35f; lastFocus = focus;
         Stream(focus, MidRadius * MidScale, NearRadius, MidKeep * MidScale, NearKeep, false);
 
-        if (DebugHide.Contains("far")) { foreach (var t in farTiles) t.SetActive(false); }
+        if (DebugHide.Contains("far")) { foreach (var t in farTiles) if (t != null) t.SetActive(false); }
         var f2 = new Vector2(focus.x, focus.z);
         foreach (var c in chunks.Values)
         {
@@ -419,12 +438,12 @@ public class WorldBuilder : MonoBehaviour
     /// </summary>
     public bool InsideBuilding(Vector3 p, out Vector3 exit)
     {
-        exit = p; int ci0 = WorldData.ChunkIndex(p.x), cj0 = WorldData.ChunkIndex(p.z);
+        exit = p; int ci0 = WorldData.ChunkIndexX(p.x), cj0 = WorldData.ChunkIndexZ(p.z);
         for (int dj = -1; dj <= 1; dj++)
             for (int di = -1; di <= 1; di++)
             {
-                int ci = ci0 + di, cj = cj0 + dj; if (ci < 0 || cj < 0 || ci >= WorldData.NC || cj >= WorldData.NC) continue;
-                if (!Data.Chunks.TryGetValue(cj * WorldData.NC + ci, out var c)) continue;
+                int ci = ci0 + di, cj = cj0 + dj; if (ci < 0 || cj < 0 || ci >= WorldData.NCX || cj >= WorldData.NCZ) continue;
+                if (!Data.Chunks.TryGetValue(cj * WorldData.NCX + ci, out var c)) continue;
                 foreach (var b in c.Buildings)
                 {
                     if (p.y > b.b + b.h + Mathf.Max(b.r, 0f) + 1f || p.y < b.b - 3f) continue;

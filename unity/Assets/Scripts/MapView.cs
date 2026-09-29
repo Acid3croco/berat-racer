@@ -11,7 +11,6 @@ public class MapView : MonoBehaviour
     // zoom levels: 3 per decade on a log scale, 10 m .. 10 km  (10, 21.5, 46.4, 100, 215, 464, 1000, 2154, 4642, 10000)
     static readonly float[] Levels = { 10f, 21.5443f, 46.4159f, 100f, 215.443f, 464.159f, 1000f, 2154.43f, 4641.59f, 10000f };
     const int StartLevel = 3;
-    const float Edge = WorldData.Half - 6f;
     int level = StartLevel; float lastStep; int openedFrame = -1;
     const double OriginE = 551972, OriginN = 6254819;          // Lambert-93 of local (0,0), see tools/fetch.py
 
@@ -147,8 +146,8 @@ public class MapView : MonoBehaviour
         float speed = alt * 1.1f * (fast ? 3f : 1f);
         Vector2 np = pos + pan * speed * dt + dragDelta;
         // stop at the map border (camera never leaves the mapped area)
-        clampedX = Mathf.Abs(np.x) > Edge; clampedZ = Mathf.Abs(np.y) > Edge;
-        pos = new Vector2(Mathf.Clamp(np.x, -Edge, Edge), Mathf.Clamp(np.y, -Edge, Edge));
+        clampedX = np.x < WorldData.X0 + 6f || np.x > WorldData.MaxX - 6f; clampedZ = np.y < WorldData.Z0 + 6f || np.y > WorldData.MaxZ - 6f;
+        pos = new Vector2(Mathf.Clamp(np.x, WorldData.X0 + 6f, WorldData.MaxX - 6f), Mathf.Clamp(np.y, WorldData.Z0 + 6f, WorldData.MaxZ - 6f));
 
         groundSmooth = Mathf.Lerp(groundSmooth, world.Data.TerrainHeight(pos.x, pos.y), 1f - Mathf.Exp(-6f * dt));
         ApplyCamera();
@@ -179,7 +178,7 @@ public class MapView : MonoBehaviour
         {
             t += step;
             Vector3 p = ray.origin + ray.direction * t;
-            if (Mathf.Abs(p.x) > WorldData.Half || Mathf.Abs(p.z) > WorldData.Half) return false;
+            if (!WorldData.InBounds(p.x, p.z)) return false;
             if (p.y <= world.Data.TerrainHeight(p.x, p.z))
             {
                 float lo = prevT, hi = t;

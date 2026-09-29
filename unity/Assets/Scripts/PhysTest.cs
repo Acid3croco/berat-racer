@@ -182,7 +182,7 @@ public static class PhysTest
             float dt = Time.fixedDeltaTime; steps++;
             if (steps < 300) { lastVy = car.Body.linearVelocity.y; lastSpeed = car.Body.linearVelocity.magnitude; lastPos = car.transform.position; continue; }   // let it get going
             float vy = car.Body.linearVelocity.y, av = (vy - lastVy) / dt; lastVy = vy;
-            var cpos = car.transform.position; if (Mathf.Abs(cpos.x) > WorldData.Half - 100f || Mathf.Abs(cpos.z) > WorldData.Half - 100f) continue;     // ignore the edge of the world
+            var cpos = car.transform.position; if (!WorldData.InBounds(cpos.x, cpos.z, 100f)) continue;     // ignore the edge of the world
             lp += (av - lp) * (1f - Mathf.Exp(-dt / 0.6f)); lpFast += (av - lpFast) * (1f - Mathf.Exp(-dt / 0.08f));
             double harsh = av - lpFast; harshSq += harsh * harsh;
             { float h0 = car.DebugEnvelope[0]; if (envN >= 2) { float a2 = (h0 - 2 * envP1 + envP2) / (dt * dt); envSq += (double)a2 * a2; envCnt++; } envP2 = envP1; envP1 = h0; envN++; }
