@@ -71,6 +71,22 @@ public class RoadIndex
 
     public Surface Query(float x, float z, float refY, out float deckY) => Query(x, z, refY, out deckY, out _, out _);
 
+    /// <summary>Distance from (x,z) to the nearest EDGE of any drivable surface (decks included); negative when on one. 999 when no road is near.</summary>
+    public float EdgeClearance(float x, float z)
+    {
+        float best = 999f; var p = new Vector2(x, z);
+        int cx = Mathf.FloorToInt(x / CellSize), cz = Mathf.FloorToInt(z / CellSize);
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++)
+                if (grid.TryGetValue(Key(cx + dx, cz + dz), out var list))
+                    foreach (var s in list)
+                    {
+                        Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+                        best = Mathf.Min(best, (p - (s.a + ab * t)).magnitude - s.hw);
+                    }
+        return best;
+    }
+
     /// <summary>Nearest non-bridge road within maxDist: returns its travel direction (unit vector in x,z).</summary>
     public bool NearestRoad(float x, float z, float maxDist, out Vector2 dir)
     {

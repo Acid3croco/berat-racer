@@ -25,7 +25,7 @@ public class MapView : MonoBehaviour
     Vector3 aimPoint; bool aimValid; Vector2 aimScreen; float mouseUntil; Vector2 lastMouse;
     bool clampedX, clampedZ;
     GameObject carMarker, pin; float prevFov, prevFar, prevTimeScale = 1f; bool prevFog;
-    GUIStyle label, title;
+    GUIStyle label, title, gridLab;
 
     public void Init(WorldBuilder w, CarController c, FollowCamera f, Camera camera)
     {
@@ -212,7 +212,8 @@ public class MapView : MonoBehaviour
         int gx0 = Mathf.FloorToInt((pos.x - hh) / Grid.CellSize), gx1 = Mathf.CeilToInt((pos.x + hh) / Grid.CellSize);
         int gz0 = Mathf.FloorToInt((pos.y - hv) / Grid.CellSize), gz1 = Mathf.CeilToInt((pos.y + hv) / Grid.CellSize);
         if ((gx1 - gx0) > 90 || (gz1 - gz0) > 90) return;
-        var lab = new GUIStyle(label) { fontSize = 12 }; lab.normal.textColor = new Color(1f, 1f, 0.7f);
+        if (gridLab == null) { gridLab = new GUIStyle(label) { fontSize = 12 }; gridLab.normal.textColor = new Color(1f, 1f, 0.7f); }
+        var lab = gridLab;
         for (int gx = gx0; gx <= gx1; gx++)
         {
             bool major = gx % 5 == 0; Vector3 sp = cam.WorldToScreenPoint(new Vector3(gx * Grid.CellSize, y, pos.y));

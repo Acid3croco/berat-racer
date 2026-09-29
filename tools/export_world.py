@@ -231,6 +231,14 @@ for f in json.load(open("data/buildings.geojson"))["features"]:
         poly = Polygon([to_local(c[0], c[1]) for c in rings[0]]).simplify(0.3)
         if poly.is_empty or poly.area < 6: continue
         if poly.geom_type != "Polygon": poly = max(poly.geoms, key=lambda q: q.area)
+        near = _corr_tree.query(poly.buffer(0.5))                       # nothing may stand on a road: cut the footprint out of every drivable corridor
+        if len(near):
+            cut = poly.difference(shapely.union_all([_corr[j] for j in near]))
+            if cut.is_empty: continue
+            if cut.geom_type != "Polygon": cut = max(cut.geoms, key=lambda q: q.area) if hasattr(cut, "geoms") else cut
+            if cut.geom_type != "Polygon" or cut.area < 6 or cut.area < 0.35 * poly.area: continue         # mostly on the road: a data error, drop it
+            poly = cut.simplify(0.2)
+            if poly.geom_type != "Polygon": continue
         poly = shapely.geometry.polygon.orient(poly, 1.0)
         ring = np.array(poly.exterior.coords)[:-1]
         gx0, gz0, gx1, gz1 = poly.buffer(1.0).bounds                                   # lowest terrain anywhere under/around the footprint
@@ -260,9 +268,10 @@ for f in json.load(open("data/buildings.geojson"))["features"]:
         L, Wd = np.linalg.norm(e1), np.linalg.norm(e2)
         axis, long_, short = (e1 / L, L, Wd) if L >= Wd else (e2 / Wd, Wd, L)
         kind = bd_kind(p, poly.area)
-        pitched = (mnh_c - mnh_edge) > 0.8 and poly.area / mrr.area > 0.7 and poly.area < 900 and short > 3
+        fit = 1.0 - mrr.symmetric_difference(poly).area / poly.area                       # how well the bounding rectangle matches the real outline
+        pitched = (mnh_c - mnh_edge) > 0.8 and fit > 0.86 and poly.area < 900 and short > 3      # gable roofs only where they truly cover the footprint (no shifted roofs on L / T shapes)
         rise = float(np.clip(mnh_c - wall, 0.8, 5.0)) if pitched else 0.0
-        if kind in ("church", "chapel") and poly.area / mrr.area > 0.6 and short > 4:       # church naves are always gabled
+        if kind in ("church", "chapel") and fit > 0.6 and short > 4:       # church naves are always gabled
             pitched, rise = True, max(rise, float(short) * 0.32)
         seed = int(hashlib.md5(f["properties"]["cleabs"].encode()).hexdigest()[:8], 16)
         # front edge = the footprint edge whose midpoint is nearest a road (door / shopfront goes there)

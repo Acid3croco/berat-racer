@@ -59,10 +59,12 @@ Shader "Berat/FlatColor"
                 float3 V = normalize(_WorldSpaceCameraPos - i.wp);
                 n *= sign(dot(n, V));                                           // always face the viewer
                 float3 albedo = GammaToLinearSpace(i.col.rgb);
-                if (_Noise > 0)
+                float camDist = length(_WorldSpaceCameraPos - i.wp);
+                float grainFade = saturate(1.0 - (camDist - 40.0) / 180.0);            // fine grain would alias into shimmer at range
+                if (_Noise > 0 && grainFade > 0.01)
                 {
                     float nz = vnoise(i.wp * _NoiseScale) * 0.65 + vnoise(i.wp * _NoiseScale * 3.7 + 11.0) * 0.35;
-                    albedo *= 1.0 + _Noise * (nz - 0.5) * 2.0;
+                    albedo *= 1.0 + _Noise * grainFade * (nz - 0.5) * 2.0;
                 }
                 float gloss = 1.0 - i.col.a;                                    // alpha 255 = matte
                 float3 L = normalize(_WorldSpaceLightPos0.xyz);

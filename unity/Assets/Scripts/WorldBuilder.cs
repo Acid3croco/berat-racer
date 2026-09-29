@@ -14,7 +14,7 @@ public class WorldBuilder : MonoBehaviour
     public bool Ready;
 
     Material mat, roadMat, markMat, terrainMat, buildingMat, treeMat;
-    class Chunk { public Transform root; public GameObject terrain, roads, buildings, trees, street; public Vector2 center; public bool t, r, b, tr; }
+    class Chunk { public Transform root; public GameObject terrain, terrainLow, roads, buildings, trees, street; public Vector2 center; public bool t, r, b, tr; }
     readonly Chunk[] chunks = new Chunk[NC * NC];
     readonly MeshBuilder[] colMB = new MeshBuilder[NC * NC];
     readonly MeshBuilder[] streetMB = new MeshBuilder[NC * NC];
@@ -29,6 +29,7 @@ public class WorldBuilder : MonoBehaviour
     CapsuleCollider[] treePool;
     void AddObstacle(Vector3 pos, float r, float h)
     {
+        if (Roads.EdgeClearance(pos.x, pos.z) < r + 0.05f) return;                          // nothing solid on or touching a road (trees under bridges need no collider either)
         long key = HashKey(pos.x, pos.z);
         if (!treeHash.TryGetValue(key, out var l)) treeHash[key] = l = new List<int>();
         l.Add(obstacles.Count); obstacles.Add(new Obstacle { pos = pos, r = r, h = h });
@@ -124,7 +125,49 @@ public class WorldBuilder : MonoBehaviour
                 m.vertices = verts; m.colors32 = cols; m.triangles = tris; m.RecalculateBounds();
                 var ch = chunks[cz * NC + cx];
                 ch.terrain = MakeObject("terrain", ch.root, m, terrainMat, false, true);
+                ch.terrainLow = MakeObject("terrainLow", ch.root, BuildLowTerrain(ix0, iz0, per), terrainMat, false, true);
+                ch.terrainLow.SetActive(false);
             }
+    }
+
+    /// <summary>
+    /// Far-distance terrain: 16 m grid (every 4th vertex), colours averaged over each 4 x 4 block, with a skirt to hide cracks against the full-res neighbours.
+    /// Sub-pixel 4 m triangles with high-contrast colours were the source of the shimmering dots on the horizon.
+    /// </summary>
+    Mesh BuildLowTerrain(int ix0, int iz0, int per)
+    {
+        const int step = 4; int q = per / step;                                   // 25 quads per side
+        int n = q + 1; var verts = new List<Vector3>(); var cols = new List<Color32>(); var tris = new List<int>();
+        for (int z = 0; z < n; z++)
+            for (int x = 0; x < n; x++)
+            {
+                int gx = Mathf.Min(ix0 + x * step, Data.N - 1), gz = Mathf.Min(iz0 + z * step, Data.N - 1);
+                float r = 0, g = 0, b = 0, hsum = 0; int cnt = 0;
+                for (int dz = -step / 2; dz < step / 2; dz++)
+                    for (int dx = -step / 2; dx < step / 2; dx++)
+                    {
+                        int sx = Mathf.Clamp(gx + dx, 0, Data.N - 1), sz = Mathf.Clamp(gz + dz, 0, Data.N - 1), gi = sz * Data.N + sx;
+                        r += Data.Colors[gi * 3]; g += Data.Colors[gi * 3 + 1]; b += Data.Colors[gi * 3 + 2]; hsum += Data.Heights[gi]; cnt++;
+                    }
+                verts.Add(new Vector3(Data.Ox + gx * Data.Cell, hsum / cnt, Data.Oz + gz * Data.Cell));
+                cols.Add(new Color32((byte)(r / cnt), (byte)(g / cnt), (byte)(b / cnt), 255));
+            }
+        for (int z = 0; z < q; z++)
+            for (int x = 0; x < q; x++)
+            {
+                int a = z * n + x, b2 = a + n, c = a + 1, d = b2 + 1;
+                if (((x + z) & 1) == 0) { tris.Add(a); tris.Add(b2); tris.Add(d); tris.Add(a); tris.Add(d); tris.Add(c); } else { tris.Add(a); tris.Add(b2); tris.Add(c); tris.Add(c); tris.Add(b2); tris.Add(d); }
+            }
+        // skirts (2 m down) around the four edges
+        void Skirt(int i0, int i1)
+        {
+            int s0 = verts.Count; verts.Add(verts[i0] + Vector3.down * 2f); cols.Add(cols[i0]); verts.Add(verts[i1] + Vector3.down * 2f); cols.Add(cols[i1]);
+            tris.Add(i0); tris.Add(i1); tris.Add(s0 + 1); tris.Add(i0); tris.Add(s0 + 1); tris.Add(s0);
+        }
+        for (int i = 0; i < q; i++) { Skirt(i, i + 1); Skirt(q * n + i, q * n + i + 1); Skirt(i * n, (i + 1) * n); Skirt(i * n + q, (i + 1) * n + q); }
+        var m = new Mesh { name = "terrainLow", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+        m.SetVertices(verts); m.SetColors(cols); m.SetTriangles(tris, 0); m.RecalculateBounds();
+        return m;
     }
 
     // ------------------------------------------------------------------ roads
@@ -220,7 +263,7 @@ public class WorldBuilder : MonoBehaviour
                 acc = 0; spacing = (float)rng.NextDouble() * 6f;
                 Vector3 side = new Vector3(dir.z, 0, -dir.x) * sideSign; if (isUrban || rng.Next(3) == 0) sideSign = -sideSign;
                 Vector3 pos = b + side * (r.hw + (isUrban ? 1.0f : 1.5f)); pos.y = Data.TerrainHeight(pos.x, pos.z);
-                if (InsideAnyBuilding(pos)) { hasPrev = false; continue; }
+                if (InsideAnyBuilding(pos) || Roads.EdgeClearance(pos.x, pos.z) < 0.9f) { hasPrev = false; continue; }      // never on or right beside ANY road (crossings included)
                 int ck = CK(pos.x, pos.z); var mb = streetMB[ck];
                 if (isUrban)
                 {
@@ -259,6 +302,22 @@ public class WorldBuilder : MonoBehaviour
             }
         }
         Log.I("world", $"street furniture: {lamps} lamp posts, {poles} utility poles");
+    }
+
+    /// <summary>Debug audit: how close to a road edge is any pole / trunk / hedge collider, and what stands near a given spot.</summary>
+    public void AuditObstacles(Vector2 spot)
+    {
+        int bad = 0, n = obstacles.Count; float worst = 999f; string nearest = "none within 12 m"; float nd = 12f;
+        foreach (var o in obstacles)
+        {
+            float c = Roads.EdgeClearance(o.pos.x, o.pos.z) - o.r;
+            if (c < 0.05f) { bad++; Roads.Query(o.pos.x, o.pos.z, o.pos.y + 5f, out float dk); Log.I("audit", $"  touching: r={o.r:F2} h={o.h:F1} at ({o.pos.x:F0},{o.pos.z:F0}) cell {Grid.CellLabel(o.pos.x, o.pos.z)} ground y={o.pos.y:F1}, bridge deck above: {(float.IsNaN(dk) ? "none" : dk.ToString("F1") + " (" + (dk - o.pos.y).ToString("F1") + " m above)")}"); }
+            worst = Mathf.Min(worst, c);
+            float d = Vector2.Distance(new Vector2(o.pos.x, o.pos.z), spot);
+            if (d < nd) { nd = d; nearest = $"obstacle r={o.r:F2} h={o.h:F1} at ({o.pos.x:F1},{o.pos.z:F1}), {d:F1} m away, {c:F2} m clear of the road"; }
+        }
+        Log.I("audit", $"{n} obstacles (trunks, poles, lamps, hedges): {bad} touching a road edge, tightest clearance {worst:F2} m");
+        Log.I("audit", $"near cell (207,212) [{spot.x:F0},{spot.y:F0}]: {nearest}");
     }
 
     bool InsideAnyBuilding(Vector3 p)
@@ -513,7 +572,8 @@ public class WorldBuilder : MonoBehaviour
         foreach (var ch in chunks)
         {
             float d = Vector2.Distance(ch.center, new Vector2(focus.x, focus.z)) - ChunkSize * 0.7f;
-            Toggle(ch.terrain, d < 3200f);
+            bool near = d < 850f;
+            Toggle(ch.terrain, near); Toggle(ch.terrainLow, !near && d < 3600f);
             Toggle(ch.roads, d < 1600f);
             Toggle(ch.buildings, d < 1300f);
             Toggle(ch.trees, d < 900f && !HideTrees);

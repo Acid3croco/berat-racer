@@ -11,14 +11,29 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 
 ## What is in it
 
-- **Real world**: the terrain follows the LiDAR bare-earth model; roads are the BD TOPO centrelines draped on that terrain with their real widths, bridges, junction levelling and painted centre lines.
-- **Procedural buildings**: 3,500 BD TOPO footprints extruded to their height, gable roofs inferred from the LiDAR canopy model, and per-building facades (windows, shutters, doors, shopfronts, awnings, signs, chimneys) chosen by building type: house, barn, shop, pharmacy, town hall, school, church... Types come from BD TOPO attributes plus OSM places (Pharmacie Vert Nature, Mairie, Église Saint-Pierre, Vival...). The church tower is placed and sized from the LiDAR height maximum. Colours follow local architecture (crépi walls, brique foraine, canal tiles, light-blue shutters); see `docs/berat-style-guide.md`.
-- **Trees** at the LiDAR canopy maxima (55,000), in round / columnar / conifer shapes.
-- **Car**: rigid body + four spring-damper wheels on the heightfield, slip-angle tyre model with post-peak falloff (it drifts), friction circle, handbrake, speed-sensitive steering, downforce.
-- **Speed feel** (see `docs/speed-feel-research.md`): FOV 70→100° with speed, look-ahead, acceleration pull-back, shake, radial speed blur + vignette, procedural engine / wind / tyre audio, tyre smoke and skid marks.
-- **Cameras**: chase, close chase, hood, bumper, far chase; free look; rear view.
-- **Map mode**: 10 m … 1 km zoom (3 steps per decade), pan clamped to the map border, teleport to the exact terrain height under the crosshair.
-- **Autopilot** that follows the real road network (demo / test driver).
+- **Real world**: the terrain follows the LiDAR bare-earth model; roads are the BD TOPO centrelines draped on it with real widths, level bridge decks (from the LiDAR *surface* model), a network-consistent height profile, painted centre and edge lines, gravel verges.
+- **Procedural buildings**: 3,500 BD TOPO footprints (cut out of every road corridor) with facades chosen per building type (house, barn, shop, pharmacy, town hall, school, church...), gable roofs only where the roof truly fits, regional colours (crépi, brique foraine, canal tiles). Types come from BD TOPO plus OSM places (Pharmacie Vert Nature, Mairie, Église Saint-Pierre with its octagonal tower...). See `docs/berat-style-guide.md`.
+- **Nature and street furniture**: 55,000 trees and 21,000 hedges / shrubs at the LiDAR canopy maxima, lamp posts in the village, utility poles with wires in the country. Nothing solid stands on a road.
+- **Three cars, three characters** (`CarSpec.cs`): a Hot Hatch (RWD), a **Peugeot 406 V6** (FWD saloon, soft ride) and a **Porsche 911 GT3 (992)** (rear-engine, 9000 rpm, big wing and downforce). `F` switches car.
+- **Vehicle dynamics** (`CarController`, `Tyre`, `Drivetrain`): per-wheel angular velocity with slip ratio and slip angle from the contact-patch velocity; a combined-slip tyre curve with load sensitivity and lateral relaxation; engine torque curve, clutch (solved exactly against the driven axle each step), automatic gearbox, open / limited-slip differential; ABS, traction control and slip-angle-limited steering; springs, dampers and anti-roll bars over a contact envelope rolled across the heightfield; the whole hull collides with the ground.
+- **Look**: real sun with cascaded soft shadows, sky-gradient ambient, a procedural sky with clouds, haze, glossy paint and glass, HDR + MSAA + bloom + ACES tone mapping, fine grain on fields / asphalt / walls, far-terrain level of detail.
+- **Speed feel** (`docs/speed-feel-research.md`): FOV 70 -> 100 deg with speed, look-ahead, acceleration pull-back, shake, radial blur + vignette, procedural engine / wind / tyre audio, tyre smoke and skid marks, controller rumble.
+- **Cameras**: chase, close chase, hood, bumper, far chase; free look that orbits the car; rear view.
+- **Map mode**: 10 m ... 1 km zoom (3 steps per decade), pan clamped to the map border, 5 m grid overlay when zoomed in, teleport to the exact terrain height under the crosshair.
+- **Bug-report coordinates**: the top-right box shows the 5 x 5 m cell, local metres, elevation and Lambert-93. `K` copies the spot, `J` jumps to coordinates on the clipboard, `-goto x,z` starts there.
+- **Autopilot** that follows the real road network (demo and test driver).
+
+## Physics results (headless test suite, `docs/physics-*.txt`)
+
+| | Hot Hatch | Peugeot 406 V6 | Porsche 911 GT3 |
+|---|---|---|---|
+| 0-100 km/h | 6.8 s | 9.1 s | 3.8 s |
+| top speed | 246 km/h | 236 km/h | 305 km/h |
+| 100-0 km/h | 34 m | 39 m | 27 m |
+| skidpad, R = 30 m | ~1.0 g | 0.86 g | 1.35 g |
+
+Each car passes 13 checks (acceleration, braking distance and stability, skidpad grip, handbrake turn, hands-off stability at speed, step-steer gain and overshoot). The previous model passed 5 of 13.
+Road benchmark (autopilot, 150 s on the real roads): invisible stops 3 -> 0, vertical harshness 0.15 m/s2 (terrain-mesh level), no wheel hops. Whole-hull collision is tested by dropping each car on its side, roof, nose and tail.
 
 ## Controls
 
@@ -27,9 +42,12 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 | Drive | W A S D / arrows | R2 gas, L2 brake / reverse, left stick |
 | Handbrake | Space | Square or R1 |
 | Reset car | R | Triangle |
+| Car | F | D-pad right |
 | Camera | C, hold B = rear view, hold right mouse = look | D-pad up, right stick = look, R3 = rear view |
 | Map | M (Enter / click = teleport, Q E zoom, WASD pan) | Select (Cross = teleport, L1 R1 zoom, left stick pan) |
 | Autopilot | P | Circle |
+| Spot | K copy, J jump to clipboard coordinates | |
+| Assists / v-sync / debug | T / V / F3 | |
 | Volume / mute | `[` `]` / N | |
 | Quit | Esc | |
 
@@ -52,7 +70,7 @@ uv run python tools/export_world.py   # -> unity/Assets/StreamingAssets/berat
 
 ## Headless tests
 
-The player has scripted test modes (run with `-batchmode`): `-inputtest` (injected keyboard/pad), `-maptest` (pan/zoom/border/teleport), `-shots` and `-smokeshots` (renders landmarks and tyre smoke to `docs/shots`), `-audiotest` (renders the synth to `docs/audio/*.wav`), `-smoke -smokeSeconds N [-autoKmh K]` (autopilot run). `-autopilot` starts the game driving itself.
+The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-maptest`, `-camtest`, `-shots`, `-carshots`, `-smokeshots`, `-audiotest`, `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
 
 ## Data & attribution
 

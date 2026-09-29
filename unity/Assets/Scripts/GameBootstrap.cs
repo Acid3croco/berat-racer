@@ -31,7 +31,7 @@ public class GameBootstrap : MonoBehaviour
     IEnumerator Start()
     {
         Application.targetFrameRate = -1; Application.runInBackground = true;
-        QualitySettings.vSyncCount = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-novsync") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-batchmode") >= 0 ? 0 : 1;
+        QualitySettings.vSyncCount = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-vsync") >= 0 ? 1 : 0;      // uncapped by default; V toggles
         Time.fixedDeltaTime = 0.01f;
         smoke = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smoke") >= 0;
         inputTest = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-inputtest") >= 0;
@@ -75,6 +75,7 @@ public class GameBootstrap : MonoBehaviour
         if (shotsMode) StartCoroutine(Shots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0) StartCoroutine(PhysTest.BridgeRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0) StartCoroutine(PhysTest.HullRun(world, car));
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audit") >= 0) { world.AuditObstacles(new Vector2(1037.5f, 1062.5f)); Application.Quit(); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-gridtest") >= 0) { PhysTest.GridRun(); Application.Quit(); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-groundscan") >= 0) StartCoroutine(GroundScan());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0) StartCoroutine(PhysTest.RoadRun(world, car, 150f, 100f));
@@ -142,7 +143,7 @@ public class GameBootstrap : MonoBehaviour
         var skyShader = Resources.Load<Shader>("BeratSky");
         if (skyShader != null) RenderSettings.skybox = new Material(skyShader); else Log.I("gfx", "sky shader missing");
         var haze = new Color(0.42f, 0.62f, 0.90f);
-        RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared; RenderSettings.fogColor = haze; RenderSettings.fogDensity = 0.00028f;
+        RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared; RenderSettings.fogColor = haze; RenderSettings.fogDensity = 0.00036f;
 
         QualitySettings.antiAliasing = 4;
         QualitySettings.shadows = ShadowQuality.All; QualitySettings.shadowResolution = ShadowResolution.VeryHigh; QualitySettings.shadowProjection = ShadowProjection.StableFit;
@@ -227,6 +228,7 @@ public class GameBootstrap : MonoBehaviour
             hand |= kb.spaceKey.isPressed; reset |= kb.rKey.wasPressedThisFrame;
             if (kb.hKey.wasPressedThisFrame) showHelp = !showHelp;
             if (kb.fKey.wasPressedThisFrame) CycleCar();
+            if (kb.vKey.wasPressedThisFrame) { QualitySettings.vSyncCount = 1 - QualitySettings.vSyncCount; Log.I("gfx", "vsync " + (QualitySettings.vSyncCount == 1 ? "ON" : "OFF")); copiedNote = "vsync " + (QualitySettings.vSyncCount == 1 ? "on" : "off"); copiedAt = Time.unscaledTime; }
             if (kb.tKey.wasPressedThisFrame) { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 3); Log.I("car", "assist mode " + car.AssistMode); }
             if (audio != null && (kb.leftBracketKey.wasPressedThisFrame || kb.rightBracketKey.wasPressedThisFrame))
             { audio.Volume = Mathf.Clamp(audio.Volume + (kb.rightBracketKey.wasPressedThisFrame ? 0.05f : -0.05f), 0f, 1f); Log.I("audio", $"volume {audio.Volume * 100:F0}%"); }
@@ -302,7 +304,7 @@ public class GameBootstrap : MonoBehaviour
         telemetryNext = Time.unscaledTime + 1f;
         var p = car.transform.position;
         Log.I("tel", $"pos=({p.x:F0},{p.y:F1},{p.z:F0}) {car.SpeedKmh:F0}km/h fwd={car.ForwardSpeed:F1}m/s wheels={car.WheelsOnGround}/4 surf={car.CurrentSurface} " +
-                     $"in[steer={steerIn:F2} thr={thrIn:F2} brk={brkIn:F2} hand={handIn}] gear={car.Gear} rpm={car.Rpm:F0} audioPeak={(audio != null ? audio.Synth.LastPeak : 0):F2} buffers={(audio != null ? audio.Synth.Buffers : 0)} fx={(fx != null ? fx.Strength : 0):F2} smoke={(tyres != null ? tyres.Alive : 0)} wfx=[{car.WheelFx[0]:F1},{car.WheelFx[1]:F1},{car.WheelFx[2]:F1},{car.WheelFx[3]:F1}] cam={(cam != null ? cam.ModeName : "-")} fov={(mainCam != null ? mainCam.fieldOfView : 0):F0} pad={padName} focus={Application.isFocused} kb={(Keyboard.current != null)} auto={autoOn} fps={fps:F0} (min {fpsMin:F0}) mem={System.GC.GetTotalMemory(false) / 1048576}MB");
+                     $"in[steer={steerIn:F2} thr={thrIn:F2} brk={brkIn:F2} hand={handIn}] gear={car.Gear} rpm={car.Rpm:F0} audioPeak={(audio != null ? audio.Synth.LastPeak : 0):F2} buffers={(audio != null ? audio.Synth.Buffers : 0)} gc={System.GC.CollectionCount(0)} fx={(fx != null ? fx.Strength : 0):F2} smoke={(tyres != null ? tyres.Alive : 0)} wfx=[{car.WheelFx[0]:F1},{car.WheelFx[1]:F1},{car.WheelFx[2]:F1},{car.WheelFx[3]:F1}] cam={(cam != null ? cam.ModeName : "-")} fov={(mainCam != null ? mainCam.fieldOfView : 0):F0} pad={padName} focus={Application.isFocused} kb={(Keyboard.current != null)} auto={autoOn} fps={fps:F0} (min {fpsMin:F0}) mem={System.GC.GetTotalMemory(false) / 1048576}MB");
         fpsMin = 999f;
     }
 
@@ -639,6 +641,7 @@ public class GameBootstrap : MonoBehaviour
 
     // ------------------------------------------------------------ position / bug-report coordinates
     string copiedNote; float copiedAt = -10f;
+    GUIStyle stRight, stRightBig, stRightNote, stGauge, stCarName, stCarTag, stCamName, stAuto;
 
     void DrawPositionBox()
     {
@@ -646,12 +649,12 @@ public class GameBootstrap : MonoBehaviour
         world.GroundHeight(p.x, p.z, p.y, out Surface surf);
         float w = 330f, h = 84f; var r = new Rect(Screen.width - w - 14, 10, w, h);
         GUI.color = new Color(0, 0, 0, 0.5f); GUI.DrawTexture(r, Texture2D.whiteTexture); GUI.color = Color.white;
-        var st = new GUIStyle(small) { alignment = TextAnchor.UpperRight, fontSize = 15 };
-        var big2 = new GUIStyle(st) { fontSize = 20, fontStyle = FontStyle.Bold };
+        if (stRight == null) { stRight = new GUIStyle(small) { alignment = TextAnchor.UpperRight, fontSize = 15 }; stRightBig = new GUIStyle(stRight) { fontSize = 20, fontStyle = FontStyle.Bold }; stRightNote = new GUIStyle(stRight) { fontSize = 13 }; stRightNote.normal.textColor = new Color(0.6f, 1f, 0.6f); }
+        var st = stRight; var big2 = stRightBig;
         GUI.Label(new Rect(r.x, r.y + 4, w - 10, 26), $"cell ({c.x}, {c.y})", big2);
         GUI.Label(new Rect(r.x, r.y + 30, w - 10, 22), $"x {p.x:F1}   z {p.z:F1}   elev {p.y:F1} m", st);
         GUI.Label(new Rect(r.x, r.y + 50, w - 10, 22), $"{Grid.Lambert(p.x, p.z)}   {surf}", st);
-        if (Time.unscaledTime - copiedAt < 2.5f) { var cs = new GUIStyle(st) { fontSize = 13 }; cs.normal.textColor = new Color(0.6f, 1f, 0.6f); GUI.Label(new Rect(r.x, r.y + h + 2, w - 10, 20), copiedNote, cs); }
+        if (Time.unscaledTime - copiedAt < 2.5f) GUI.Label(new Rect(r.x, r.y + h + 2, w - 10, 20), copiedNote, stRightNote);
     }
 
     /// <summary>K: copy this spot as a one-line report (also logged). J: jump to coordinates found on the clipboard.</summary>
@@ -692,7 +695,8 @@ public class GameBootstrap : MonoBehaviour
     }
     void DrawGauges()
     {
-        var lbl = new GUIStyle(small) { alignment = TextAnchor.UpperCenter, fontSize = 12 };
+        if (stGauge == null) stGauge = new GUIStyle(small) { alignment = TextAnchor.UpperCenter, fontSize = 12 };
+        var lbl = stGauge;
         float x = Screen.width - 460, y = Screen.height - 150;
         Bar(new Rect(x, y, 26, 110), car.Throttle, new Color(0.25f, 0.85f, 0.35f), "GAS", lbl);
         Bar(new Rect(x + 40, y, 26, 110), car.Brake, new Color(0.95f, 0.25f, 0.2f), "BRAKE", lbl);
@@ -726,15 +730,15 @@ public class GameBootstrap : MonoBehaviour
         if (map != null && map.Active) { map.DrawGUI(); return; }
         GUI.Label(new Rect(Screen.width - 340, Screen.height - 110, 320, 80), $"{car.SpeedKmh:F0} km/h", big);
         float carAge = Time.unscaledTime - shownCarAt;
-        if (carAge < 3.5f) { var ns = new GUIStyle(big) { fontSize = 34, alignment = TextAnchor.UpperCenter }; ns.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(3.5f - carAge)); GUI.Label(new Rect(0, 70, Screen.width, 50), car.Spec.Name, ns); var ts = new GUIStyle(small) { alignment = TextAnchor.UpperCenter, fontSize = 18 }; ts.normal.textColor = ns.normal.textColor; GUI.Label(new Rect(0, 118, Screen.width, 30), car.Spec.Tagline, ts); }
+        if (carAge < 3.5f) { if (stCarName == null) { stCarName = new GUIStyle(big) { fontSize = 34, alignment = TextAnchor.UpperCenter }; stCarTag = new GUIStyle(small) { alignment = TextAnchor.UpperCenter, fontSize = 18 }; } stCarName.normal.textColor = stCarTag.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(3.5f - carAge)); GUI.Label(new Rect(0, 70, Screen.width, 50), car.Spec.Name, stCarName); GUI.Label(new Rect(0, 118, Screen.width, 30), car.Spec.Tagline, stCarTag); }
         float camAge = Time.unscaledTime - cam.ModeShownAt;
-        if (camAge < 2.2f) { var cs = new GUIStyle(big) { fontSize = 26, alignment = TextAnchor.LowerCenter }; cs.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(2.2f - camAge)); GUI.Label(new Rect(0, Screen.height - 90, Screen.width, 60), "Camera: " + cam.ModeName, cs); }
+        if (camAge < 2.2f) { if (stCamName == null) stCamName = new GUIStyle(big) { fontSize = 26, alignment = TextAnchor.LowerCenter }; stCamName.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(2.2f - camAge)); GUI.Label(new Rect(0, Screen.height - 90, Screen.width, 60), "Camera: " + cam.ModeName, stCamName); }
         DrawGauges();
-        if (autoOn) { var ap = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; ap.normal.textColor = new Color(1f, 0.85f, 0.2f); GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", ap); }
+        if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 14, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
         DrawPositionBox();
         GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
-            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
+            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)
         {
             var sb = new StringBuilder();
