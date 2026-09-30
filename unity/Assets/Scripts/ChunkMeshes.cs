@@ -285,7 +285,7 @@ public class ChunkMeshes
                 }
             }
             if (centre) Line(3f, 9f, 0.5f, 0f, 0.09f);
-            for (int dvd = 1; dvd <= dividers; dvd++) Line(3f, dual ? 0f : 6f, dvd / (float)(dividers + 1), 0f, 0.075f);
+            for (int dvd = 1; dvd <= dividers; dvd++) Line(3f, dual ? 13f : 6f, dvd / (float)(dividers + 1), 0f, 0.075f);      // motorway lane lines: 3 m painted, 10 m gap
             if (edgeSolid) { Line(0f, 0f, 0f, 0.22f, 0.055f); Line(0f, 0f, 1f, 0.22f, 0.055f); }
             else if (edgeThin) { Line(3f, 6.5f, 0f, 0.22f, 0.045f); Line(3f, 6.5f, 1f, 0.22f, 0.045f); }
         }

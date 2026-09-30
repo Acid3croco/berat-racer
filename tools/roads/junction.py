@@ -67,10 +67,17 @@ class Junction:
     def height(self, xy):
         return self.plane[0] + (np.atleast_2d(xy) - self.centre) @ self.plane[1:]
 
+    def slim(self):
+        """Drop what only the construction needed (the dense arrays of every arm): a finished junction is its surface, plane and arm list."""
+        self.corners = {}
+        for fan in self.fans.values():
+            for arm in fan:
+                arm.u, arm.xy, arm.tan, arm.left, arm.right = arm.u[:1], arm.xy[:1], arm.tan[:1], arm.left[:1], arm.right[:1]
 
-def make_arm(graph, links, k, end):
+
+def make_arm(graph, links, k, end, reach):
     link = links[k]
-    inside = link.dense_s <= config.TRIM_REACH if end == 0 else link.dense_s >= link.length - config.TRIM_REACH
+    inside = link.dense_s <= reach if end == 0 else link.dense_s >= link.length - reach
     xy, hw = link.dense_xy[inside], link.dense_hw[inside]
     u = link.dense_s[inside] if end == 0 else link.length - link.dense_s[inside]
     if end == 1:
@@ -136,13 +143,22 @@ def _dense_mouth(arm):
     return arm.at(arm.right, arm.trim), arm.at(arm.left, arm.trim)
 
 
+def _reach(arm):
+    """The whole arm as far as it was examined (not only its stub)."""
+    return Polygon(np.vstack([arm.right, arm.left[::-1]])) if len(arm.u) > 1 else Polygon()
+
+
 def clear_mouths(junction, graph, links):
-    """Push every trim outwards until the mouth of the arm is clear of every other piece of the junction surface."""
+    """Push every trim outwards until the mouth of the arm is clear of every other piece of the junction surface and of the
+    other arms themselves (two arms leaving side by side overlap far beyond the point where their kerbs first cross)."""
+    arms = junction.arms
+    reach = {id(a): _polygons(shapely.make_valid(_reach(a))) for a in arms}
     for _ in range(4):
         pieces = _pieces(junction, graph, links, lambda arm: _dense_mouth(arm))
         moved = False
-        for a in junction.arms:
-            others = shapely.unary_union([part for owner, p in pieces if owner is not a for part in _polygons(shapely.make_valid(p))])
+        for a in arms:
+            others = shapely.unary_union([part for owner, p in pieces if owner is not a for part in _polygons(shapely.make_valid(p))]
+                                         + [part for b in arms if b is not a and b.link != a.link for part in reach[id(b)]])
             while a.trim < a.u[-1] + 1.0 and _mouth_line(a).intersection(others).length > 0.01:       # touching at the corners is fine
                 a.trim += 1.0
                 moved = True
@@ -150,9 +166,39 @@ def clear_mouths(junction, graph, links):
             break
 
 
+def _make_junction(graph, links, nodes, touching, internal):
+    """The junction of a group of nodes: its arms sorted and trimmed. Arms are examined TRIM_REACH out; if one is still entangled
+    with a neighbour there (a slip road leaving a motorway at a few degrees), the junction is built again looking TRIM_REACH_LONG out."""
+    for reach in (config.TRIM_REACH, config.TRIM_REACH_LONG):
+        junction = Junction(nodes=nodes, fans={n: [] for n in nodes})
+        for node in nodes:
+            for k, end in touching[node]:
+                junction.fans[node].append(make_arm(graph, links, k, end, reach))
+                if k in internal and k not in junction.internal:
+                    junction.internal.append(k)
+        junction.centre = graph.nodes[nodes].mean(axis=0)
+        for node, fan in junction.fans.items():
+            fan.sort(key=lambda arm: np.arctan2(*arm.at(arm.tan, min(6.0, arm.u[-1]))[::-1]))
+            junction.corners[node] = trim_fan(fan)
+        clear_mouths(junction, graph, links)
+        if not any(arm.trim >= reach - 1.0 and links[arm.link].length > reach for arm in junction.arms):
+            break
+    return junction
+
+
 def build_junctions(graph, links):
-    """Group junction nodes into junctions and trim every arm. Sets `junction`, `trim`, `internal` on the links. Returns the junction list."""
+    """Group junction nodes into junctions and trim every arm. Sets `junction`, `trim`, `internal` on the links. Returns the junction list.
+
+    Every junction node starts as its own junction. A link left with nothing to draw between its two trims is swallowed and its
+    junctions merge; only the junctions that changed are built again, until nothing changes."""
     parent = {n: n for n in range(len(graph.nodes)) if graph.is_junction(n)}
+    members = {n: [n] for n in parent}
+    touching = {n: [] for n in parent}
+    for k, link in enumerate(links):
+        link.internal, link.junction, link.trim = False, [-1, -1], [0.0, 0.0]
+        for end in (0, 1):
+            if link.nodes[end] in parent:
+                touching[link.nodes[end]].append((k, end))
 
     def find(a):
         while parent[a] != a:
@@ -160,39 +206,34 @@ def build_junctions(graph, links):
             a = parent[a]
         return a
 
-    internal = set()
-    while True:
-        groups = {}
-        for node in parent:
-            groups.setdefault(find(node), []).append(node)
-        index = {root: i for i, root in enumerate(groups)}
-        junctions = [Junction(nodes=sorted(nodes), fans={n: [] for n in sorted(nodes)}) for nodes in groups.values()]
-        for k, link in enumerate(links):
-            link.internal = k in internal
-            for end in (0, 1):
-                node = link.nodes[end]
-                link.junction[end] = index[find(node)] if node in parent else -1
-                link.trim[end] = 0.0
-                if node in parent:
-                    junctions[link.junction[end]].fans[node].append(make_arm(graph, links, k, end))
-            if link.internal:
-                junctions[max(link.junction)].internal.append(k)
-        for junction in junctions:
-            junction.centre = graph.nodes[junction.nodes].mean(axis=0)
-            for node, fan in junction.fans.items():
-                fan.sort(key=lambda arm: np.arctan2(*arm.at(arm.tan, min(6.0, arm.u[-1]))[::-1]))
-                junction.corners[node] = trim_fan(fan)
-            clear_mouths(junction, graph, links)
+    internal, built, dirty = set(), {}, set(parent)
+    while dirty:
+        affected = set()
+        for root in sorted(dirty):
+            junction = built[root] = _make_junction(graph, links, sorted(members[root]), touching, internal)
             for arm in junction.arms:
                 links[arm.link].trim[arm.end] = arm.trim
-        swallowed = [k for k, link in enumerate(links) if not link.internal and sum(link.trim) > link.length - config.LINK_MIN_DRAWN]
-        if not swallowed:
-            break
-        for k in swallowed:
+                affected.add(arm.link)
+        dirty = set()
+        for k in sorted(affected):
+            link = links[k]
+            loop = link.nodes[0] in parent and link.nodes[1] in parent and find(link.nodes[0]) == find(link.nodes[1])
+            least = config.LOOP_MIN_DRAWN if loop else config.LINK_MIN_DRAWN        # a short link from a junction back to itself is part of it
+            if link.internal or sum(link.trim) <= link.length - least:
+                continue
             internal.add(k)
-            if min(links[k].junction) >= 0:
-                a, b = (find(n) for n in links[k].nodes)
-                parent[a] = b
+            link.internal = True
+            roots = sorted({find(n) for n in link.nodes if n in parent})
+            for other in roots[1:]:
+                parent[other] = roots[0]
+                members[roots[0]] += members.pop(other)
+                built.pop(other, None)
+            dirty = {find(r) for r in dirty} | {roots[0]}
+    roots = sorted(built)
+    index = {root: i for i, root in enumerate(roots)}
+    junctions = [built[root] for root in roots]
+    for link in links:
+        link.junction = [index[find(n)] if n in parent else -1 for n in link.nodes]
     for junction in junctions:
         paved = [not graph.edges[links[arm.link].chain[0][0]].dirt for arm in junction.arms]
         junction.paved = sum(paved) >= min(2, len(paved))

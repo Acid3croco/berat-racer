@@ -21,7 +21,7 @@ DEFAULT_LIST = "data/big/small_sectors.json"
 
 
 def print_report(report):
-    for stage in ("source", "graph", "alignment", "junction", "profile", "surface"):
+    for stage in ("source", "graph", "alignment", "junction", "profile", "surface", "save"):
         if stage in report:
             print(f"{stage:<10} {json.dumps(report[stage], ensure_ascii=False)}")
     print(f"{'class':<11}{'km':>7}{'max grade %':>13}{'min crest m':>13}{'min sag m':>11}{'take-off km/h':>15}{'(draped)':>10}{'cut/fill p90':>14}{'p99':>7}{'max':>7}")
@@ -40,7 +40,7 @@ def cmd_fetch_osm(args):
 
 
 def cmd_build(args):
-    network = build_stage.build(args.list)
+    network = build_stage.build(args.list, jobs=args.jobs)
     path = build_stage.save(network)
     print_report(network.report)
     print(f"-> {path}")
@@ -83,7 +83,9 @@ def main():
     parser.add_argument("--list", default=DEFAULT_LIST, help="sector list json: the area to build")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("fetch-osm").set_defaults(run=cmd_fetch_osm)
-    commands.add_parser("build").set_defaults(run=cmd_build)
+    build = commands.add_parser("build")
+    build.add_argument("--jobs", type=int, default=6, help="tiles of the height solve run side by side")
+    build.set_defaults(run=cmd_build)
     commands.add_parser("report").set_defaults(run=cmd_report)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--at", required=True, help="X,Z in local metres (the game's K key copies them)")

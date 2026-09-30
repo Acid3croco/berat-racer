@@ -6,7 +6,8 @@ covers it). `trim[end]` is the length of the stub at each end; the drawn road ru
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import minimum_filter1d, uniform_filter1d
+from scipy.spatial import cKDTree
 
 from . import config
 
@@ -63,6 +64,11 @@ class Link:
     def length(self):
         return float(self.dense_s[-1])
 
+    def slim(self):
+        """Drop the dense working centreline (kept: its two ends, for the length): a finished link is its samples."""
+        ends = [0, len(self.dense_s) - 1]
+        self.dense_s, self.dense_xy, self.dense_hw, self.dense_part = self.dense_s[ends], self.dense_xy[ends], self.dense_hw[ends], self.dense_part[ends]
+
     def left(self):
         return np.c_[self.xy + self.nrm * self.hw[:, None], self.z + self.tilt * self.hw]
 
@@ -82,6 +88,52 @@ def make_link(graph, chain, nodes):
         for _ in range(2):
             hw = uniform_filter1d(hw, size, mode="nearest")
     return Link(chain=chain, nodes=nodes, dense_s=s, dense_xy=xy, dense_hw=hw, dense_part=part)
+
+
+def clamp_widths(links):
+    """Narrow roads that run side by side closer than their widths allow (the two carriageways of a motorway, a slip road along it,
+    a street and its service lane): each keeps its share of the space between the two centrelines. Roads that meet at a node are
+    left alone near it: there the junction stage decides. Returns the number of links narrowed."""
+    every = config.CLAMP_EVERY
+    points, owner, index, hw, tan, arc = [], [], [], [], [], []
+    for k, link in enumerate(links):
+        at = np.arange(0, len(link.dense_s), every)
+        points.append(link.dense_xy[at])
+        owner.append(np.full(len(at), k))
+        index.append(at)
+        hw.append(link.dense_hw[at])
+        tan.append(tangents(link.dense_xy)[at])
+        arc.append(np.c_[link.dense_s[at], link.length - link.dense_s[at]])          # distance to each end of the link
+    points, owner, index, hw, tan, arc = (np.concatenate(a) for a in (points, owner, index, hw, tan, arc))
+    nodes = np.array([link.nodes for link in links])
+    tree = cKDTree(points)
+    reach = config.CLAMP_NEAR_NODE
+    limit = np.full(len(points), np.inf)
+    for start in range(0, len(points), 200000):
+        i = np.arange(start, min(start + 200000, len(points)))
+        dist, j = tree.query(points[i], k=16, distance_upper_bound=2.0 * hw.max() + config.CLAMP_GAP)
+        i = np.repeat(i, 16)
+        dist, j = dist.ravel(), j.ravel()
+        ok = np.isfinite(dist)
+        i, j, dist = i[ok], j[ok], dist[ok]
+        ok = (owner[i] != owner[j]) & (dist < hw[i] + hw[j] + config.CLAMP_GAP) & (np.abs((tan[i] * tan[j]).sum(axis=1)) > config.CLAMP_PARALLEL)
+        i, j, dist = i[ok], j[ok], dist[ok]
+        near_shared_node = np.zeros(len(i), bool)
+        for ea in (0, 1):
+            for eb in (0, 1):
+                near_shared_node |= (nodes[owner[i], ea] == nodes[owner[j], eb]) & (arc[i, ea] < reach) & (arc[j, eb] < reach)
+        i, j, dist = i[~near_shared_node], j[~near_shared_node], dist[~near_shared_node]
+        share = dist * hw[i] / (hw[i] + hw[j]) - 0.5 * config.CLAMP_GAP
+        np.minimum.at(limit, i, np.maximum(share, config.CLAMP_MIN_HALF_WIDTH))
+    narrowed = 0
+    for k in np.unique(owner[np.isfinite(limit)]):
+        link, mine = links[k], owner == k
+        cap = np.interp(np.arange(len(link.dense_s)), index[mine], np.minimum(limit[mine], 1e3))
+        size = max(int(config.WIDTH_TAPER / config.ALIGN_STEP), 1) | 1
+        cap = uniform_filter1d(minimum_filter1d(cap, size, mode="nearest"), size, mode="nearest")     # never wider than the tightest spot nearby, eased in and out
+        link.dense_hw = np.minimum(link.dense_hw, cap)
+        narrowed += 1
+    return narrowed
 
 
 def sample(link):

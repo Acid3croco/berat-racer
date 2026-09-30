@@ -1,4 +1,4 @@
-"""Stage 5: vertical alignment, one optimisation for the whole network.
+"""Stage 5: vertical alignment of the whole network.
 
 Unknowns: the height of every link sample outside the junctions, and a plane (height at the centre, two slopes) per junction.
 Link samples inside a junction lie on its plane by construction, so every road through a junction shares its height and its slope there.
@@ -9,28 +9,115 @@ Link samples inside a junction lie on its plane by construction, so every road t
     subject to  |grade| <= max_grade                       per road class
                 -1 / crest_radius <= z'' <= 1 / sag_radius
 
-A flat network satisfies every constraint, so the problem is always feasible. Bridges aim at their deck (surface model) instead of
-the ground below; tunnels have no target and are carried by their two ends.
+Bridges aim at their deck (surface model) instead of the ground below; tunnels have no target and are carried by their two ends.
+
+Tiles. The area is cut into square tiles (PROFILE_TILE). A sample belongs to the tile it lies in, a junction (with the road stubs on
+its plane) to the tile of its centre. Tiles are solved in four rounds, like the four colours of a 2 x 2 checkerboard, so the tiles of
+one round never touch and run in parallel. A tile is solved together with a halo (PROFILE_HALO) of its neighbours:
+
+  - what a neighbour has already solved is fixed: the tile's roads continue it smoothly (the smoothness and curvature terms reach
+    across the border, the fixed heights are their boundary condition);
+  - what no neighbour has solved yet is solved along and thrown away: it only makes the tile aware of what lies beyond its border.
+
+Only the tile's own samples and junctions are kept. A road crossing a border is therefore one continuous profile: each side was solved
+with the other side either fixed or present. The influence of a height fades within a few smoothing wavelengths (tens of metres),
+far less than the halo, so the result is close to what one solve of the whole area would give.
 """
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 import numpy as np
 import osqp
 from scipy import sparse
-from scipy.ndimage import median_filter
+from scipy.ndimage import median_filter, uniform_filter1d
 
 from rasters import Mosaic
 
 from . import config
 
 ACROSS = (-0.7, -0.35, 0.0, 0.35, 0.7)            # ground is sampled at these fractions of the half width, the median is kept
-SOLVER = dict(eps_abs=2e-5, eps_rel=2e-5, max_iter=40000, polish=False, verbose=False)
+SOLVER = dict(eps_abs=2e-5, eps_rel=2e-5, max_iter=20000, polish=False, verbose=False)
+SOLVED = ("solved", "solved inaccurate", "maximum iterations reached")      # the last iterate is a usable profile in all three
 
 
-def terrain_for(links, pad=40):
-    xy = np.vstack([link.xy for link in links])
-    x0, z0 = np.floor((xy.min(axis=0) - pad) / 4.0) * 4.0
-    x1, z1 = np.ceil((xy.max(axis=0) + pad) / 4.0) * 4.0
-    return Mosaic(x0, z0, x1 - x0, z1 - z0, kinds=("mnt", "mnh"))
+# ---------------------------------------------------------------- the network as flat arrays
 
+class Samples:
+    """Every link sample of the network in flat arrays (links one after the other), and what the solver needs to know about each."""
+
+    def __init__(self, network):
+        links, edges = network.links, network.edges
+        self.offsets = np.r_[0, np.cumsum([len(link.s) for link in links])]
+        n = self.offsets[-1]
+        self.link = np.repeat(np.arange(len(links)), np.diff(self.offsets))
+        self.s = np.concatenate([link.s for link in links])
+        self.xy = np.vstack([link.xy for link in links])
+        self.nrm = np.vstack([link.nrm for link in links])
+        self.hw = np.concatenate([link.hw for link in links])
+        self.plane = np.full(n, -1)                       # junction whose plane the sample lies on
+        self.curve_ok = np.zeros(n, bool)                 # a curvature limit applies at the sample (from mouth to mouth)
+        self.seg = {key: np.zeros(n) for key in ("max_grade", "crest", "sag", "wavelength")}       # of the segment after each sample
+        self.seg_bridge, self.seg_tunnel = np.zeros(n, bool), np.zeros(n, bool)
+        for k, link in enumerate(links):
+            o, m = self.offsets[k], len(link.s)
+            if link.internal:
+                self.plane[o:o + m] = max(link.junction)
+            else:
+                if link.junction[0] >= 0:
+                    self.plane[o:o + link.i0 + 1] = link.junction[0]
+                if link.junction[1] >= 0:
+                    self.plane[o + link.i1:o + m] = link.junction[1]
+                self.curve_ok[o + max(link.i0, 1):o + min(link.i1, m - 2) + 1] = True
+            for p in np.unique(link.part):
+                edge = edges[link.chain[p][0]]
+                c = edge.road_class
+                at = o + np.flatnonzero(link.part == p)
+                self.seg["max_grade"][at], self.seg["crest"][at], self.seg["sag"][at] = c.max_grade, c.crest_radius, c.sag_radius
+                self.seg["wavelength"][at] = c.profile_wavelength
+                self.seg_bridge[at], self.seg_tunnel[at] = edge.bridge, edge.tunnel
+        self.centres = np.array([j.centre for j in network.junctions]).reshape(-1, 2)
+        self.tilt_rows = [_tilt_rows(network, j) for j in network.junctions]
+        # ownership: a sample belongs to the tile it lies in, a junction and the samples on its plane to the tile of its centre
+        self.junction_tile = np.floor(self.centres / config.PROFILE_TILE).astype(int)
+        self.tile = np.floor(self.xy / config.PROFILE_TILE).astype(int)
+        planar = self.plane >= 0
+        self.tile[planar] = self.junction_tile[self.plane[planar]]
+
+
+def _tilt_rows(network, junction):
+    """[(unit vector across the arm, weight)]: the junction plane resists tilting across its arms, most of all across the most important one."""
+    arms = junction.arms
+    if not arms:
+        return []
+    ranks = np.array([network.edges[network.links[a.link].chain[0 if a.end == 0 else -1][0]].road_class.rank for a in arms], float)
+    return [(np.array([-arm.tan[0][1], arm.tan[0][0]]), np.sqrt(config.TILT_STIFFNESS) * (rank / ranks.max()) ** 2) for arm, rank in zip(arms, ranks)]
+
+
+def make_block(samples, tile, known_z, known_plane):
+    """Everything one tile solve needs, as plain arrays: the samples of the tile and of its halo, and what is already fixed among them."""
+    lo = np.array(tile) * config.PROFILE_TILE - config.PROFILE_HALO
+    hi = (np.array(tile) + 1) * config.PROFILE_TILE + config.PROFILE_HALO
+    junctions = np.flatnonzero(((samples.centres >= lo) & (samples.centres < hi)).all(axis=1)) if len(samples.centres) else np.zeros(0, int)
+    local = np.full(len(samples.centres), -1)
+    local[junctions] = np.arange(len(junctions))
+    inside = ((samples.xy >= lo) & (samples.xy < hi)).all(axis=1)
+    planar = samples.plane >= 0
+    take = inside & ~planar
+    take[planar] = local[samples.plane[planar]] >= 0                                  # a stub goes with its junction
+    ids = np.flatnonzero(take)
+    breaks = np.flatnonzero((np.diff(ids) != 1) | (np.diff(samples.link[ids]) != 0)) + 1      # runs: consecutive samples of one link
+    plane = samples.plane[ids]
+    return dict(
+        tile=tuple(int(v) for v in tile), ids=ids, runs=np.r_[0, breaks, len(ids)],
+        s=samples.s[ids], xy=samples.xy[ids], nrm=samples.nrm[ids], hw=samples.hw[ids],
+        plane=np.where(plane >= 0, local[np.maximum(plane, 0)], -1),
+        curve_ok=samples.curve_ok[ids], seg={key: values[ids] for key, values in samples.seg.items()},
+        seg_bridge=samples.seg_bridge[ids], seg_tunnel=samples.seg_tunnel[ids],
+        known_z=known_z[ids], own=(samples.tile[ids] == np.array(tile)).all(axis=1),
+        junctions=junctions, centres=samples.centres[junctions], known_plane=known_plane[junctions],
+        tilt_rows=[samples.tilt_rows[j] for j in junctions])
+
+
+# ---------------------------------------------------------------- one tile
 
 def _runs(mask):
     """[(first, last)] of every run of True in a boolean array."""
@@ -38,23 +125,21 @@ def _runs(mask):
     return list(zip(edges[0::2], edges[1::2] - 1))
 
 
-def sample_targets(link, edges, terrain):
-    """Target height and weight per sample: the ground; on bridges the deck; nothing in tunnels."""
-    across = [terrain.sample(terrain.mnt, *(link.xy + link.nrm * (o * link.hw)[:, None]).T, 2) for o in ACROSS]
+def run_targets(s, xy, nrm, hw, seg_bridge, seg_tunnel, terrain):
+    """Ground, target height and weight per sample of one run: the ground; on bridges the deck; nothing in tunnels."""
+    across = [terrain.sample(terrain.mnt, *(xy + nrm * (o * hw)[:, None]).T, 2) for o in ACROSS]
     ground = np.median(across, axis=0)
     target, weight = ground.copy(), np.ones(len(ground))
-    seg_bridge = np.array([edges[link.chain[p][0]].bridge for p in link.part])
-    seg_tunnel = np.array([edges[link.chain[p][0]].tunnel for p in link.part])
 
     def on(seg):                                                    # a sample is on a bridge when a segment next to it is
-        return np.r_[seg, False] | np.r_[False, seg]
+        return np.r_[seg[:-1], False] | np.r_[False, seg[:-1]]
 
     weight[on(seg_tunnel)] = 0.0
-    if seg_bridge.any():
-        surface = terrain.sample(terrain.mnt, *link.xy.T, 2) + np.clip(terrain.sample(terrain.mnh, *link.xy.T, 2), 0.0, config.BRIDGE_DECK_MAX_ABOVE)
+    if seg_bridge[:-1].any():
+        surface = terrain.sample(terrain.mnt, *xy.T, 2) + np.clip(terrain.sample(terrain.mnh, *xy.T, 2), 0.0, config.BRIDGE_DECK_MAX_ABOVE)
         for a, b in _runs(on(seg_bridge)):
             lo, hi = max(a - 1, 0), min(b + 1, len(ground) - 1)
-            chord = np.interp(link.s[a:b + 1], [link.s[lo], link.s[hi]], [ground[lo], ground[hi]])           # abutment to abutment
+            chord = np.interp(s[a:b + 1], [s[lo], s[hi]], [ground[lo], ground[hi]])           # abutment to abutment
             deck = median_filter(surface[a:b + 1], size=min(7, b - a + 1), mode="nearest")
             plausible = (deck - chord >= -1.0) & (deck - chord <= 4.5)
             target[a:b + 1] = np.where(plausible, deck, chord)
@@ -66,107 +151,157 @@ def _derivatives(s):
     n, h = len(s), np.diff(s)
     d1 = sparse.diags([-1.0 / h, 1.0 / h], [0, 1], shape=(n - 1, n), format="csr")
     if n < 3:
-        return d1, None, None
+        return d1, sparse.csr_matrix((0, n)), sparse.csr_matrix((0, n))
     between = 0.5 * (h[:-1] + h[1:])
     d2 = sparse.diags(1.0 / between) @ sparse.diags([-np.ones(n - 2), np.ones(n - 2)], [0, 1], shape=(n - 2, n - 1)) @ d1
     if n < 4:
-        return d1, d2, None
+        return d1, d2, sparse.csr_matrix((0, n))
     d3 = sparse.diags(1.0 / h[1:-1]) @ sparse.diags([-np.ones(n - 3), np.ones(n - 3)], [0, 1], shape=(n - 3, n - 2)) @ d2
     return d1, d2, d3
 
 
-def solve(network, log=print):
-    """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report."""
-    links, junctions, edges = network.links, network.junctions, network.edges
-    terrain = terrain_for(links)
-    offsets = np.r_[0, np.cumsum([len(link.s) for link in links])]
-    n_z = offsets[-1]
+def solve_block(block):
+    """Solve one tile with its halo. Returns dict(z per block sample, plane per block junction, ground, status)."""
+    n, xy = len(block["ids"]), block["xy"]
+    if n == 0:
+        return dict(tile=block["tile"], z=np.zeros(0), planes=block["known_plane"], ground=np.zeros(0), status="empty")
+    x0, z0 = np.floor((xy.min(axis=0) - 40.0) / 4.0) * 4.0
+    x1, z1 = np.ceil((xy.max(axis=0) + 40.0) / 4.0) * 4.0
+    terrain = Mosaic(x0, z0, x1 - x0, z1 - z0, kinds=("mnt", "mnh"))
 
-    # ---- which samples are free, which lie on a junction plane
-    on_plane = np.full(n_z, -1)
-    for k, link in enumerate(links):
-        local = np.arange(len(link.s))
-        if link.internal:
-            on_plane[offsets[k] + local] = max(link.junction)
+    # ---- per run: targets, smoothness, limits
+    ground, target, weight, step = (np.zeros(n) for _ in range(4))
+    smooth, grade, grade_max, curve, curve_lo, curve_hi = [], [], [np.zeros(0)], [], [np.zeros(0)], [np.zeros(0)]
+    for a, b in zip(block["runs"][:-1], block["runs"][1:]):
+        s, m = block["s"][a:b], b - a
+        ground[a:b], target[a:b], weight[a:b] = run_targets(s, xy[a:b], block["nrm"][a:b], block["hw"][a:b], block["seg_bridge"][a:b], block["seg_tunnel"][a:b], terrain)
+        if m < 2:
+            for rows in (smooth, grade, curve):
+                rows.append(sparse.csr_matrix((0, m)))
+            step[a:b] = config.SAMPLE_STEP
             continue
-        if link.junction[0] >= 0:
-            on_plane[offsets[k] + local[:link.i0 + 1]] = link.junction[0]
-        if link.junction[1] >= 0:
-            on_plane[offsets[k] + local[link.i1:]] = link.junction[1]
-    free = np.flatnonzero(on_plane < 0)
-    n_free, n_x = len(free), len(free) + 3 * len(junctions)
-    xy = np.vstack([link.xy for link in links])
-    planar = np.flatnonzero(on_plane >= 0)
-    j = on_plane[planar]
-    d = xy[planar] - np.array([junctions[i].centre for i in j]).reshape(-1, 2)
-    # z = expand @ x: a free sample is its own unknown, a sample on a plane is a combination of the three unknowns of its junction
-    expand = sparse.csr_matrix(
-        (np.r_[np.ones(n_free), np.ones(len(planar)), d[:, 0], d[:, 1]],
-         (np.r_[free, planar, planar, planar], np.r_[np.arange(n_free), n_free + 3 * j, n_free + 3 * j + 1, n_free + 3 * j + 2])), shape=(n_z, n_x))
+        step[a:b] = np.gradient(s)
+        d1, d2, d3 = _derivatives(s)
+        grade.append(d1)
+        window = max(int(config.GRADE_GROUND_WINDOW / config.SAMPLE_STEP), 3)               # the road may be as steep as the ground it lies on
+        natural = np.abs(d1 @ uniform_filter1d(target[a:b], window, mode="nearest"))
+        grade_max.append(np.clip(config.GRADE_FOLLOWS_GROUND * natural, block["seg"]["max_grade"][a:b - 1], config.GRADE_ABSOLUTE_MAX))
+        centre = np.flatnonzero(block["curve_ok"][a:b][1:-1]) + 1                       # curvature needs a sample on each side
+        curve.append(d2[centre - 1])
+        curve_lo.append(-1.0 / block["seg"]["crest"][a:b][centre - 1])
+        curve_hi.append(1.0 / block["seg"]["sag"][a:b][centre - 1])
+        stiffness = (block["seg"]["wavelength"][a:b][1:m - 2] / (2.0 * np.pi)) ** 6 * np.diff(s)[1:m - 2]
+        smooth.append(sparse.diags(np.sqrt(stiffness)) @ d3 if m >= 4 else d3)
 
-    # ---- targets, smoothness and limits, link by link
-    ground, target, weight, step = (np.zeros(n_z) for _ in range(4))
-    smooth_rows, grade_rows, grade_max, curve_rows, curve_lo, curve_hi = [], [], [], [], [], []
-    for k, link in enumerate(links):                                                    # every list gets one block per link, n columns wide
-        span, n = slice(offsets[k], offsets[k + 1]), len(link.s)
-        ground[span], target[span], weight[span] = sample_targets(link, edges, terrain)
-        step[span] = np.gradient(link.s)
-        classes = [edges[link.chain[p][0]].road_class for p in link.part]             # per segment
-        d1, d2, d3 = _derivatives(link.s)
-        grade_rows.append(d1)
-        grade_max += [c.max_grade for c in classes]
-        inner = np.arange(max(link.i0, 1), min(link.i1, n - 2) + 1) if d2 is not None and not link.internal else np.zeros(0, int)      # from mouth to mouth: the road eases onto its junction planes
-        curve_rows.append(d2[inner - 1] if len(inner) else sparse.csr_matrix((0, n)))
-        curve_lo += [-1.0 / classes[i - 1].crest_radius for i in inner]
-        curve_hi += [1.0 / classes[i - 1].sag_radius for i in inner]
-        if d3 is None:
-            smooth_rows.append(sparse.csr_matrix((0, n)))
-            continue
-        stiffness = np.array([(c.profile_wavelength / (2.0 * np.pi)) ** 6 for c in classes[1:-1]]) * np.diff(link.s)[1:-1]
-        smooth_rows.append(sparse.diags(np.sqrt(stiffness)) @ d3)
-
-    tilt_rows = []                                                                      # junction planes resist tilting across their arms
-    for i, junction in enumerate(junctions):
-        arms = junction.arms
-        if not arms:
-            continue
-        ranks = np.array([edges[links[a.link].chain[0 if a.end == 0 else -1][0]].road_class.rank for a in arms], float)
-        for arm, rank in zip(arms, ranks):
-            across = np.array([-arm.tan[0][1], arm.tan[0][0]])
-            scale = np.sqrt(config.TILT_STIFFNESS) * (rank / ranks.max()) ** 2
-            tilt_rows.append(sparse.csr_matrix((scale * across, ([0, 0], [n_free + 3 * i + 1, n_free + 3 * i + 2])), shape=(1, n_x)))
-
+    # ---- unknowns: free samples off the junction planes, and the planes of the junctions not fixed yet
+    plane, known_z = block["plane"], block["known_z"]
     datum = float(np.median(ground))
-    smooth = sparse.block_diag(smooth_rows, format="csr") @ expand
+    fixed = ~np.isnan(known_z)
+    free = np.flatnonzero(~fixed & (plane < 0))
+    open_junction = np.isnan(block["known_plane"][:, 0])
+    column = np.full(len(open_junction), -1)
+    column[open_junction] = len(free) + 3 * np.arange(open_junction.sum())
+    n_x = len(free) + 3 * int(open_junction.sum())
+    planar = np.flatnonzero(~fixed & (plane >= 0))
+    base = np.where(fixed, known_z - datum, 0.0)                                       # z - datum = expand @ x + base
+    if n_x == 0:
+        return dict(tile=block["tile"], z=base + datum, planes=block["known_plane"], ground=ground, status="fixed")
+    d = xy[planar] - block["centres"][plane[planar]]
+    col = column[plane[planar]]
+    expand = sparse.csr_matrix(
+        (np.r_[np.ones(len(free)), np.ones(len(planar)), d[:, 0], d[:, 1]], (np.r_[free, planar, planar, planar], np.r_[np.arange(len(free)), col, col + 1, col + 2])),
+        shape=(n, n_x))
+
+    tilt_rows = []
+    for j, rows in enumerate(block["tilt_rows"]):
+        if column[j] >= 0:
+            tilt_rows += [sparse.csr_matrix((scale * across, ([0, 0], [column[j] + 1, column[j] + 2])), shape=(1, n_x)) for across, scale in rows]
     tilt = sparse.vstack(tilt_rows) if tilt_rows else sparse.csr_matrix((0, n_x))
-    limits = sparse.vstack([sparse.block_diag(grade_rows, format="csr"), sparse.block_diag(curve_rows, format="csr")]) @ expand
-    lower, upper = np.r_[-np.array(grade_max), curve_lo], np.r_[np.array(grade_max), curve_hi]
-    regular = (smooth.T @ smooth + tilt.T @ tilt).tocsc()
+    smooth_z = sparse.block_diag(smooth, format="csr")
+    smooth_x, smooth_base = smooth_z @ expand, smooth_z @ base
+    limits_z = sparse.vstack([sparse.block_diag(grade, format="csr"), sparse.block_diag(curve, format="csr")]).tocsr()
+    limits_x = (limits_z @ expand).tocsr()
+    limits_x.eliminate_zeros()
+    shift = limits_z @ base
+    lower = np.r_[-np.concatenate(grade_max), np.concatenate(curve_lo)] - shift
+    upper = np.r_[np.concatenate(grade_max), np.concatenate(curve_hi)] - shift
+    live = np.diff(limits_x.indptr) > 0                                                # limits between fixed heights only are not ours to enforce
+    limits_x, lower, upper = limits_x[live].tocsc(), lower[live], upper[live]
+    regular = (smooth_x.T @ smooth_x + tilt.T @ tilt).tocsc()
 
-    x, status = None, ""
-    fit = weight * step
-    for round_ in range(config.PROFILE_ROBUST_ROUNDS + 1):
-        data = expand.T @ sparse.diags(fit) @ expand
-        p = sparse.triu(regular + data, format="csc")
-        q = -(expand.T @ (fit * (target - datum)))
-        solver = osqp.OSQP()
-        solver.setup(P=p, q=q, A=limits.tocsc(), l=lower, u=upper, **SOLVER)
+    at_fixed = np.asarray((limits_z[live][:, np.flatnonzero(fixed)] != 0).sum(axis=1)).ravel() > 0      # limits that involve a height fixed by a neighbour
+
+    def run(slack):
+        """Robust rounds; `slack`: per limit, the fraction it is widened by (None: as configured)."""
+        widen = 0.0 if slack is None else slack
+        x, status, fit = None, "", weight * step
+        for _ in range(config.PROFILE_ROBUST_ROUNDS + 1):
+            p = sparse.triu(regular + expand.T @ sparse.diags(fit) @ expand, format="csc")
+            q = smooth_x.T @ smooth_base + expand.T @ (fit * (base - (target - datum)))
+            solver = osqp.OSQP()
+            solver.setup(P=p, q=q, A=limits_x, l=lower - widen * (np.abs(lower) + 1e-3), u=upper + widen * (np.abs(upper) + 1e-3), **SOLVER)
+            if x is not None:
+                solver.warm_start(x=x)
+            result = solver.solve()
+            status = result.info.status
+            if status not in SOLVED or result.x is None or not np.isfinite(result.x).all():
+                return None, status
+            x = result.x
+            residual = expand @ x + base + datum - target
+            fit = weight * step / (1.0 + (residual / config.PROFILE_ROBUST_SCALE) ** 2)
+        return x, status
+
+    # a neighbour's fixed heights may be impossible to meet within the limits: give way there first, everywhere only as a last resort
+    x, status = run(None)
+    for label, slack in (("limits eased at the tile border", 1.0 * at_fixed), ("limits eased a lot at the tile border", 8.0 * at_fixed), ("limits eased everywhere", np.full(len(lower), 2.0))):
         if x is not None:
-            solver.warm_start(x=x)
-        result = solver.solve()
-        x, status = result.x, result.info.status
-        residual = expand @ x + datum - target
-        log(f"    profile round {round_}: {status}, {result.info.iter} iterations, rms to ground {np.sqrt(np.mean(residual[weight > 0] ** 2)):.3f} m")
-        fit = weight * step / (1.0 + (residual / config.PROFILE_ROBUST_SCALE) ** 2)
+            break
+        x, status = run(slack)
+        status = label if x is not None else f"FAILED ({status})"
+    if x is None:
+        x = np.zeros(n_x)
+    z = expand @ x + base + datum
+    planes = block["known_plane"].copy()
+    for j in np.flatnonzero(open_junction):
+        planes[j] = x[column[j]:column[j] + 3] + np.array([datum, 0.0, 0.0])
+    return dict(tile=block["tile"], z=z, planes=planes, ground=ground, status=status)
 
-    z = expand @ x + datum
+
+# ---------------------------------------------------------------- the whole area
+
+def solve(network, log=print, jobs=6):
+    """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report."""
+    links, junctions = network.links, network.junctions
+    samples = Samples(network)
+    n = samples.offsets[-1]
+    z, ground = np.full(n, np.nan), np.zeros(n)
+    planes = np.full((len(junctions), 3), np.nan)
+    tiles = sorted({tuple(t) for t in samples.tile.tolist()} | {tuple(t) for t in samples.junction_tile.tolist()})
+    statuses = {}
+
+    def keep(block, result):
+        own = block["own"]
+        z[block["ids"][own]], ground[block["ids"][own]] = result["z"][own], result["ground"][own]
+        mine = (samples.junction_tile[block["junctions"]] == np.array(block["tile"])).all(axis=1)
+        planes[block["junctions"][mine]] = result["planes"][mine]
+        statuses[result["status"]] = statuses.get(result["status"], 0) + 1
+
+    with ProcessPoolExecutor(jobs) as pool:
+        for colour in range(4):                                     # tiles of one colour never touch: they are solved side by side
+            batch = [t for t in tiles if (t[0] & 1) + 2 * (t[1] & 1) == colour]
+            pending = {pool.submit(solve_block, block): block for block in (make_block(samples, t, z, planes) for t in batch)}
+            for count, future in enumerate(as_completed(pending), 1):
+                keep(pending[future], future.result())
+                if count % 20 == 0 or count == len(pending):
+                    log(f"    profile round {colour + 1}/4: {count}/{len(pending)} tiles  {statuses}")
+
     for i, junction in enumerate(junctions):
-        junction.plane = x[n_free + 3 * i:n_free + 3 * i + 3] + np.array([datum, 0.0, 0.0])
+        junction.plane = planes[i]
     for k, link in enumerate(links):
-        span = slice(offsets[k], offsets[k + 1])
+        span = slice(samples.offsets[k], samples.offsets[k + 1])
         link.z, link.ground = z[span].copy(), ground[span].copy()
         link.tilt = _tilt(link, junctions)
-    return dict(status=status, unknowns=int(n_x), samples=int(n_z))
+    return dict(tiles=len(tiles), samples=int(n), statuses=statuses, unsolved_samples=int(np.isnan(z).sum()))
 
 
 def _fade(x):

@@ -82,8 +82,15 @@ def real_width(p):
     return config.WIDTH_BY_IMPORTANCE.get(str(p.get("importance")), config.WIDTH_DEFAULT)
 
 
-def drawn_width(real, dirt):
-    return max(real * config.WIDTH_SCALE, config.MIN_WIDTH_DIRT if dirt else config.MIN_WIDTH_PAVED)
+def drawn_width(real, dirt, oneway):
+    """Width the road is drawn and driven at: the surveyed width scaled up, and never too narrow for its use."""
+    if dirt:
+        least = config.MIN_WIDTH_DIRT
+    elif oneway == 0:
+        least = config.MIN_WIDTH_TWO_WAY
+    else:
+        least = config.MIN_WIDTH_PAVED
+    return max(real * config.WIDTH_SCALE, least)
 
 
 def legal_limit(p):
@@ -108,7 +115,11 @@ def classify(p):
         return "roundabout"
     if nature in DIRT_NATURE:
         return "track"
-    if importance in ("1", "2", "3") or nature in ("Type autoroutier", "Route à 2 chaussées", "Bretelle"):
+    if nature == "Type autoroutier":
+        return "motorway"
+    if nature == "Bretelle":
+        return "ramp"
+    if importance in ("1", "2", "3") or nature == "Route à 2 chaussées":
         return "main"
     if importance == "4":
         return "collector"
@@ -125,8 +136,8 @@ def edge_from_feature(feature):
     return Edge(
         cleabs=p["cleabs"], xy=xy, nature=nature, importance=str(p.get("importance")), urban=str(p.get("urbain")).lower() == "true",
         kind=KIND.get(nature, 0), klass=classify(p), width_real=real, width_surveyed=_number(p.get("largeur_de_chaussee")) > 0,
-        width=drawn_width(real, dirt),
-        lanes=int(min(15, max(0, _number(p.get("nombre_de_voies"))))), oneway=ONEWAY.get(p.get("sens_de_circulation"), 0),
+        width=drawn_width(real, dirt, ONEWAY.get(p.get("sens_de_circulation"), 0)),
+        lanes=int(min(max(0, _number(p.get("nombre_de_voies"))), max(1, real // config.LANE_MIN_WIDTH))), oneway=ONEWAY.get(p.get("sens_de_circulation"), 0),
         limit=legal_limit(p), avg=int(min(255, max(0, _number(p.get("vitesse_moyenne_vl"))))),
         dirt=dirt, surface="dirt" if dirt else "asphalt",
         bridge=position not in ("0", "") and not position.startswith("-") and position[0].isdigit(),
@@ -178,7 +189,7 @@ def apply_overrides(edges, overrides):
                 raise KeyError(f"overrides.toml: {e.cleabs}: unknown field {key!r}")
             setattr(e, key, value)
         if "width_real" in o and "width" not in o:
-            e.width = drawn_width(e.width_real, e.dirt)
+            e.width = drawn_width(e.width_real, e.dirt, e.oneway)
         out.append(e)
     return out
 

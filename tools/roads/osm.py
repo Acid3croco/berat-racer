@@ -16,6 +16,7 @@ from shapely.geometry import LineString
 from fetch import CX, CY
 from rasters import BIG
 
+from . import config
 from .source import drawn_width
 
 SSH_HOST = os.environ.get("BERAT_OSM_SSH", "mace")
@@ -120,14 +121,14 @@ def enrich(edges, ways):
             e.dirt = not paved
             if e.klass == "track" and paved:
                 e.klass = "local"
-            e.width = drawn_width(e.width_real, e.dirt)
+            e.width = drawn_width(e.width_real, e.dirt, e.oneway)
             stats["surface"] += 1
         limit = _speed(tags.get("maxspeed"))
         if 10 <= limit <= 130 and limit != e.limit:
             e.limit = limit
             stats["limit"] += 1
         if e.lanes == 0 and _speed(tags.get("lanes")):
-            e.lanes = min(_speed(tags["lanes"]), 15)
+            e.lanes = int(min(_speed(tags["lanes"]), max(1, e.width_real // config.LANE_MIN_WIDTH)))
             stats["lanes"] += 1
         if tags.get("lit") == "yes":
             e.lit = True
@@ -137,6 +138,6 @@ def enrich(edges, ways):
             stats["name"] += 1
         width = _metres(tags.get("width"))
         if 2.0 <= width <= 30.0 and not e.width_surveyed:
-            e.width_real, e.width = width, drawn_width(width, e.dirt)
+            e.width_real, e.width = width, drawn_width(width, e.dirt, e.oneway)
             stats["width"] += 1
     return stats

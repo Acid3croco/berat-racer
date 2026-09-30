@@ -281,14 +281,6 @@ def runs_by_chunk(pts_xz, values=None):
             start = i
     return [o for o in out if o[2] - o[1] >= 2]
 
-@functools.lru_cache(maxsize=1)
-def load_roads(tag):
-    """Road pieces and junction meshes of the whole build area (tools/roads), with their plan bounds. Loaded once per worker."""
-    network = road_build.load(tag)
-    pieces = [(p, p.xy.min(axis=0), p.xy.max(axis=0)) for p in road_surface.pieces(network)]
-    meshes = [(j, v, v[:, :2].min(axis=0), v[:, :2].max(axis=0)) for j, v in road_surface.junction_meshes(network)]
-    return pieces, meshes
-
 def chunk_of(x, z):
     return int(np.floor((x + HALF) / CHUNK)), int(np.floor((z + HALF) / CHUNK))
 
@@ -327,10 +319,7 @@ def process_sector(args):
     wbox = box(win.x0 + 10, win.z0 + 10, win.x0 + win.size - 10, win.z0 + win.size - 10)
 
     # ---- roads: the finished surface of the road pipeline, cut to this window (the same geometry in every sector, so borders match)
-    all_pieces, all_meshes = load_roads(road_tag)
-    wrect = (win.x0, win.z0, win.x0 + win.size, win.z0 + win.size)
-    pieces = [p for p, lo, hi in all_pieces if road_surface.touches(lo, hi, wrect)]
-    meshes = [(j, v) for j, v, lo, hi in all_meshes if road_surface.touches(lo, hi, wrect)]
+    pieces, meshes = road_build.load_sector(road_tag, si, sj)
     road_pts = np.vstack([np.c_[p.xy, p.z, p.hw] for p in pieces if not p.bridge] or [np.zeros((0, 4))])       # centreline samples on the ground: x, north, height, half width
     footprint = road_terrain.Footprint(road_surface.footprints(pieces, meshes), win.x0, win.z0, win.size, win.size)
     cloud = road_surface.cloud(pieces, meshes)
@@ -643,11 +632,10 @@ def main():
     a = ap.parse_args()
     far_cell = a.far_cell
     road_tag = road_build.tag_of(a.list)
-    if not road_build.artefact_path(road_tag).exists():
-        sys.exit(f"no road network for {a.list}: run `uv run python -m roads --list {a.list} build` first")
-    assert SECTOR % far_cell == 0 and far_cell % 16 == 0, "--far-cell must divide 3200 and be a multiple of 16"
-    out = Path(a.out); (out / "chunks").mkdir(parents=True, exist_ok=True)
     world = [tuple(s) for s in json.loads(Path(a.list).read_text())["sectors"]]
+    if not road_build.sector_path(road_tag, *world[0]).exists():
+        sys.exit(f"no roads for {a.list}: run `uv run python -m roads --list {a.list} build` first")
+    out = Path(a.out); (out / "chunks").mkdir(parents=True, exist_ok=True)
     si_min, si_max = min(s[0] for s in world), max(s[0] for s in world)
     sj_min, sj_max = min(s[1] for s in world), max(s[1] for s in world)
     x0, z0 = -HALF + SECTOR * si_min, -HALF + SECTOR * sj_min

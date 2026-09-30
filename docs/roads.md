@@ -42,7 +42,12 @@ Tuning lives in two files:
 In the 10 x 10 km around Bérat BD TOPO is the richer source (surveyed widths on 72 % of the sections, lane counts, full connectivity);
 OSM adds 138 posted limits, 10 surface corrections, 99 names. OSM widths exist on 7 ways only. Both stay in the pipeline: the merge is per attribute.
 
-Drawn width = surveyed width x 1.27 (the 1.15 the game had, plus 10 %), at least 3.6 m paved / 3.2 m dirt.
+Drawn width = surveyed width x 1.27 (the 1.15 the game had, plus 10 %), at least 5.0 m for a paved two-way road (two cars must
+pass), 3.6 m for a paved one-way road, 3.2 m for a track. Where BD TOPO has no surveyed width (28 % of the sections, mostly tracks
+and new streets) the width is estimated, in this order: by nature (roundabout 6 m, track 3 m, gravel road 3.2 m), by lane count
+(1 lane 3 m, 2 lanes 5 m, 2.8 m per lane beyond), by importance class (7.2 m for class 1 down to 4.4 m for class 6), else 5.2 m;
+an OSM `width` tag replaces the estimate when there is one. Traffic always keeps to the right (France); the data only says
+two-way / one-way and the direction of a one-way road.
 
 ## Stages
 
@@ -59,11 +64,15 @@ Drawn width = surveyed width x 1.27 (the 1.15 the game had, plus 10 %), at least
    the area under a smooth curve where kerbs never cross. Links that would have nothing left between their two trims are swallowed:
    their junctions merge (tiny roundabouts, slip-road triangles; islands of 12 m2 or more stay as holes).
    Roads end exactly on the junction outline and share those vertices: nothing overlaps, nothing flickers.
-5. **profile** (vertical): one quadratic programme for the whole network (OSQP). Unknowns: the height of every sample outside
-   junctions and one plane per junction. Objective: stay on the LiDAR ground (robust: samples far from the solution are down-weighted),
-   minimise the third derivative (grade changes become parabolas). Constraints: maximum grade and minimum crest / sag radius per class.
+5. **profile** (vertical): a quadratic programme (OSQP). Unknowns: the height of every sample outside junctions and one plane per
+   junction. Objective: stay on the LiDAR ground (robust: samples far from the solution are down-weighted), minimise the third
+   derivative (grade changes become parabolas). Constraints: maximum grade and minimum crest / sag radius per class.
    Every arm lies on its junction's plane up to its mouth; its cross slope there is the plane's and is unwound over 14 m.
    Bridges aim at their deck (surface model), not at the ground below.
+   The area is solved in 3.2 km tiles, in four rounds like the colours of a 2 x 2 checkerboard (tiles of one round never touch and
+   run in parallel). Each tile is solved with a 600 m halo of its neighbours: what a neighbour already solved is fixed and continued
+   smoothly, what is not solved yet is solved along and thrown away. A road crossing a tile border is one continuous profile.
+   Against one solve of the whole small map the tiled result differs by 2 - 8 mm on average (a few cm at the 99th percentile).
 6. **surface**: pieces (centreline + both edges + drawn flags per section), junction meshes, footprints and tangent planes for the terrain.
 
 `build_world.py` then shapes the terrain around that surface (`roads/terrain.py`):
@@ -98,8 +107,8 @@ The physics surface is the drawn one: `RoadIndex` hashes the very triangles that
 
 ## Known limits
 
-- The road stage solves the whole build area at once. That is right for the small map; a region-sized world needs it run per
-  tile with overlap. Until then `world/` (region) stays in the old format and loads through `LegacyChunk`.
+- Graph, horizontal smoothing and junction geometry still run over the whole build area in one process (minutes for 5,000 km2,
+  all in memory); only the height solve is tiled. The region-sized `world/` is still in the old format and loads through `LegacyChunk`.
 - Two roads closer than a terrain cell at different heights (a village terrace) cannot both sit on a 4 m terrain grid: the upper
   one gets a retaining wall along its edge.
 - Cross-sections are flat except near junctions; no superelevation in curves yet (the data and the physics already carry a cross slope).
