@@ -35,9 +35,9 @@ FREE_END = 10.0                   # a dead end may move a little with the smooth
 class Kept:
     """Results of the previous build by hash of their inputs, in one file. Only what this build asked for is written back."""
 
-    def __init__(self, path):
+    def __init__(self, path, fresh=False):
         self.path, self.old, self.new, self.reused = path, {}, {}, 0
-        if path is not None and path.exists():
+        if path is not None and path.exists() and not fresh:
             with open(path, "rb") as fh:
                 self.old = pickle.load(fh)
 
@@ -213,12 +213,13 @@ def reattach(graph):
         e.xy[0], e.xy[-1] = graph.nodes[e.a], graph.nodes[e.b]
 
 
-def align(graph, stroke_list, keep_in=None):
-    """Roundabouts, then strokes. Returns stats for the build report. `keep_in`: file the smoothed strokes are kept in between builds."""
+def align(graph, stroke_list, keep_in=None, fresh=False):
+    """Roundabouts, then strokes. Returns stats for the build report. `keep_in`: file the smoothed strokes are kept in between builds;
+    `fresh`: smooth every stroke again (the file is still written)."""
     raw = {k: shapely.LineString(e.xy) for k, e in enumerate(graph.edges)}
     frozen, placed = round_roundabouts(graph)
     reattach(graph)
-    kept = Kept(keep_in)
+    kept = Kept(keep_in, fresh)
     worst = smooth_strokes(graph, stroke_list, frozen, set(placed), kept)
     kept.save()
     deviation = np.array([shapely.hausdorff_distance(shapely.LineString(e.xy), raw[k]) for k, e in enumerate(graph.edges)])

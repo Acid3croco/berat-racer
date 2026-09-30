@@ -41,7 +41,7 @@ def cmd_fetch_osm(args):
 
 
 def cmd_build(args):
-    network = build_stage.build(args.list, jobs=args.jobs, reuse=not args.fresh)
+    network = build_stage.build(args.list, jobs=args.jobs, fresh=args.fresh)
     clock = time.time()
     path = build_stage.save(network)
     print(f"  save       {round(time.time() - clock, 1)} s")

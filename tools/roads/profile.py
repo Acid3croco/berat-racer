@@ -43,7 +43,9 @@ from . import config
 from .digest import code_stamp, digest
 
 ACROSS = (-0.7, -0.35, 0.0, 0.35, 0.7)            # ground is sampled at these fractions of the half width, the median is kept
-SOLVER = dict(verbose=False, max_threads=1)      # tiles already run side by side, one core each
+# one core per tile (tiles already run side by side). No static regularisation: its fixed 1e-8 is coarse next to the stiffness
+# terms (up to 1e9) and stalled the iteration on hilly tiles; the dynamic one still guards the factorisation.
+SOLVER = dict(verbose=False, max_threads=1, static_regularization_enable=False)
 SOLVED = {"Solved": "solved", "AlmostSolved": "solved inaccurate"}           # Clarabel statuses whose iterate is a usable profile
 
 
@@ -221,10 +223,10 @@ def cache_file(directory, tile):
     return directory / "profile" / f"tile_{tile[0]}_{tile[1]}.npz"
 
 
-def solve_block_cached(block, path):
-    """`solve_block`, or its stored result when the block hashes as it did when `path` was written."""
+def solve_block_cached(block, path, fresh=False):
+    """`solve_block`, or its stored result when the block hashes as it did when `path` was written (`fresh`: solve anyway)."""
     key = block_key(block)
-    if path.exists():
+    if path.exists() and not fresh:
         with np.load(path) as stored:
             if str(stored["key"]) == key:
                 return dict(tile=block["tile"], z=stored["z"], planes=stored["planes"], ground=stored["ground"], status=str(stored["status"]), reused=True)
@@ -327,9 +329,10 @@ def solve_block(block):
 
 # ---------------------------------------------------------------- the whole area
 
-def solve(network, log=print, jobs=6, keep_in=None):
+def solve(network, log=print, jobs=6, keep_in=None, fresh=False):
     """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report.
-    `keep_in`: directory the tile results are kept in; tiles whose inputs did not change since they were last solved are taken from there."""
+    `keep_in`: directory the tile results are kept in; tiles whose inputs did not change since they were last solved are taken from
+    there, unless `fresh`."""
     links, junctions = network.links, network.junctions
     samples = Samples(network)
     n = samples.offsets[-1]
@@ -339,7 +342,7 @@ def solve(network, log=print, jobs=6, keep_in=None):
     statuses, reused = {}, 0
 
     def submit(pool, block):
-        return pool.submit(solve_block_cached, block, cache_file(keep_in, block["tile"])) if keep_in else pool.submit(solve_block, block)
+        return pool.submit(solve_block_cached, block, cache_file(keep_in, block["tile"]), fresh) if keep_in else pool.submit(solve_block, block)
 
     def keep(block, result):
         nonlocal reused

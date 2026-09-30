@@ -81,7 +81,7 @@ def tag_of(list_path):
     return Path(list_path).stem.removesuffix("_sectors")
 
 
-def build(list_path, log=functools.partial(print, flush=True), jobs=6, reuse=True):
+def build(list_path, log=functools.partial(print, flush=True), jobs=6, fresh=False):
     sectors = [tuple(s) for s in json.loads(Path(list_path).read_text())["sectors"]]
     tag, report, clock = tag_of(list_path), {}, time.time()
 
@@ -102,7 +102,7 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, reuse=Tru
     raw = [e.xy.copy() for e in graph.edges]
     done("graph", nodes=len(graph.nodes), strokes=len(stroke_list), junction_nodes=sum(graph.is_junction(n) for n in range(len(graph.nodes))))
 
-    done("alignment", **alignment.align(graph, stroke_list, keep_in=cache_dir(tag) / "alignment.pkl" if reuse else None))
+    done("alignment", **alignment.align(graph, stroke_list, keep_in=cache_dir(tag) / "alignment.pkl", fresh=fresh))
 
     links = []
     for chain in graph_stage.links(graph):
@@ -121,7 +121,7 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, reuse=Tru
          invalid=sum(not j.valid for j in junctions))
 
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
-    done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag) if reuse else None))
+    done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag), fresh=fresh))
     report["surface"] = metrics.surface_report(network)
     report["classes"] = metrics.profile_report(network)
     log(f"  report     {round(time.time() - clock, 1)} s")
