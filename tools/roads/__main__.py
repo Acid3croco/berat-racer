@@ -10,6 +10,7 @@ then `uv run python build_world.py --list <same list>` puts the roads into the w
 """
 import argparse
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +42,9 @@ def cmd_fetch_osm(args):
 
 def cmd_build(args):
     network = build_stage.build(args.list, jobs=args.jobs, reuse=not args.fresh)
+    clock = time.time()
     path = build_stage.save(network)
+    print(f"  save       {round(time.time() - clock, 1)} s")
     print_report(network.report)
     print(f"-> {path}")
 
@@ -85,7 +88,7 @@ def main():
     commands.add_parser("fetch-osm").set_defaults(run=cmd_fetch_osm)
     build = commands.add_parser("build")
     build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
-    build.add_argument("--fresh", action="store_true", help="solve every height tile again, even those whose inputs did not change")
+    build.add_argument("--fresh", action="store_true", help="smooth every stroke and solve every height tile again, even those whose inputs did not change")
     build.set_defaults(run=cmd_build)
     commands.add_parser("report").set_defaults(run=cmd_report)
     inspect = commands.add_parser("inspect")

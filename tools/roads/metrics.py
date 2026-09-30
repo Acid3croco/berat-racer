@@ -28,25 +28,24 @@ def surfaces(network):
     return out
 
 
-def overlaps(network, tolerance=0.05):
-    """Pairs of surfaces that cover the same ground (bridges over roads excepted): [(area, label, label)], largest first."""
-    items = surfaces(network)
-    polygons = [p if p.is_valid else p.buffer(0) for _, p, _ in items]
+def overlaps(items, valid, tolerance=0.05):
+    """Pairs of surfaces that cover the same ground (bridges over roads excepted): [(area, label, label)], largest first.
+    `items`: as `surfaces` returns them; `valid`: which of their polygons are valid."""
+    polygons = np.array([p for _, p, _ in items], dtype=object)
+    polygons[~valid] = shapely.buffer(polygons[~valid], 0, quad_segs=16)
+    bridge = np.array([b for _, _, b in items], bool)
     a, b = shapely.STRtree(polygons).query(polygons, predicate="intersects")
-    found = []
-    for i, k in zip(a, b):
-        if i >= k or items[i][2] or items[k][2]:
-            continue
-        area = polygons[i].intersection(polygons[k]).area
-        if area > tolerance:
-            found.append((round(float(area), 2), items[i][0], items[k][0]))
-    return sorted(found, reverse=True)
+    pairs = (a < b) & ~bridge[a] & ~bridge[b]
+    a, b = a[pairs], b[pairs]
+    area = shapely.area(shapely.intersection(polygons[a], polygons[b]))
+    return sorted([(round(float(area[n]), 2), items[a[n]][0], items[b[n]][0]) for n in np.flatnonzero(area > tolerance)], reverse=True)
 
 
 def surface_report(network):
     items = surfaces(network)
-    found = overlaps(network)
-    folded = [label for label, polygon, _ in items if not polygon.is_valid]
+    valid = shapely.is_valid(np.array([p for _, p, _ in items], dtype=object))
+    found = overlaps(items, valid)
+    folded = [items[n][0] for n in np.flatnonzero(~valid)]
     invalid = [f"J{k}: {j.problem}" for k, j in enumerate(network.junctions) if not j.valid]
     return dict(surface_m2=round(sum(p.area for _, p, _ in items)), overlap_pairs=len(found), overlap_m2=round(sum(f[0] for f in found), 1),
                 worst_overlaps=found[:8], folded_ribbons=len(folded), invalid_junctions=invalid)

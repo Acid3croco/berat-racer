@@ -11,17 +11,54 @@ line, until it is back inside the bound: sharp real corners stay corners (rounde
 
 Strokes are solved from the most important road down. A node first reached by a stroke moves with it; later strokes must pass through it.
 Roundabouts are not smoothed: their ring becomes a true circle.
+
+Rebuilds. Every smoothed stroke is kept with a hash of what it was smoothed from (`Kept`); a stroke whose surveyed line, pins, class
+limits and end weights are unchanged takes its curve from there instead of being solved again.
 """
+import os
+import pickle
+import sys
+
 import numpy as np
 import shapely
 from scipy import sparse
 from scipy.sparse.linalg import splu
 
 from . import config
+from .digest import code_stamp, digest
 from .graph import chain_nodes
 
 PIN = 1e7                         # weight of "pass exactly through this point"
 FREE_END = 10.0                   # a dead end may move a little with the smoothing
+
+
+class Kept:
+    """Results of the previous build by hash of their inputs, in one file. Only what this build asked for is written back."""
+
+    def __init__(self, path):
+        self.path, self.old, self.new, self.reused = path, {}, {}, 0
+        if path is not None and path.exists():
+            with open(path, "rb") as fh:
+                self.old = pickle.load(fh)
+
+    def get(self, key, compute):
+        if self.path is None:
+            return compute()
+        if key in self.old:
+            self.reused += 1
+            self.new[key] = self.old[key]
+        else:
+            self.new[key] = compute()
+        return self.new[key]
+
+    def save(self):
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        scratch = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        with open(scratch, "wb") as fh:
+            pickle.dump(self.new, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(scratch, self.path)
 
 
 def fit_circle(xy):
@@ -87,7 +124,7 @@ def smooth_polyline(raw, step_eps, step_wavelength, pins, end_weights):
 
     step_eps, step_wavelength: functions of arc length along `raw` giving the deviation bound and the smoothing wavelength there.
     pins: [(arc length, xy)] points the curve must pass through. end_weights: fit weight of the first and the last point.
-    Returns (arc lengths s of the curve points along `raw`, their positions q).
+    Returns (arc lengths s of the curve points along `raw`, their positions q, the worst deviation as a fraction of its bound).
     """
     seg = np.hypot(*np.diff(raw, axis=0).T)
     s_raw = np.r_[0.0, np.cumsum(seg)]
@@ -130,8 +167,10 @@ def smooth_polyline(raw, step_eps, step_wavelength, pins, end_weights):
     return s, q, float(ratio.max())
 
 
-def smooth_strokes(graph, stroke_list, frozen, placed):
-    """Smooth every stroke in place (edge polylines and node positions). `placed`: nodes whose position is already final."""
+def smooth_strokes(graph, stroke_list, frozen, placed, kept):
+    """Smooth every stroke in place (edge polylines and node positions). `placed`: nodes whose position is already final.
+    `kept`: the strokes of the previous build (`Kept`)."""
+    code = code_stamp(sys.modules[__name__])
     def priority(chain):
         return (max(graph.edges[k].road_class.rank for k, _ in chain), sum(graph.edges[k].length for k, _ in chain))
 
@@ -151,7 +190,9 @@ def smooth_strokes(graph, stroke_list, frozen, placed):
         pins = [(bounds[i], graph.nodes[nodes[i]].copy()) for i in range(1, len(nodes) - 1) if nodes[i] in placed]
         end_weights = [FREE_END if graph.degree(node) == 1 and node not in placed else PIN for node in (nodes[0], nodes[-1])]
         raw[0], raw[-1] = graph.nodes[nodes[0]], graph.nodes[nodes[-1]]
-        s, q, ratio = smooth_polyline(raw, per_edge([c.max_deviation for c in classes]), per_edge([c.align_wavelength for c in classes]), pins, end_weights)
+        bound, wavelength = [c.max_deviation for c in classes], [c.align_wavelength for c in classes]
+        s, q, ratio = kept.get(digest(raw, bounds, bound, wavelength, pins, end_weights, code),
+                               lambda: smooth_polyline(raw, per_edge(bound), per_edge(wavelength), pins, end_weights))
         worst = max(worst, ratio)
 
         for i, node in enumerate(nodes):
@@ -172,11 +213,14 @@ def reattach(graph):
         e.xy[0], e.xy[-1] = graph.nodes[e.a], graph.nodes[e.b]
 
 
-def align(graph, stroke_list):
-    """Roundabouts, then strokes. Returns stats for the build report."""
+def align(graph, stroke_list, keep_in=None):
+    """Roundabouts, then strokes. Returns stats for the build report. `keep_in`: file the smoothed strokes are kept in between builds."""
     raw = {k: shapely.LineString(e.xy) for k, e in enumerate(graph.edges)}
     frozen, placed = round_roundabouts(graph)
     reattach(graph)
-    worst = smooth_strokes(graph, stroke_list, frozen, set(placed))
+    kept = Kept(keep_in)
+    worst = smooth_strokes(graph, stroke_list, frozen, set(placed), kept)
+    kept.save()
     deviation = np.array([shapely.hausdorff_distance(shapely.LineString(e.xy), raw[k]) for k, e in enumerate(graph.edges)])
-    return dict(roundabout_edges=len(frozen), worst_bound_ratio=worst, max_deviation=float(deviation.max()), p99_deviation=float(np.percentile(deviation, 99)))
+    return dict(roundabout_edges=len(frozen), worst_bound_ratio=worst, max_deviation=float(deviation.max()), p99_deviation=float(np.percentile(deviation, 99)),
+                strokes_reused=kept.reused)

@@ -37,7 +37,7 @@ from scipy import sparse
 from scipy.ndimage import median_filter, uniform_filter1d
 
 import rasters
-from rasters import BIG, Mosaic
+from rasters import Mosaic
 
 from . import config
 from .digest import code_stamp, digest
@@ -217,8 +217,8 @@ def block_key(block):
     return digest(data, terrain, code_stamp(sys.modules[__name__], rasters), SOLVER, ACROSS)
 
 
-def cache_file(tag, tile):
-    return BIG / "roads" / f"{tag}.cache" / "profile" / f"tile_{tile[0]}_{tile[1]}.npz"
+def cache_file(directory, tile):
+    return directory / "profile" / f"tile_{tile[0]}_{tile[1]}.npz"
 
 
 def solve_block_cached(block, path):
@@ -327,9 +327,9 @@ def solve_block(block):
 
 # ---------------------------------------------------------------- the whole area
 
-def solve(network, log=print, jobs=6, reuse=True):
+def solve(network, log=print, jobs=6, keep_in=None):
     """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report.
-    `reuse`: tiles whose inputs did not change since they were last solved take their stored result."""
+    `keep_in`: directory the tile results are kept in; tiles whose inputs did not change since they were last solved are taken from there."""
     links, junctions = network.links, network.junctions
     samples = Samples(network)
     n = samples.offsets[-1]
@@ -339,7 +339,7 @@ def solve(network, log=print, jobs=6, reuse=True):
     statuses, reused = {}, 0
 
     def submit(pool, block):
-        return pool.submit(solve_block_cached, block, cache_file(network.tag, block["tile"])) if reuse else pool.submit(solve_block, block)
+        return pool.submit(solve_block_cached, block, cache_file(keep_in, block["tile"])) if keep_in else pool.submit(solve_block, block)
 
     def keep(block, result):
         nonlocal reused

@@ -34,6 +34,11 @@ def artefact_path(tag):
     return BIG / "roads" / f"{tag}.network.pkl"
 
 
+def cache_dir(tag):
+    """Where the stages keep results between builds."""
+    return BIG / "roads" / f"{tag}.cache"
+
+
 def sector_path(tag, si, sj):
     return BIG / "roads" / tag / f"sector_{si}_{sj}.pkl"
 
@@ -97,7 +102,7 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, reuse=Tru
     raw = [e.xy.copy() for e in graph.edges]
     done("graph", nodes=len(graph.nodes), strokes=len(stroke_list), junction_nodes=sum(graph.is_junction(n) for n in range(len(graph.nodes))))
 
-    done("alignment", **alignment.align(graph, stroke_list))
+    done("alignment", **alignment.align(graph, stroke_list, keep_in=cache_dir(tag) / "alignment.pkl" if reuse else None))
 
     links = []
     for chain in graph_stage.links(graph):
@@ -116,7 +121,8 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, reuse=Tru
          invalid=sum(not j.valid for j in junctions))
 
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
-    done("profile", **profile.solve(network, log, jobs, reuse))
+    done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag) if reuse else None))
     report["surface"] = metrics.surface_report(network)
     report["classes"] = metrics.profile_report(network)
+    log(f"  report     {round(time.time() - clock, 1)} s")
     return network
