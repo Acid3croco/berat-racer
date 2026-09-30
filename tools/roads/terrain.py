@@ -9,6 +9,7 @@ Two rules, applied to a grid of vertices (row = north index, south first; vertex
           road points that can share a cell with it. This is exact for any cell size, which is what keeps the coarse 16 m terrain under the roads too.
 """
 import numpy as np
+import shapely
 from rasterio import features
 from rasterio.transform import from_origin
 from scipy.ndimage import distance_transform_edt
@@ -23,12 +24,19 @@ class Footprint:
     def __init__(self, polygons, x0, z0, width, height):
         self.x0, self.z0, self.cols, self.rows = x0, z0, int(width) + 1, int(height) + 1
         self.polygons = polygons
+        self._grown = {}
         if polygons:                                       # pixel centres on whole metres, row 0 = north
             transform = from_origin(x0 - 0.5, z0 + height + 0.5, 1.0, 1.0)
             mask = features.rasterize([(p, 1) for p in polygons], out_shape=(self.rows, self.cols), transform=transform, dtype=np.uint8).astype(bool)
             self.outside = distance_transform_edt(~mask[::-1]).astype(np.float32)          # row 0 = south
         else:
             self.outside = np.full((self.rows, self.cols), 1e6, np.float32)
+
+    def grown(self, by):
+        """The polygons widened by `by` metres (kept: the 4 m and the 16 m terrain ask for the same ones)."""
+        if by not in self._grown:
+            self._grown[by] = list(shapely.buffer(np.array(self.polygons, dtype=object), by, quad_segs=16))
+        return self._grown[by]
 
     def distance(self, x, z):
         """Metres from (x, z) to the road surface, 0 on it (nearest whole metre)."""
@@ -68,7 +76,7 @@ def bench(h, x0, z0, cell, footprint, cloud, sink):
         return h
     rows, cols = h.shape
     transform = from_origin(x0, z0 + (rows - 1) * cell, cell, cell)
-    touched = features.rasterize([(p.buffer(0.5), 1) for p in footprint.polygons], out_shape=(rows - 1, cols - 1), transform=transform,
+    touched = features.rasterize([(p, 1) for p in footprint.grown(0.5)], out_shape=(rows - 1, cols - 1), transform=transform,
                                  dtype=np.uint8, all_touched=True).astype(bool)[::-1]
     corner = np.zeros((rows, cols), bool)
     for dr in (0, 1):
@@ -78,10 +86,17 @@ def bench(h, x0, z0, cell, footprint, cloud, sink):
     if not len(r):
         return h
     v = np.c_[x0 + cell * c, z0 + cell * r]
-    pairs = cKDTree(v).sparse_distance_matrix(cKDTree(cloud["xy"]), cell * np.sqrt(2.0) + cloud["hw"].max() + 1.0, output_type="coo_matrix")
-    i, q = pairs.row, pairs.col
     # a cloud point stands for the cross-section of the road through it. It concerns a corner only if the two can lie in one cell:
-    # the point of the cross-section nearest to the corner is within one cell of it, east-west and north-south
+    # the point of the cross-section nearest to the corner is within one cell of it, east-west and north-south (`keep` below).
+    # Such a corner is within (cell + 0.5) * sqrt(2) + half width of the cloud point: candidates are searched that far, by class of width
+    tree, width = cKDTree(v), np.ceil(cloud["hw"])
+    i, q = [], []
+    for w in np.unique(width):
+        members = np.flatnonzero(width == w)
+        pairs = tree.sparse_distance_matrix(cKDTree(cloud["xy"][members]), (cell + 0.5) * np.sqrt(2.0) + w + 0.01, output_type="coo_matrix")
+        i.append(pairs.row)
+        q.append(members[pairs.col])
+    i, q = np.concatenate(i), np.concatenate(q)
     offset = v[i] - cloud["xy"][q]
     tan = cloud["tan"][q]
     lateral = offset[:, 1] * tan[:, 0] - offset[:, 0] * tan[:, 1]
