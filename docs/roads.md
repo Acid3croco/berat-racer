@@ -30,6 +30,13 @@ Tuning lives in two files:
 
 `--list` selects another area (default `data/big/small_sectors.json`); it goes before the command: `python -m roads --list L build`.
 
+Both steps only redo what changed. The height solve keeps the result of every tile with a hash of what it was solved from (its samples,
+the heights its neighbours fixed, the raster files under it, the tuning values and the solver code) in `data/big/roads/<area>.cache`;
+the world builder leaves the same kind of key per sector in `<world>/keys` (road surface, raster, vector and POI files, builder code and
+tuning). A tile or sector whose key is unchanged is skipped. After a local change (one override, one road) the tiles around it are solved
+again and the sectors whose roads moved are rebuilt; after a change of tuning or code everything is. `--fresh` on either command ignores
+the keys. `compare_roads.py A B` and `compare_worlds.py DIR_A DIR_B` compare two builds (heights, sector files; chunk contents).
+
 ## Data
 
 | What | Source | Used for |
@@ -63,8 +70,10 @@ two-way / one-way and the direction of a one-way road.
    length of the corner curve (radius by class). The junction surface is the union of the arm stubs, a rounded wedge per corner and
    the area under a smooth curve where kerbs never cross. Links that would have nothing left between their two trims are swallowed:
    their junctions merge (tiny roundabouts, slip-road triangles; islands of 12 m2 or more stay as holes).
+   Junctions do not depend on each other: each pass of the merge loop, and the outlines, run across `--jobs` forked workers.
    Roads end exactly on the junction outline and share those vertices: nothing overlaps, nothing flickers.
-5. **profile** (vertical): a quadratic programme (OSQP). Unknowns: the height of every sample outside junctions and one plane per
+5. **profile** (vertical): a quadratic programme (Clarabel, an interior-point solver: a tile converges in about 17 iterations to
+   the optimum, where OSQP at a practical tolerance stopped up to decimetres short on tiles with fixed neighbours). Unknowns: the height of every sample outside junctions and one plane per
    junction. Objective: stay on the LiDAR ground (robust: samples far from the solution are down-weighted), minimise the third
    derivative (grade changes become parabolas). Constraints: maximum grade and minimum crest / sag radius per class.
    Every arm lies on its junction's plane up to its mouth; its cross slope there is the plane's and is unwound over 14 m.
@@ -107,8 +116,8 @@ The physics surface is the drawn one: `RoadIndex` hashes the very triangles that
 
 ## Known limits
 
-- Graph, horizontal smoothing and junction geometry still run over the whole build area in one process (minutes for 5,000 km2,
-  all in memory); only the height solve is tiled. The region-sized `world/` is still in the old format and loads through `LegacyChunk`.
+- Graph and horizontal smoothing still run over the whole build area in one process (minutes for 5,000 km2, all in memory) and are
+  redone on every build; junctions run in parallel but are also redone; only the height solve is tiled and kept between builds. The region-sized `world/` is still in the old format and loads through `LegacyChunk`.
 - Two roads closer than a terrain cell at different heights (a village terrace) cannot both sit on a 4 m terrain grid: the upper
   one gets a retaining wall along its edge.
 - Cross-sections are flat except near junctions; no superelevation in curves yet (the data and the physics already carry a cross slope).
