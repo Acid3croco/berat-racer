@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import distance_transform_edt, map_coordinates, median_filter
+from scipy.ndimage import distance_transform_edt, map_coordinates, maximum_filter, median_filter, minimum_filter
 
 HALF = 16000
 SECTOR = 3200
@@ -82,7 +82,12 @@ class Mosaic:
         elif bad.any():
             iy, ix = distance_transform_edt(bad, return_distances=False, return_indices=True)
             self.mnt = self.mnt[iy, ix]
-        med = median_filter(self.mnt, size=5, mode="nearest")            # single-pixel spikes / pits of hundreds of metres (bad LiDAR returns)
+        # single-pixel spikes / pits of hundreds of metres (bad LiDAR returns). A pixel cannot be further from its 5 x 5 median than the
+        # range of that window, so the (slow) median is only computed when some window has such a range.
+        spread = maximum_filter(self.mnt, size=5, mode="nearest") - minimum_filter(self.mnt, size=5, mode="nearest")
+        if not (spread > SPIKE).any():
+            return
+        med = median_filter(self.mnt, size=5, mode="nearest")
         spike = np.abs(self.mnt - med) > SPIKE
         if spike.any():
             self.mnt[spike] = med[spike]

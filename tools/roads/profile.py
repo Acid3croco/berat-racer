@@ -25,8 +25,8 @@ far less than the halo, so the result is close to what one solve of the whole ar
 """
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+import clarabel
 import numpy as np
-import osqp
 from scipy import sparse
 from scipy.ndimage import median_filter, uniform_filter1d
 
@@ -35,8 +35,8 @@ from rasters import Mosaic
 from . import config
 
 ACROSS = (-0.7, -0.35, 0.0, 0.35, 0.7)            # ground is sampled at these fractions of the half width, the median is kept
-SOLVER = dict(eps_abs=2e-5, eps_rel=2e-5, max_iter=20000, polish=False, verbose=False)
-SOLVED = ("solved", "solved inaccurate", "maximum iterations reached")      # the last iterate is a usable profile in all three
+SOLVER = dict(verbose=False, max_threads=1)      # tiles already run side by side, one core each
+SOLVED = {"Solved": "solved", "AlmostSolved": "solved inaccurate"}           # Clarabel statuses whose iterate is a usable profile
 
 
 # ---------------------------------------------------------------- the network as flat arrays
@@ -119,45 +119,79 @@ def make_block(samples, tile, known_z, known_plane):
 
 # ---------------------------------------------------------------- one tile
 
-def _runs(mask):
-    """[(first, last)] of every run of True in a boolean array."""
-    edges = np.flatnonzero(np.diff(np.r_[False, mask, False].astype(np.int8)))
-    return list(zip(edges[0::2], edges[1::2] - 1))
+def _stretches(mask, run_of):
+    """[(first, last)] of every stretch of True that lies within one run."""
+    label = np.where(mask, run_of, -1)
+    edges = np.r_[0, np.flatnonzero(np.diff(label)) + 1, len(label)]
+    return [(a, b - 1) for a, b in zip(edges[:-1], edges[1:]) if label[a] >= 0]
 
 
-def run_targets(s, xy, nrm, hw, seg_bridge, seg_tunnel, terrain):
-    """Ground, target height and weight per sample of one run: the ground; on bridges the deck; nothing in tunnels."""
-    across = [terrain.sample(terrain.mnt, *(xy + nrm * (o * hw)[:, None]).T, 2) for o in ACROSS]
+def targets(block, terrain):
+    """Ground, target height and weight per sample: the ground; on bridges the deck; nothing in tunnels."""
+    s, xy, runs = block["s"], block["xy"], block["runs"]
+    across = [terrain.sample(terrain.mnt, *(xy + block["nrm"] * (o * block["hw"])[:, None]).T, 2) for o in ACROSS]
     ground = np.median(across, axis=0)
     target, weight = ground.copy(), np.ones(len(ground))
+    last = np.zeros(len(s), bool)
+    last[runs[1:] - 1] = True                                       # the last sample of a run has no segment after it
+    run_of = np.repeat(np.arange(len(runs) - 1), np.diff(runs))
 
     def on(seg):                                                    # a sample is on a bridge when a segment next to it is
-        return np.r_[seg[:-1], False] | np.r_[False, seg[:-1]]
+        after = seg & ~last
+        return after | np.r_[False, after[:-1]]
 
-    weight[on(seg_tunnel)] = 0.0
-    if seg_bridge[:-1].any():
-        surface = terrain.sample(terrain.mnt, *xy.T, 2) + np.clip(terrain.sample(terrain.mnh, *xy.T, 2), 0.0, config.BRIDGE_DECK_MAX_ABOVE)
-        for a, b in _runs(on(seg_bridge)):
-            lo, hi = max(a - 1, 0), min(b + 1, len(ground) - 1)
-            chord = np.interp(s[a:b + 1], [s[lo], s[hi]], [ground[lo], ground[hi]])           # abutment to abutment
-            deck = median_filter(surface[a:b + 1], size=min(7, b - a + 1), mode="nearest")
-            plausible = (deck - chord >= -1.0) & (deck - chord <= 4.5)
-            target[a:b + 1] = np.where(plausible, deck, chord)
-    return ground, target, weight
+    weight[on(block["seg_tunnel"])] = 0.0
+    for a, b in _stretches(on(block["seg_bridge"]), run_of):
+        at = xy[a:b + 1]
+        surface = terrain.sample(terrain.mnt, *at.T, 2) + np.clip(terrain.sample(terrain.mnh, *at.T, 2), 0.0, config.BRIDGE_DECK_MAX_ABOVE)
+        lo, hi = max(a - 1, runs[run_of[a]]), min(b + 1, runs[run_of[a] + 1] - 1)
+        chord = np.interp(s[a:b + 1], [s[lo], s[hi]], [ground[lo], ground[hi]])           # abutment to abutment
+        deck = median_filter(surface, size=min(7, b - a + 1), mode="nearest")
+        plausible = (deck - chord >= -1.0) & (deck - chord <= 4.5)
+        target[a:b + 1] = np.where(plausible, deck, chord)
+    return ground.astype(float), target.astype(float), weight
 
 
-def _derivatives(s):
-    """Sparse operators giving grade (n - 1 rows), curvature (n - 2) and third derivative (n - 3) of heights sampled at arc lengths `s`."""
-    n, h = len(s), np.diff(s)
-    d1 = sparse.diags([-1.0 / h, 1.0 / h], [0, 1], shape=(n - 1, n), format="csr")
-    if n < 3:
-        return d1, sparse.csr_matrix((0, n)), sparse.csr_matrix((0, n))
-    between = 0.5 * (h[:-1] + h[1:])
-    d2 = sparse.diags(1.0 / between) @ sparse.diags([-np.ones(n - 2), np.ones(n - 2)], [0, 1], shape=(n - 2, n - 1)) @ d1
-    if n < 4:
-        return d1, d2, sparse.csr_matrix((0, n))
-    d3 = sparse.diags(1.0 / h[1:-1]) @ sparse.diags([-np.ones(n - 3), np.ones(n - 3)], [0, 1], shape=(n - 3, n - 2)) @ d2
-    return d1, d2, d3
+def operators(s, runs):
+    """Grade, curvature and third derivative of heights sampled at arc lengths `s`, for every run at once: rows never reach across two runs.
+
+    Returns ((matrix, first) for each of the three): sparse rows x samples, and per row the index of its first sample (a grade row
+    spans samples first, first + 1; a curvature row is centred on first + 1; a third-derivative row spans first .. first + 3)."""
+    n = len(s)
+    run_of = np.repeat(np.arange(len(runs) - 1), np.diff(runs))
+    first = [np.flatnonzero(run_of[:n - k] == run_of[k:]) for k in (1, 2, 3)]
+    inv = np.zeros(max(n - 1, 0))
+    step = np.diff(s)
+    inv[first[0]] = 1.0 / step[first[0]]
+
+    def matrix(i, columns):
+        rows = np.repeat(np.arange(len(i)), len(columns))
+        cols = (i[:, None] + np.arange(len(columns))).ravel()
+        return sparse.csr_matrix((np.column_stack(columns).ravel(), (rows, cols)), shape=(len(i), n))
+
+    i = first[0]
+    d1 = matrix(i, [-inv[i], inv[i]])
+    c = np.zeros((3, max(n - 2, 0)))                                                     # curvature coefficients, by first sample
+    i = first[1]
+    scale = 1.0 / (0.5 * (step[i] + step[i + 1]))
+    c[:, i] = scale * inv[i], scale * (-inv[i] - inv[i + 1]), scale * inv[i + 1]
+    d2 = matrix(i, list(c[:, i]))
+    i = first[2]
+    d3 = matrix(i, [inv[i + 1] * v for v in (-c[0, i], c[0, i + 1] - c[1, i], c[1, i + 1] - c[2, i], c[2, i + 1])])
+    return (d1, first[0]), (d2, first[1]), (d3, first[2])
+
+
+def solve_qp(p, q, a, lower, upper):
+    """Minimise 0.5 x'Px + q'x subject to lower <= Ax <= upper (`p`: upper triangle). Returns (x, status); x is None without a usable solution."""
+    settings = clarabel.DefaultSettings()
+    for name, value in SOLVER.items():
+        setattr(settings, name, value)
+    both_sides = sparse.vstack([a, -a], format="csc")                  # Clarabel's form: [A; -A] x + s = [u; -l], s >= 0
+    result = clarabel.DefaultSolver(p, q, both_sides, np.r_[upper, -lower], [clarabel.NonnegativeConeT(both_sides.shape[0])], settings).solve()
+    x, status = np.asarray(result.x), SOLVED.get(str(result.status))
+    if status is None or not np.isfinite(x).all():
+        return None, str(result.status)
+    return x, status
 
 
 def solve_block(block):
@@ -169,29 +203,21 @@ def solve_block(block):
     x1, z1 = np.ceil((xy.max(axis=0) + 40.0) / 4.0) * 4.0
     terrain = Mosaic(x0, z0, x1 - x0, z1 - z0, kinds=("mnt", "mnh"))
 
-    # ---- per run: targets, smoothness, limits
-    ground, target, weight, step = (np.zeros(n) for _ in range(4))
-    smooth, grade, grade_max, curve, curve_lo, curve_hi = [], [], [np.zeros(0)], [], [np.zeros(0)], [np.zeros(0)]
-    for a, b in zip(block["runs"][:-1], block["runs"][1:]):
-        s, m = block["s"][a:b], b - a
-        ground[a:b], target[a:b], weight[a:b] = run_targets(s, xy[a:b], block["nrm"][a:b], block["hw"][a:b], block["seg_bridge"][a:b], block["seg_tunnel"][a:b], terrain)
-        if m < 2:
-            for rows in (smooth, grade, curve):
-                rows.append(sparse.csr_matrix((0, m)))
-            step[a:b] = config.SAMPLE_STEP
-            continue
-        step[a:b] = np.gradient(s)
-        d1, d2, d3 = _derivatives(s)
-        grade.append(d1)
-        window = max(int(config.GRADE_GROUND_WINDOW / config.SAMPLE_STEP), 3)               # the road may be as steep as the ground it lies on
-        natural = np.abs(d1 @ uniform_filter1d(target[a:b], window, mode="nearest"))
-        grade_max.append(np.clip(config.GRADE_FOLLOWS_GROUND * natural, block["seg"]["max_grade"][a:b - 1], config.GRADE_ABSOLUTE_MAX))
-        centre = np.flatnonzero(block["curve_ok"][a:b][1:-1]) + 1                       # curvature needs a sample on each side
-        curve.append(d2[centre - 1])
-        curve_lo.append(-1.0 / block["seg"]["crest"][a:b][centre - 1])
-        curve_hi.append(1.0 / block["seg"]["sag"][a:b][centre - 1])
-        stiffness = (block["seg"]["wavelength"][a:b][1:m - 2] / (2.0 * np.pi)) ** 6 * np.diff(s)[1:m - 2]
-        smooth.append(sparse.diags(np.sqrt(stiffness)) @ d3 if m >= 4 else d3)
+    # ---- targets, smoothness, limits
+    s, runs, seg = block["s"], block["runs"], block["seg"]
+    ground, target, weight = targets(block, terrain)
+    (grade, seg_at), (curvature, mid_at), (third, jerk_at) = operators(s, runs)
+    step, levelled = np.full(n, config.SAMPLE_STEP), target.copy()
+    window = max(int(config.GRADE_GROUND_WINDOW / config.SAMPLE_STEP), 3)                   # the road may be as steep as the ground it lies on
+    for a, b in zip(runs[:-1], runs[1:]):
+        if b - a >= 2:
+            step[a:b] = np.gradient(s[a:b])
+            levelled[a:b] = uniform_filter1d(target[a:b], window, mode="nearest")
+    grade_max = np.clip(config.GRADE_FOLLOWS_GROUND * np.abs(grade @ levelled), seg["max_grade"][seg_at], config.GRADE_ABSOLUTE_MAX)
+    limited = block["curve_ok"][mid_at + 1]                                                 # curvature needs a sample on each side
+    curve, curve_lo, curve_hi = curvature[limited], -1.0 / seg["crest"][mid_at[limited]], 1.0 / seg["sag"][mid_at[limited]]
+    stiffness = (seg["wavelength"][jerk_at + 1] / (2.0 * np.pi)) ** 6 * np.diff(s)[jerk_at + 1]
+    smooth_z = third.multiply(np.sqrt(stiffness)[:, None]).tocsr()
 
     # ---- unknowns: free samples off the junction planes, and the planes of the junctions not fixed yet
     plane, known_z = block["plane"], block["known_z"]
@@ -212,19 +238,17 @@ def solve_block(block):
         (np.r_[np.ones(len(free)), np.ones(len(planar)), d[:, 0], d[:, 1]], (np.r_[free, planar, planar, planar], np.r_[np.arange(len(free)), col, col + 1, col + 2])),
         shape=(n, n_x))
 
-    tilt_rows = []
-    for j, rows in enumerate(block["tilt_rows"]):
-        if column[j] >= 0:
-            tilt_rows += [sparse.csr_matrix((scale * across, ([0, 0], [column[j] + 1, column[j] + 2])), shape=(1, n_x)) for across, scale in rows]
-    tilt = sparse.vstack(tilt_rows) if tilt_rows else sparse.csr_matrix((0, n_x))
-    smooth_z = sparse.block_diag(smooth, format="csr")
+    tilts = [(column[j], scale * across) for j, rows in enumerate(block["tilt_rows"]) if column[j] >= 0 for across, scale in rows]
+    tilt_col = np.array([c for c, _ in tilts], int)
+    tilt = sparse.csr_matrix((np.array([v for _, v in tilts]).ravel(), (np.repeat(np.arange(len(tilts)), 2), np.column_stack([tilt_col + 1, tilt_col + 2]).ravel())),
+                             shape=(len(tilts), n_x))
     smooth_x, smooth_base = smooth_z @ expand, smooth_z @ base
-    limits_z = sparse.vstack([sparse.block_diag(grade, format="csr"), sparse.block_diag(curve, format="csr")]).tocsr()
+    limits_z = sparse.vstack([grade, curve]).tocsr()
     limits_x = (limits_z @ expand).tocsr()
     limits_x.eliminate_zeros()
     shift = limits_z @ base
-    lower = np.r_[-np.concatenate(grade_max), np.concatenate(curve_lo)] - shift
-    upper = np.r_[np.concatenate(grade_max), np.concatenate(curve_hi)] - shift
+    lower = np.r_[-grade_max, curve_lo] - shift
+    upper = np.r_[grade_max, curve_hi] - shift
     live = np.diff(limits_x.indptr) > 0                                                # limits between fixed heights only are not ours to enforce
     limits_x, lower, upper = limits_x[live].tocsc(), lower[live], upper[live]
     regular = (smooth_x.T @ smooth_x + tilt.T @ tilt).tocsc()
@@ -238,15 +262,9 @@ def solve_block(block):
         for _ in range(config.PROFILE_ROBUST_ROUNDS + 1):
             p = sparse.triu(regular + expand.T @ sparse.diags(fit) @ expand, format="csc")
             q = smooth_x.T @ smooth_base + expand.T @ (fit * (base - (target - datum)))
-            solver = osqp.OSQP()
-            solver.setup(P=p, q=q, A=limits_x, l=lower - widen * (np.abs(lower) + 1e-3), u=upper + widen * (np.abs(upper) + 1e-3), **SOLVER)
-            if x is not None:
-                solver.warm_start(x=x)
-            result = solver.solve()
-            status = result.info.status
-            if status not in SOLVED or result.x is None or not np.isfinite(result.x).all():
+            x, status = solve_qp(p, q, limits_x, lower - widen * (np.abs(lower) + 1e-3), upper + widen * (np.abs(upper) + 1e-3))
+            if x is None:
                 return None, status
-            x = result.x
             residual = expand @ x + base + datum - target
             fit = weight * step / (1.0 + (residual / config.PROFILE_ROBUST_SCALE) ** 2)
         return x, status
