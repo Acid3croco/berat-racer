@@ -42,7 +42,7 @@ public class MiniMap : MonoBehaviour
     {
         if (cam == null || world == null || !world.Ready || car == null || (map != null && map.Active)) return;
         var kb = Keyboard.current;
-        if (kb != null && kb.zKey.wasPressedThisFrame) { range = (range + 1) % Ranges.Length; Log.I("minimap", $"range {Ranges[range]:F0} m"); }
+        if (kb != null && kb.zKey.wasPressedThisFrame && !NetSession.Typing) { range = (range + 1) % Ranges.Length; Log.I("minimap", $"range {Ranges[range]:F0} m"); }
         if ((frame++ & 1) != 0) return;
         var p = car.transform.position; float yaw = car.transform.eulerAngles.y;
         cam.orthographicSize = Ranges[range];
@@ -65,6 +65,20 @@ public class MiniMap : MonoBehaviour
     public Rect Area
     {
         get { float s = Mathf.Clamp(Screen.height * 0.27f, 190f, 340f); return new Rect(16f, Screen.height - s - 16f, s, s); }
+    }
+
+    /// <summary>Where a world point is drawn on the minimap (GUI coordinates); points off the map are pinned to its rim. False while the minimap is hidden.</summary>
+    public bool ToGui(Vector3 world, out Vector2 gui)
+    {
+        gui = default;
+        if (cam == null || car == null || (map != null && map.Active)) return false;
+        var r = Area; float yaw = car.transform.eulerAngles.y * Mathf.Deg2Rad, rad = r.width * 0.5f;
+        Vector3 d = world - car.transform.position;
+        float right = d.x * Mathf.Cos(yaw) - d.z * Mathf.Sin(yaw), ahead = d.x * Mathf.Sin(yaw) + d.z * Mathf.Cos(yaw);     // heading-up, like the map
+        var v = new Vector2(right, -ahead) / Ranges[range] * rad;
+        if (v.magnitude > rad - 6f) v = v.normalized * (rad - 6f);
+        gui = r.center + v;
+        return true;
     }
 
     public void DrawGUI()

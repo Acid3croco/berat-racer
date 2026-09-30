@@ -1,16 +1,27 @@
 using UnityEngine;
 
-/// <summary>Tyre smoke / dust and skid marks, driven by CarController.WheelFx (0..1 per wheel: wheelspin, lock-up or sideways slide).</summary>
+/// <summary>What TyreFx reads from a car: the player's CarController, or a RemoteCar mirroring another player's.</summary>
+public interface IWheelFx
+{
+    CarSpec Spec { get; }
+    float[] WheelFx { get; }                  // 0..1 per wheel: wheelspin, lock-up or sideways slide
+    Vector3[] WheelPoint { get; }             // contact points, world space
+    Surface[] SurfaceUnderWheel { get; }
+    Surface CurrentSurface { get; }
+    event System.Action Respawned;            // the car jumped: its marks must not join the old ones
+}
+
+/// <summary>Tyre smoke / dust and skid marks, driven by IWheelFx.WheelFx (0..1 per wheel: wheelspin, lock-up or sideways slide).</summary>
 public class TyreFx : MonoBehaviour
 {
-    CarController car;
+    IWheelFx car;
     ParticleSystem[] smoke = new ParticleSystem[4];
     TrailRenderer[] skid = new TrailRenderer[4];
     Transform[] skidT = new Transform[4];
     Material smokeMat, skidMat;
     public int Alive { get; private set; }
 
-    public void Init(CarController c)
+    public void Init(IWheelFx c)
     {
         car = c;
         smokeMat = new Material(Resources.Load<Shader>("BeratParticle"));
@@ -42,6 +53,11 @@ public class TyreFx : MonoBehaviour
             skid[i] = tr; skidT[i] = tg.transform;
         }
         car.Respawned += () => { for (int i = 0; i < 4; i++) { skid[i].Clear(); skid[i].emitting = false; } };
+    }
+
+    void OnDestroy()
+    {   // the marks lie in the world, not on the car: they outlive it until they have faded
+        for (int i = 0; i < 4; i++) if (skidT[i] != null) Destroy(skidT[i].gameObject, skid[i].time + 1f);
     }
 
     void Update()

@@ -27,6 +27,7 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 - **Minimap** (bottom-left, heading-up, roads and buildings without tree canopy, north marker): `Z` cycles the range 120 m / 250 m / 500 m / 1 km.
 - **Bug-report coordinates**: the top-right box shows the 5 x 5 m cell, local metres, elevation and Lambert-93. `K` copies the spot, `J` jumps to coordinates on the clipboard, `-goto x,z` starts there.
 - **Autopilot** that follows the real road network (demo and test driver).
+- **Online play** (`O`): open a session protected by a password and give your friends your `ip:port`; everyone sees the others' cars live (model, wheels, lamps, tyre smoke and skid marks) and the same traffic, simulated by the host. Plain UDP, macOS and Windows together, same map required. See `docs/multiplayer.md`.
 
 ## Physics results (headless test suite, `docs/physics-*.txt`)
 
@@ -54,6 +55,7 @@ Road benchmark (autopilot, 150 s on the real roads): invisible stops 3 -> 0, ver
 | Spot | K copy, J jump to clipboard coordinates | |
 | Assists / v-sync / debug | T / V / F3 | |
 | Volume / mute | `[` `]` / N | |
+| Online session (host / join) | O (Esc closes the panel) | |
 | Quit | Esc | |
 
 ## Run it

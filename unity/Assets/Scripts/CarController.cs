@@ -16,7 +16,7 @@ public enum Assist { Off, Sport, Full, Arcade, Drift }
 ///    big steering lock with the front wheels following the direction of travel, and a yaw damper that keeps slides smooth (see DriftAids)
 /// </summary>
 [RequireComponent(typeof(Rigidbody))]
-public class CarController : MonoBehaviour
+public class CarController : MonoBehaviour, IWheelFx
 {
     public WorldBuilder World;
     public Assist AssistMode = Assist.Arcade;
@@ -51,14 +51,14 @@ public class CarController : MonoBehaviour
     public bool ClutchLocked => drivetrain.Locked;
     public float EngineTorque => drivetrain.TorqueE;
     public float SteerAngleDeg => steerCentre * Mathf.Rad2Deg;
-    public readonly float[] WheelFx = new float[4];             // 0..1 smoke / skid intensity
+    public float[] WheelFx { get; } = new float[4];             // 0..1 smoke / skid intensity
     public readonly float[] WheelSlip = new float[4];           // combined slip s (1 = peak grip)
     public readonly float[] WheelKappa = new float[4];          // slip ratio
     public readonly float[] WheelLoad = new float[4];           // N
     public readonly float[] DebugEnvelope = new float[4];       // ground envelope height under each wheel (test instrumentation)
     public readonly float[] DebugComp = new float[4];
-    public readonly Vector3[] WheelPoint = new Vector3[4];
-    public readonly Surface[] SurfaceUnderWheel = new Surface[4];
+    public Vector3[] WheelPoint { get; } = new Vector3[4];
+    public Surface[] SurfaceUnderWheel { get; } = new Surface[4];
     public Surface CurrentSurface { get; set; }
     // ---- pluggable driving model (null = the built-in realistic simulation below)
     public DrivingModel Model { get; private set; }
@@ -86,6 +86,8 @@ public class CarController : MonoBehaviour
         public bool grounded; public Vector3 contact, n, f, r; public float vx, vy; public Surface surf; public float lastGround;
     }
     Wheel[] w;
+    /// <summary>Wheel i as drawn: suspension drop below its mount (m), steer angle (rad), spin rate (rad/s). What another player needs to draw this car.</summary>
+    public void WheelPose(int i, out float drop, out float steer, out float omega) { var q = w[i]; drop = q.d; steer = q.steer; omega = q.omega; }
     Drivetrain drivetrain;
     int dA, dB;                                   // indices of the two driven wheels (front pair for FWD, rear pair for RWD)
     float steerSm, steerCentre, driveSm, brakeSm, prevFwdSpeed, flipTimer, tcsCut, prevBeta, driftHold;

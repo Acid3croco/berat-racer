@@ -19,6 +19,8 @@ public static class Log
                 : System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library/Logs/BeratRacer");
             Directory.CreateDirectory(dir);
             string name = Application.isBatchMode ? "berat.batch" : "berat";        // automated headless runs must not clobber the log of a game being played
+            var args = Environment.GetCommandLineArgs(); int li = Array.IndexOf(args, "-logname");
+            if (li >= 0 && li + 1 < args.Length) name = args[li + 1];                  // e.g. two players on one machine
             Path_ = System.IO.Path.Combine(dir, name + ".log");
             string prev = System.IO.Path.Combine(dir, name + ".prev.log");
             if (File.Exists(Path_)) File.Copy(Path_, prev, true);

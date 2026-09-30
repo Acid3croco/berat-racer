@@ -4,7 +4,7 @@ using UnityEngine.InputSystem;
 /// <summary>
 /// Top-down map mode (M / Select): camera rises above the car, pans and zooms over the LiDAR terrain,
 /// stays inside the map borders, and teleports the car to the exact ground point under the crosshair/cursor.
-/// The game is paused (timeScale 0) while the map is open.
+/// The game is paused (timeScale 0) while the map is open, except online (NetSession.Live): the others keep driving.
 /// </summary>
 public class MapView : MonoBehaviour
 {
@@ -65,7 +65,7 @@ public class MapView : MonoBehaviour
         follow.enabled = false;
         prevFov = cam.fieldOfView; prevFar = cam.farClipPlane; prevNear = cam.nearClipPlane; prevFog = RenderSettings.fog;
         cam.fieldOfView = 55f; RenderSettings.fog = false;
-        prevTimeScale = Time.timeScale; Time.timeScale = 0f;
+        prevTimeScale = Time.timeScale; if (!NetSession.Live) Time.timeScale = 0f;   // online the world goes on (the others and the traffic keep moving)
         carMarker.SetActive(true); pin.SetActive(true);
         mouseUntil = 0; lastMouse = lastMousePrev = Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero; held = dragging = false;
         ApplyCamera();

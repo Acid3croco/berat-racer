@@ -5,6 +5,7 @@ using UnityEngine;
 /// Ambient traffic: cars that drive the real road network at the speed limit. Independent of the driving model — traffic cars are kinematic and follow the road polylines
 /// (right-hand traffic, one-way roads respected, junction turns chosen at random, curves and junctions slow them down, a following distance keeps them apart).
 /// Speed = min(French legal limit from BD TOPO, 1.3 x the road's average speed + 8 km/h). Cars spawn out of sight around the player and are removed when far away.
+/// Online, the host simulates traffic around every player (Others) and streams it (Capture); a client's traffic is a Replica that only mirrors it (Mirror).
 /// </summary>
 public class Traffic : MonoBehaviour
 {
@@ -14,6 +15,11 @@ public class Traffic : MonoBehaviour
 
     WorldBuilder world; CarController player; Material mat;
     readonly List<Agent> agents = new List<Agent>();
+    public readonly List<RemoteCar> Others = new List<RemoteCar>();          // the other players' cars (NetSession keeps the list)
+    public bool Replica { get; private set; }                                  // a client's traffic: the host's vehicles, nothing simulated here
+    readonly Dictionary<ushort, Agent> replicas = new Dictionary<ushort, Agent>();
+    readonly ClockSync hostClock = new ClockSync();
+    ushort nextId; int spawnAnchor;
     readonly System.Random rng = new System.Random(11);
     float spawnTimer, logTimer;
     public int Count => agents.Count;
@@ -28,6 +34,8 @@ public class Traffic : MonoBehaviour
     class Agent
     {
         public GameObject go; public Rigidbody rb; public VehicleParts parts; public VehicleType type;
+        public ushort id; public byte lookA, lookB;                                       // look: which model and paints (see PickLook)
+        public Timeline<TrafficSnap> line;                                                  // replica only
         public float speedFactor = 1f, gapTime = 1.5f, length = 4.6f, trailerYaw;
         public Rigidbody trailerRb; public readonly List<Vector3> crumbs = new List<Vector3>();
         public RoadFollower f; public float v, spin, stuck, age;
@@ -43,6 +51,7 @@ public class Traffic : MonoBehaviour
 
     public void SetEnabled(bool on)
     {
+        if (Replica) { Log.I("traffic", "traffic belongs to the host of the session"); return; }
         Enabled = on;
         if (!on) { foreach (var a in agents) Kill(a); agents.Clear(); }
         Log.I("traffic", on ? "traffic on" : "traffic off");
@@ -56,6 +65,7 @@ public class Traffic : MonoBehaviour
     {
         if (!Enabled || world == null || !world.Ready || player == null) return;
         float dt = Time.fixedDeltaTime;
+        if (Replica) { StepReplicas(dt); RefreshVehicles(); return; }
         Maintain(dt);
         RefreshVehicles();
         for (int i = 0; i < agents.Count; i++) Step(agents[i], dt);
@@ -63,18 +73,37 @@ public class Traffic : MonoBehaviour
 
     static void Kill(Agent a) { if (a.parts != null && a.parts.trailer != null) Destroy(a.parts.trailer); if (a.go != null) Destroy(a.go); }
 
+    // ------------------------------------------------------------------ players the traffic lives around
+    readonly List<(Vector3 pos, Vector3 look)> anchors = new List<(Vector3, Vector3)>();
+
+    /// <summary>Every player's car and where it looks: the local one (camera direction), then the others online (direction of travel).</summary>
+    void RefreshAnchors()
+    {
+        anchors.Clear();
+        var cam = Camera.main; Vector3 look = cam != null ? cam.transform.forward : player.transform.forward;
+        anchors.Add((player.transform.position, Flat(look)));
+        foreach (var o in Others) if (o != null) anchors.Add((o.transform.position, Flat(o.Velocity.sqrMagnitude > 1f ? o.Velocity : o.transform.forward)));
+    }
+    static Vector3 Flat(Vector3 v) { v.y = 0; return v.normalized; }
+
+    float NearestPlayer(Vector3 p)
+    {
+        float best = float.MaxValue;
+        foreach (var an in anchors) best = Mathf.Min(best, Vector2.Distance(new Vector2(p.x, p.z), new Vector2(an.pos.x, an.pos.z)));
+        return best;
+    }
+
     void Maintain(float dt)
     {
-        Vector3 pp = player.transform.position;
+        RefreshAnchors();
         for (int i = agents.Count - 1; i >= 0; i--)
         {
             var a = agents[i]; a.age += dt;
-            float d = Vector2.Distance(new Vector2(a.pos.x, a.pos.z), new Vector2(pp.x, pp.z));
-            bool gone = d > Despawn || !world.Data.HasChunk(a.pos.x, a.pos.z) || a.stuck > 30f || float.IsNaN(a.pos.x);
+            bool gone = NearestPlayer(a.pos) > Despawn || !world.Data.HasChunk(a.pos.x, a.pos.z) || a.stuck > 30f || float.IsNaN(a.pos.x);
             if (gone) { Kill(a); agents.RemoveAt(i); }
         }
         spawnTimer -= dt;
-        if (agents.Count < Target && spawnTimer <= 0f) { TrySpawn(pp); spawnTimer = 0.3f; }
+        if (agents.Count < Target * anchors.Count && spawnTimer <= 0f) { spawnAnchor = (spawnAnchor + 1) % anchors.Count; TrySpawn(anchors[spawnAnchor].pos); spawnTimer = 0.3f / anchors.Count; }
         logTimer -= dt;
         if (logTimer <= 0f)
         {
@@ -84,19 +113,21 @@ public class Traffic : MonoBehaviour
         }
     }
 
+    /// <summary>A road point around `pp` that no player is close to, nor looking at within 600 m.</summary>
     void TrySpawn(Vector3 pp)
     {
         var roads = world.Data.Roads; if (roads.Length == 0) return;
-        var cam = Camera.main; Vector3 look = cam != null ? cam.transform.forward : player.transform.forward; look.y = 0; look.Normalize();
         for (int attempt = 0; attempt < 40; attempt++)
         {
             var r = roads[rng.Next(roads.Length)];
             if (r.dirt || r.bridge || r.hw < 1.9f || r.Length < 40f || r.imp == "6") continue;
             float s = (float)(0.15 + 0.7 * rng.NextDouble()) * r.Length;
             Vector3 p = r.At(s, out Vector2 dirInc);
-            Vector3 d3 = p - pp; d3.y = 0; float dist = d3.magnitude;
-            if (dist < SpawnMin || dist > SpawnMax) continue;
-            if (dist < 600f && Vector3.Dot(d3.normalized, look) > 0.2f) continue;              // not popping in ahead of the player
+            Vector3 d3 = p - pp; d3.y = 0;
+            if (d3.magnitude > SpawnMax || NearestPlayer(p) < SpawnMin) continue;
+            bool seen = false;
+            foreach (var an in anchors) { Vector3 e = p - an.pos; e.y = 0; if (e.magnitude < 600f && Vector3.Dot(e.normalized, an.look) > 0.2f) { seen = true; break; } }
+            if (seen) continue;                                                                       // not popping in ahead of a player
             bool tooClose = false; foreach (var o in agents) if ((o.pos - p).sqrMagnitude < 35f * 35f) { tooClose = true; break; }
             if (tooClose) continue;
             bool fwd = r.oneway == 1 ? true : r.oneway == 2 ? false : rng.Next(2) == 0;
@@ -134,16 +165,44 @@ public class Traffic : MonoBehaviour
     void SpawnAt(RoadData r, float s, bool fwd)
     {
         var type = PickType(r);
-        var a = new Agent { type = type }; a.f = new RoadFollower(world.Data, rng); a.f.Place(r, s, fwd);
-        VehicleParts parts; Transform bodyRoot;
+        var a = new Agent { type = type, id = nextId++ }; a.f = new RoadFollower(world.Data, rng); a.f.Place(r, s, fwd);
+        PickLook(type, out a.lookA, out a.lookB);
+        Dress(a);
+        // this driver: speed relative to the limit is normally distributed (a few slow, a few fast); lorries are speed-limited and steadier
+        bool heavy = type == VehicleType.Truck || type == VehicleType.Semi;
+        a.speedFactor = heavy ? Mathf.Clamp(Normal(rng, 0.97f, 0.04f), 0.85f, 1.03f) : Mathf.Clamp(Normal(rng, 1.02f, 0.09f), 0.68f, 1.30f);
+        a.gapTime = Mathf.Clamp(Normal(rng, 1.6f, 0.4f), 0.8f, 2.6f);
+        a.v = LimitKmh(r) / 3.6f * a.speedFactor * 0.85f;
+        agents.Add(a);
+        Pose(a, 0f, true);
+        a.go.transform.SetPositionAndRotation(a.pos, Quaternion.Euler(0, a.yaw, 0));
+        a.crumbs.Clear(); a.crumbs.Add(a.pos - new Vector3(a.dir.x, 0, a.dir.y) * 40f); a.crumbs.Add(a.pos);
+        if (a.parts.trailer != null) PoseTrailer(a);
+    }
+
+    /// <summary>Model and paints, as two small numbers a client rebuilds the same vehicle from. Cars: A = model (hatch or saloon; the GT3 is the player's toy), B = paint.</summary>
+    void PickLook(VehicleType type, out byte a, out byte b)
+    {
         switch (type)
         {
-            case VehicleType.Van: parts = TrafficVisual.Van(mat, VanPaints[rng.Next(VanPaints.Length)]); break;
-            case VehicleType.Truck: parts = TrafficVisual.BoxTruck(mat, HaulPaints[rng.Next(HaulPaints.Length)], HaulPaints[rng.Next(HaulPaints.Length)]); break;
-            case VehicleType.Semi: parts = TrafficVisual.Semi(mat, HaulPaints[rng.Next(HaulPaints.Length)], HaulPaints[rng.Next(HaulPaints.Length)]); break;
+            case VehicleType.Van: a = (byte)rng.Next(VanPaints.Length); b = 0; break;
+            case VehicleType.Truck: case VehicleType.Semi: a = (byte)rng.Next(HaulPaints.Length); b = (byte)rng.Next(HaulPaints.Length); break;
+            default: a = (byte)(rng.Next(100) < 58 ? 0 : 1); b = (byte)rng.Next(Paints.Length); break;
+        }
+    }
+
+    /// <summary>Builds the vehicle's meshes, kinematic body and collision boxes from its type and look.</summary>
+    void Dress(Agent a)
+    {
+        var type = a.type; VehicleParts parts;
+        switch (type)
+        {
+            case VehicleType.Van: parts = TrafficVisual.Van(mat, VanPaints[a.lookA % VanPaints.Length]); break;
+            case VehicleType.Truck: parts = TrafficVisual.BoxTruck(mat, HaulPaints[a.lookA % HaulPaints.Length], HaulPaints[a.lookB % HaulPaints.Length]); break;
+            case VehicleType.Semi: parts = TrafficVisual.Semi(mat, HaulPaints[a.lookA % HaulPaints.Length], HaulPaints[a.lookB % HaulPaints.Length]); break;
             default:
-                {   // cars: hatchbacks and saloons (the GT3 is the player's toy)
-                    var spec = CarSpec.All[rng.Next(100) < 58 ? 0 : 1].WithPaint(Paints[rng.Next(Paints.Length)]);
+                {
+                    var spec = CarSpec.All[a.lookA == 0 ? 0 : 1].WithPaint(Paints[a.lookB % Paints.Length]);
                     var go0 = new GameObject("traffic car"); var vis = CarVisual.Build(go0.transform, mat, spec);
                     vis.brakeGlow.SetActive(false); vis.reverseGlow.SetActive(false);
                     parts = new VehicleParts { root = go0, wheels = vis.wheels, wheelRadius = new[] { spec.WheelR, spec.WheelR, spec.WheelR, spec.WheelR }, length = spec.Length, width = spec.Width, groundOffset = spec.WheelRadiusSum, isCar = true, carSpec = spec };
@@ -151,7 +210,6 @@ public class Traffic : MonoBehaviour
                 }
         }
         a.parts = parts; a.go = parts.root; a.length = parts.length + (type == VehicleType.Semi ? 12.5f : 0f);
-        bodyRoot = a.go.transform;
         a.rb = a.go.AddComponent<Rigidbody>(); a.rb.isKinematic = true; a.rb.interpolation = RigidbodyInterpolation.Interpolate;
         var box = a.go.AddComponent<BoxCollider>();
         if (parts.isCar)
@@ -170,16 +228,7 @@ public class Traffic : MonoBehaviour
             var tbox = parts.trailer.AddComponent<BoxCollider>(); tbox.center = new Vector3(0, 2.4f, 0); tbox.size = new Vector3(2.5f, 2.7f, 13.4f);
             parts.trailer.transform.SetParent(a.go.transform.parent, true);                      // independent of the tractor's transform
         }
-        // this driver: speed relative to the limit is normally distributed (a few slow, a few fast); lorries are speed-limited and steadier
-        bool heavy = type == VehicleType.Truck || type == VehicleType.Semi;
-        a.speedFactor = heavy ? Mathf.Clamp(Normal(rng, 0.97f, 0.04f), 0.85f, 1.03f) : Mathf.Clamp(Normal(rng, 1.02f, 0.09f), 0.68f, 1.30f);
-        a.gapTime = Mathf.Clamp(Normal(rng, 1.6f, 0.4f), 0.8f, 2.6f);
-        a.v = LimitKmh(r) / 3.6f * a.speedFactor * 0.85f;
-        agents.Add(a);
-        Pose(a, 0f, true);
-        a.go.transform.SetPositionAndRotation(a.pos, Quaternion.Euler(0, a.yaw, 0));
-        a.crumbs.Clear(); a.crumbs.Add(a.pos - new Vector3(a.dir.x, 0, a.dir.y) * 40f); a.crumbs.Add(a.pos);
-        if (a.parts.trailer != null) PoseTrailer(a);
+        if (parts.isCar) for (int i = 0; i < parts.wheels.Length; i++) { var m = parts.carSpec.Mount(i); parts.wheels[i].localPosition = new Vector3(m.x, -0.40f, m.z); }
     }
 
     // ------------------------------------------------------------------ one car
@@ -209,12 +258,13 @@ public class Traffic : MonoBehaviour
         if (Vector3.SqrMagnitude(a.pos - a.crumbs[a.crumbs.Count - 1]) > 0.25f) { a.crumbs.Add(a.pos); if (a.crumbs.Count > 200) a.crumbs.RemoveRange(0, 60); }
         if (a.parts.trailer != null) PoseTrailer(a);
         float ang = a.v * dt; a.spin += ang;
+        SpinWheels(a);
+    }
+
+    static void SpinWheels(Agent a)
+    {
         var parts = a.parts;
-        for (int i = 0; i < parts.wheels.Length; i++)
-        {
-            if (parts.isCar) { var m = parts.carSpec.Mount(i); parts.wheels[i].localPosition = new Vector3(m.x, -0.40f, m.z); }
-            parts.wheels[i].localRotation = Quaternion.Euler(a.spin / parts.wheelRadius[i] * Mathf.Rad2Deg, 0, 0);
-        }
+        for (int i = 0; i < parts.wheels.Length; i++) parts.wheels[i].localRotation = Quaternion.Euler(a.spin / parts.wheelRadius[i] * Mathf.Rad2Deg, 0, 0);
         for (int i = 0; i < parts.trailerWheels.Length; i++) parts.trailerWheels[i].localRotation = Quaternion.Euler(a.spin / parts.trailerWheelRadius[i] * Mathf.Rad2Deg, 0, 0);
     }
 
@@ -271,6 +321,69 @@ public class Traffic : MonoBehaviour
             Vector3 pv = player.Body.linearVelocity; float ps = new Vector2(pv.x, pv.z).magnitude;
             Vector2 pd = ps > 1f ? new Vector2(pv.x, pv.z) / ps : new Vector2(player.transform.forward.x, player.transform.forward.z).normalized;
             vehs.Add(new Veh { pos = new Vector2(player.transform.position.x, player.transform.position.z), dir = pd, v = ps, len = 4.5f, id = player });
+        }
+        foreach (var o in Others)
+        {
+            if (o == null) continue;
+            Vector3 ov = o.Velocity; float os = new Vector2(ov.x, ov.z).magnitude;
+            Vector2 od = os > 1f ? new Vector2(ov.x, ov.z) / os : new Vector2(o.transform.forward.x, o.transform.forward.z).normalized;
+            vehs.Add(new Veh { pos = new Vector2(o.transform.position.x, o.transform.position.z), dir = od, v = os, len = 4.5f, id = o });
+        }
+    }
+
+    // ------------------------------------------------------------------ online
+    /// <summary>Host: every vehicle within `range` of `near`, as the host sees it now.</summary>
+    public void Capture(Vector3 near, float range, List<TrafficSnap> into)
+    {
+        into.Clear();
+        if (!Enabled || Replica) return;
+        foreach (var a in agents)
+        {
+            if (a.go == null || Vector2.Distance(new Vector2(a.pos.x, a.pos.z), new Vector2(near.x, near.z)) > range) continue;
+            var s = new TrafficSnap { Id = a.id, Type = a.type, LookA = a.lookA, LookB = a.lookB, Pos = a.pos, Yaw = a.yaw, Slope = a.slope, V = a.v };
+            if (a.trailerRb != null) { var e = a.trailerRb.rotation.eulerAngles; s.TrailerPos = a.trailerRb.position; s.TrailerYaw = e.y; s.TrailerPitch = e.x; }
+            into.Add(s);
+        }
+    }
+
+    /// <summary>Client: stop simulating and mirror the host's vehicles (on), or go back to our own traffic (off).</summary>
+    public void SetReplica(bool on)
+    {
+        if (on == Replica) return;
+        foreach (var a in agents) Kill(a);
+        agents.Clear(); replicas.Clear();
+        Replica = on; Enabled = true;
+        Log.I("traffic", on ? "mirroring the host's traffic" : "own traffic again");
+    }
+
+    /// <summary>Client: one vehicle from the host. The first time an id is seen the vehicle is built from its type and look.</summary>
+    public void Mirror(in TrafficSnap s, double senderT, double now)
+    {
+        if (!Replica || mat == null) return;
+        if (!replicas.TryGetValue(s.Id, out var a))
+        {
+            a = new Agent { type = s.Type, id = s.Id, lookA = s.LookA, lookB = s.LookB, line = new Timeline<TrafficSnap>(hostClock) };
+            Dress(a);
+            a.pos = s.Pos; a.yaw = s.Yaw; a.go.transform.SetPositionAndRotation(s.Pos, Quaternion.Euler(-s.Slope, s.Yaw, 0f));
+            if (a.trailerRb != null) a.parts.trailer.transform.SetPositionAndRotation(s.TrailerPos, Quaternion.Euler(s.TrailerPitch, s.TrailerYaw, 0f));
+            replicas.Add(s.Id, a); agents.Add(a);
+        }
+        a.line.Add(senderT, s, now);
+    }
+
+    void StepReplicas(float dt)
+    {
+        double now = Time.realtimeSinceStartupAsDouble;
+        for (int i = agents.Count - 1; i >= 0; i--)
+        {
+            var a = agents[i];
+            if (now - a.line.LastHeard > 1.5) { Kill(a); agents.RemoveAt(i); replicas.Remove(a.id); continue; }      // gone on the host, or out of our range
+            var s = a.line.Sample(now, TrafficSnap.Blend, out _);
+            a.pos = s.Pos; a.yaw = s.Yaw; a.slope = s.Slope; a.v = s.V;
+            float yr = s.Yaw * Mathf.Deg2Rad; a.dir = new Vector2(Mathf.Sin(yr), Mathf.Cos(yr));
+            a.rb.MovePosition(s.Pos); a.rb.MoveRotation(Quaternion.Euler(-s.Slope, s.Yaw, 0f));
+            if (a.trailerRb != null) { a.trailerRb.MovePosition(s.TrailerPos); a.trailerRb.MoveRotation(Quaternion.Euler(s.TrailerPitch, s.TrailerYaw, 0f)); }
+            a.spin += a.v * dt; SpinWheels(a);
         }
     }
 

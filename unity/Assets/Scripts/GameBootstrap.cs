@@ -60,8 +60,10 @@ public class GameBootstrap : MonoBehaviour
         var sp = world.Data.Spawn;
         int startModel = 0; { var la = System.Environment.GetCommandLineArgs(); int ci = System.Array.IndexOf(la, "-car"); if (ci >= 0 && ci + 1 < la.Length) int.TryParse(la[ci + 1], out startModel); }
         map = gameObject.AddComponent<MapView>();
+        net = gameObject.AddComponent<NetSession>();
         SpawnCar(Mathf.Clamp(startModel, 0, CarSpec.All.Length - 1), new Vector3(sp.x, 0, sp.z), sp.heading, true);
         Log.I("boot", $"smoke={smoke}");
+        net.StartFromCommandLine();
         var launchArgs = System.Environment.GetCommandLineArgs();
         { int gi = System.Array.IndexOf(launchArgs, "-goto"); if (gi >= 0 && gi + 1 < launchArgs.Length && Grid.TryParse(string.Join(" ", launchArgs, gi + 1, Mathf.Min(2, launchArgs.Length - gi - 1)), out float gx, out float gz)) { TeleportCar(gx, gz); } }
         if (System.Array.IndexOf(launchArgs, "-autopilot") >= 0)
@@ -165,7 +167,7 @@ public class GameBootstrap : MonoBehaviour
     }
 
     // ------------------------------------------------------------ cars
-    MiniMap minimap; Traffic traffic;
+    MiniMap minimap; Traffic traffic; NetSession net;
     int carIndex; CarVisualRefs carVisual; Material carMat;
 
     /// <summary>Creates (or replaces) the player's car at a ground position. Everything that hangs off the car is rebuilt with it.</summary>
@@ -193,6 +195,7 @@ public class GameBootstrap : MonoBehaviour
         if (fx == null) fx = mainCam.gameObject.AddComponent<SpeedFx>();
         fx.Car = car;
         tyres = carGo.AddComponent<TyreFx>(); tyres.Init(car);
+        net.SetCar(car, index, traffic, minimap);                                  // online: the others see this model from now on
         Log.I("boot", $"car '{spec.Name}' ({spec.Layout}) at ({pos.x:F1}, {gy:F1}, {pos.z:F1}) heading {heading:F0}");
         if (!first) { shownCarAt = Time.unscaledTime; auto = null; autoOn = false; }
     }
@@ -209,8 +212,10 @@ public class GameBootstrap : MonoBehaviour
     {
         if (world == null || !world.Ready || car == null) return;
         var kbM = Keyboard.current; var gpM = Gamepad.current;
-        if (!smoke && ((kbM != null && kbM.mKey.wasPressedThisFrame) || (gpM != null && gpM.selectButton.wasPressedThisFrame))) { map.Toggle(); }
+        if (!smoke && !NetSession.Typing && ((kbM != null && kbM.mKey.wasPressedThisFrame) || (gpM != null && gpM.selectButton.wasPressedThisFrame))) { map.Toggle(); }
         world.UpdateStreaming(shotFocus.HasValue ? shotFocus.Value : (map.Active ? map.Focus : car.transform.position));
+        if (NetSession.Typing || map.Active && NetSession.Live) HoldCar();              // the online panel has the keyboard; an online game does not pause for the map
+        if (NetSession.Typing) return;
         if (map.Active) { map.Tick(); return; }
         HandleCameraInput(); HandleCoordinateKeys();
         if (carVisual != null) { carVisual.brakeGlow.SetActive(car.Brake > 0.1f && car.Gear > 0 || car.Gear < 0 && car.Throttle > 0.1f); carVisual.reverseGlow.SetActive(car.Gear < 0); }
@@ -268,6 +273,8 @@ public class GameBootstrap : MonoBehaviour
         UpdateHaptics();
         if (Time.unscaledTime > telemetryNext) Telemetry();
     }
+
+    void HoldCar() { car.Steer = 0f; car.Throttle = 0f; car.Brake = 1f; car.Handbrake = true; }
 
     void ToggleAuto()
     {
@@ -963,7 +970,7 @@ public class GameBootstrap : MonoBehaviour
         DrawPositionBox();
         GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   model {DrivingModels.Names[car.ModelIndex].Split(' ')[0]}  assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
-            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N\nHelp: H / Options     Debug: F3     Quit: Esc", small);
+            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N   Online: O\nHelp: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)
         {
             var sb = new StringBuilder();
