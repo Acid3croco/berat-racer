@@ -62,6 +62,7 @@ FAR_CELL = 64
 MARGIN = 240
 DEFAULT_OUT = Path("../world_hg")
 DEFAULT_SPAWN = Path("../world/spawn.json")
+PLACES = BIG / "places.json"      # the map's place names (tools/fetch_places.py), copied into every world
 DEFAULT_LIST = BIG / "hg_sectors.json"
 DEFAULT_FAR_CACHE = BIG / "far_hg.npz"
 FAR_NEUTRAL = (96, 104, 88)       # far colour outside the covered sectors
@@ -774,6 +775,8 @@ def main():
         fo.write(fh_.astype("<f4").tobytes()); fo.write(fc_.tobytes())
     (out / "world.json").write_text(json.dumps(dict(x0=x0, z0=z0, ncx=ncx, ncz=ncz, chunk=CHUNK, cell=CELL, cv=CV, farCell=far_cell, farNx=far_nx, farNz=far_nz, lambertE=CX, lambertN=CY)))
     shutil.copy(DEFAULT_SPAWN, out / "spawn.json")
+    if PLACES.exists(): shutil.copy(PLACES, out / "places.json")
+    else: print(f"no {PLACES}: the map will have no place names (run fetch_places.py)", flush=True)
     print("stopped early:" if stopped else "done,", stopped or "", f"{n_done - unchanged - len(failed)} sectors built, {unchanged} unchanged, failed sectors:", failed, flush=True)
 
 if __name__ == "__main__":
