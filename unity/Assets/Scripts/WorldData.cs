@@ -6,25 +6,28 @@ using UnityEngine;
 
 public class RoadData
 {
-    public float hw; public bool dirt, bridge; public int lead, trail, fid, limit, avg, oneway, lanes, kind; public float pri;      // limit: legal speed km/h, avg: BD TOPO average km/h, oneway: 0 both ways, 1 along the line, 2 against it (0 for old data)
-    public Vector2 t0, t1;   // fid: source feature; t0/t1: shared tangent at a joint with the next road (zero = none)
-    // owned segments k satisfy lead <= k < n-1-trail (the rest overlap the neighbours for a seamless ribbon)
-    public string name = ""; public string imp = "0"; public float[] pts;
+    public float hw, realWidth, s0;      // hw: mean drawn half width; realWidth: surveyed carriageway width; s0: distance of the first point along its whole road link (keeps dashed lines in step)
+    public bool dirt, bridge, lit; public int fid, limit, avg, oneway, lanes, kind, rank;      // limit: legal speed km/h, avg: BD TOPO average km/h, oneway: 0 both ways, 1 along the line, 2 against it; fid: source feature
+    public string name = ""; public string imp = "0";
+    public float[] pts, left, right;     // centreline and the two edges of the carriageway, x y z per point. The edges carry the cross slope.
+    public int[] giveWayAt = new int[0]; public bool[] giveWayAfter = new bool[0];      // points where this road meets a junction as the minor road (a give-way line is painted); After: the drawn road lies after the point
+    public bool[] drawn;                 // per segment: is it rendered and driven on? Not inside a junction: the junction surface covers it, the centreline stays for the traffic.
     Vector2[] xz; public Vector2 Min, Max;
 
-    // ---- the owned polyline as 3D points with cumulative length (traffic follows it)
+    // ---- the polyline as 3D points with cumulative length (traffic follows it)
     Vector3[] own; float[] cum;
     void EnsureOwned()
     {
         if (own != null) return;
-        int n = pts.Length / 3, first = lead, last = Mathf.Max(n - 1 - trail, first + 1);
-        own = new Vector3[last - first + 1]; cum = new float[own.Length];
-        for (int i = 0; i < own.Length; i++) { int k = first + i; own[i] = new Vector3(pts[k * 3], pts[k * 3 + 1], pts[k * 3 + 2]); if (i > 0) cum[i] = cum[i - 1] + Vector2.Distance(new Vector2(own[i].x, own[i].z), new Vector2(own[i - 1].x, own[i - 1].z)); }
+        own = new Vector3[pts.Length / 3]; cum = new float[own.Length];
+        for (int i = 0; i < own.Length; i++) { own[i] = new Vector3(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]); if (i > 0) cum[i] = cum[i - 1] + Vector2.Distance(new Vector2(own[i].x, own[i].z), new Vector2(own[i - 1].x, own[i - 1].z)); }
     }
+    public int Count => pts.Length / 3;
+    public Vector3 P(float[] a, int i) => new Vector3(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]);
     public float Length { get { EnsureOwned(); return cum[cum.Length - 1]; } }
     public Vector3 StartPoint { get { EnsureOwned(); return own[0]; } }
     public Vector3 EndPoint { get { EnsureOwned(); return own[own.Length - 1]; } }
-    /// <summary>Point at distance s along the owned polyline (clamped) and the unit travel direction (x,z) of the segment there, in the direction of increasing s.</summary>
+    /// <summary>Point at distance s along the polyline (clamped) and the unit travel direction (x,z) of the segment there, in the direction of increasing s.</summary>
     public Vector3 At(float s, out Vector2 dir)
     {
         EnsureOwned(); s = Mathf.Clamp(s, 0f, cum[cum.Length - 1]);
@@ -33,18 +36,24 @@ public class RoadData
         dir = new Vector2(own[i].x - own[i - 1].x, own[i].z - own[i - 1].z); dir = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector2.up;
         return Vector3.Lerp(own[i - 1], own[i], t);
     }
-    /// <summary>Ground-plane polyline (x, z) of the OWNED part of the road (the overlap points that only shape the ribbon at chunk joins are left out), cached; also fills Min / Max.</summary>
+    /// <summary>Ground-plane polyline (x, z) of the road, cached; also fills Min / Max.</summary>
     public Vector2[] XZ
     {
         get
         {
             if (xz != null) return xz;
-            int n = pts.Length / 3, first = lead, last = Mathf.Max(n - 1 - trail, first + 1);
-            xz = new Vector2[last - first + 1]; Min = new Vector2(1e9f, 1e9f); Max = new Vector2(-1e9f, -1e9f);
-            for (int i = 0; i < xz.Length; i++) { int k = first + i; xz[i] = new Vector2(pts[k * 3], pts[k * 3 + 2]); Min = Vector2.Min(Min, xz[i]); Max = Vector2.Max(Max, xz[i]); }
+            xz = new Vector2[pts.Length / 3]; Min = new Vector2(1e9f, 1e9f); Max = new Vector2(-1e9f, -1e9f);
+            for (int i = 0; i < xz.Length; i++) { xz[i] = new Vector2(pts[i * 3], pts[i * 3 + 2]); Min = Vector2.Min(Min, xz[i]); Max = Vector2.Max(Max, xz[i]); }
             return xz;
         }
     }
+}
+/// <summary>The surface of a junction: a small triangle mesh that meets the ends of its roads vertex for vertex.</summary>
+public class JunctionData
+{
+    public bool dirt; public float[] v;      // x y z per vertex
+    public int[] tri;                        // three vertex indices per triangle, clockwise seen from above
+    public int[] edge; public bool[] mouth;  // outline: two vertex indices per edge, the surface on its left; mouth: the edge is where a road joins (no kerb there)
 }
 public class BuildingData { public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; public float[] cp; public int[] cn; }
 [Serializable] public class WorldInfo { public float x0, z0; public int ncx, ncz; }
@@ -52,14 +61,16 @@ public class BuildingData { public float[] p; public float b, h, r; public float
 public class WaterArea { public float level; public float[] ring; public float[] ys; }      // ring = x,z pairs; ys = surface height per vertex; level = their mean
 public class WaterLine { public float hw; public int lead, trail; public float[] pts; }
 
-/// <summary>One 400 m chunk as exported by tools/build_world.py: terrain grid, roads, water, buildings (mid data), trees and shrubs (near data).</summary>
+/// <summary>One 400 m chunk as exported by tools/build_world.py: terrain grids, roads, junctions, water, buildings (mid data), trees and shrubs (near data).</summary>
 public class ChunkData
 {
     public int ci, cj, key; public float x0, z0;
     public float[] H;                 // CV x CV heights, row = z (south first)
     public byte[] Col;                // CV x CV rgb, bare-ground colour
     public byte[] LowCol;             // 26 x 26 rgb for the 16 m LOD (keeps forests and villages)
-    public RoadData[] Roads, Ctx;
+    public float[] LowH;              // LV x LV heights of the 16 m terrain (kept below the roads by the world builder)
+    public RoadData[] Roads, Ctx;     // Ctx: roads of neighbouring chunks within 25 m (ground height and obstacle clearance near the border)
+    public JunctionData[] Junctions, CtxJunctions;
     public WaterArea[] Areas; public WaterLine[] Lines;
     public BuildingData[] Buildings;
     public float[] Trees, Shrubs;
@@ -81,6 +92,9 @@ public class ChunkData
         return n == 0 ? "" : System.Text.Encoding.UTF8.GetString(br.ReadBytes(n));
     }
     static float[] Floats(BinaryReader br, int n) { var a = new float[n]; var bytes = br.ReadBytes(n * 4); Buffer.BlockCopy(bytes, 0, a, 0, bytes.Length); return a; }
+    static int[] UShorts(BinaryReader br, int n) { var a = new int[n]; var bytes = br.ReadBytes(n * 2); for (int i = 0; i < n; i++) a[i] = bytes[i * 2] | bytes[i * 2 + 1] << 8; return a; }
+    public static float[] ReadFloats(BinaryReader br, int n) => Floats(br, n);
+    public static string ReadString(BinaryReader br) => Str(br);
     static int[] Ints(BinaryReader br, int n) { var a = new int[n]; var bytes = br.ReadBytes(n * 4); Buffer.BlockCopy(bytes, 0, a, 0, bytes.Length); return a; }
     static BinaryReader Open(string path)
     {
@@ -96,8 +110,7 @@ public class ChunkData
     {
         using (var br = Open(path))
         {
-            string magic = new string(br.ReadChars(4)); if (magic != "BM02" && magic != "BM03" && magic != "BM04") throw new InvalidDataException(path);
-            bool v3 = magic != "BM02", v4 = magic == "BM04";
+            string magic = new string(br.ReadChars(4));
             var d = new ChunkData { ci = br.ReadInt32(), cj = br.ReadInt32() };
             d.key = d.cj * WorldData.NCX + d.ci; d.x0 = WorldData.X0 + d.ci * WorldData.ChunkSize; d.z0 = WorldData.Z0 + d.cj * WorldData.ChunkSize;
             int cv = br.ReadInt32(); if (cv != CV) throw new InvalidDataException("terrain size " + cv);
@@ -105,7 +118,14 @@ public class ChunkData
             d.H = new float[CV * CV]; var q = br.ReadBytes(CV * CV * 2);
             for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * step;
             d.Col = br.ReadBytes(CV * CV * 3); d.LowCol = br.ReadBytes(LV * LV * 3);
-            d.Roads = ReadRoads(br, v3, v4); d.Ctx = ReadRoads(br, v3, v4);
+            if (magic == "BM05")
+            {
+                d.LowH = Floats(br, LV * LV);
+                d.Roads = ReadRoads(br); d.Ctx = ReadRoads(br);
+                d.Junctions = ReadJunctions(br); d.CtxJunctions = ReadJunctions(br);
+            }
+            else if (magic == "BM02" || magic == "BM03" || magic == "BM04") LegacyChunk.ReadRoads(br, magic, d);      // worlds built before the road pipeline
+            else throw new InvalidDataException(path);
             int na = br.ReadInt32(); d.Areas = new WaterArea[na];
             for (int i = 0; i < na; i++)
             {
@@ -130,13 +150,35 @@ public class ChunkData
         }
     }
 
-    static RoadData[] ReadRoads(BinaryReader br, bool v3, bool v4)
+    static RoadData[] ReadRoads(BinaryReader br)
     {
-        int n = br.ReadInt32(); var a = new RoadData[n];
-        for (int i = 0; i < n; i++)
+        int count = br.ReadInt32(); var a = new RoadData[count];
+        for (int i = 0; i < count; i++)
         {
-            var r = new RoadData { hw = br.ReadSingle() * WorldData.RoadWidthScale }; byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.imp = br.ReadByte().ToString(); r.lead = br.ReadByte(); r.trail = br.ReadByte(); if (v3) { r.limit = br.ReadByte(); r.avg = br.ReadByte(); r.oneway = br.ReadByte(); if (v4) { r.lanes = br.ReadByte(); r.kind = br.ReadByte(); } } r.fid = br.ReadInt32(); r.pri = br.ReadSingle(); r.t0 = new Vector2(br.ReadSingle(), br.ReadSingle()); r.t1 = new Vector2(br.ReadSingle(), br.ReadSingle());
-            r.name = Str(br); r.pts = Floats(br, br.ReadInt32() * 3); a[i] = r;
+            var r = new RoadData(); byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.lit = (fl & 4) != 0;
+            r.imp = br.ReadByte().ToString(); r.limit = br.ReadByte(); r.avg = br.ReadByte(); r.oneway = br.ReadByte(); r.lanes = br.ReadByte(); r.kind = br.ReadByte(); r.rank = br.ReadByte();
+            r.fid = br.ReadInt32(); r.realWidth = br.ReadSingle(); r.hw = br.ReadSingle(); r.s0 = br.ReadSingle();
+            r.name = Str(br); int n = br.ReadInt32();
+            r.pts = Floats(br, n * 3); r.left = Floats(br, n * 3); r.right = Floats(br, n * 3);
+            var flags = br.ReadBytes(n - 1); r.drawn = new bool[n - 1]; for (int k = 0; k < n - 1; k++) r.drawn[k] = flags[k] != 0;
+            int lines = br.ReadByte(); r.giveWayAt = new int[lines]; r.giveWayAfter = new bool[lines];
+            for (int k = 0; k < lines; k++) { r.giveWayAt[k] = br.ReadUInt16(); r.giveWayAfter[k] = br.ReadByte() != 0; }
+            a[i] = r;
+        }
+        return a;
+    }
+
+    static JunctionData[] ReadJunctions(BinaryReader br)
+    {
+        int count = br.ReadInt32(); var a = new JunctionData[count];
+        for (int i = 0; i < count; i++)
+        {
+            var j = new JunctionData { dirt = br.ReadByte() != 0 };
+            j.v = Floats(br, br.ReadInt32() * 3);
+            j.tri = UShorts(br, br.ReadInt32() * 3);
+            int ne = br.ReadInt32(); j.edge = UShorts(br, ne * 2);
+            var flags = br.ReadBytes(ne); j.mouth = new bool[ne]; for (int k = 0; k < ne; k++) j.mouth[k] = flags[k] != 0;
+            a[i] = j;
         }
         return a;
     }
@@ -156,8 +198,6 @@ public class ChunkData
 public class WorldData
 {
     public const float Cell = 4f;
-    /// <summary>Roads are drawn, driven and cleared at 115% of their real (BD TOPO) width: easier cruising in a game whose cars are wider than they look.</summary>
-    public const float RoadWidthScale = 1.15f;
     public const int ChunkSize = 400, CV = 101;
     // world extents come from world.json; without one it is the original 32 x 32 km block (legacy format)
     public static float X0 = -16000f, Z0 = -16000f; public static int NCX = 80, NCZ = 80; public static bool Legacy = true;

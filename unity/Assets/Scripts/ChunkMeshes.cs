@@ -16,133 +16,33 @@ public class ChunkMeshes
     public readonly List<Obstacle> Obstacles = new List<Obstacle>();
 
     struct BoxSpec { public Vector3 c, size; public float yaw; }
-    RoadIndex roadsHere; Joints joints;
-
-    /// <summary>Where road ends meet: how many roads share each end, and their mean half width (to taper two joining roads to one width, and to overlap ends at junctions).</summary>
-    class Joints
-    {
-        struct End { public Vector2 p; public float hw; public RoadData r; }
-        readonly List<End> ends = new List<End>();
-        public Joints(RoadData[] a, RoadData[] b)
-        {
-            foreach (var set in new[] { a, b })
-                foreach (var r in set)
-                {
-                    if (r.bridge || r.pts.Length < 6) continue;
-                    int n = r.pts.Length / 3;
-                    if (r.lead == 0) ends.Add(new End { p = new Vector2(r.pts[0], r.pts[2]), hw = r.hw, r = r });
-                    if (r.trail == 0) ends.Add(new End { p = new Vector2(r.pts[(n - 1) * 3], r.pts[(n - 1) * 3 + 2]), hw = r.hw, r = r });
-                }
-        }
-        public void Query(RoadData self, bool start, out int count, out float meanHw)
-        {
-            int n = self.pts.Length / 3; int k = start ? 0 : n - 1; var p = new Vector2(self.pts[k * 3], self.pts[k * 3 + 2]);
-            count = 1; float sum = self.hw; bool seenSelf = false;
-            foreach (var e in ends)
-            {
-                if ((e.p - p).sqrMagnitude > 2.56f) continue;
-                if (e.r == self) { if (!seenSelf) { seenSelf = true; continue; } }          // this very end
-                count++; sum += e.hw;
-            }
-            meanHw = sum / count;
-        }
-    }
-
-    float CutToRoad(float x, float z, float y) => roadsHere != null ? roadsHere.CutTerrain(x, z, y) : y;
-
-    /// <summary>All road centrelines around this chunk (own + neighbours) in a coarse grid: is a point on ANOTHER road's carriageway?</summary>
-    class Corridors
-    {
-        struct Seg { public Vector2 a, b; public float hw, pri; public int fid; }
-        readonly Dictionary<long, List<Seg>> grid = new Dictionary<long, List<Seg>>();
-        const float Cell = 16f;
-        static long Key(int x, int z) => ((long)x << 32) ^ (uint)z;
-        public Corridors(RoadData[] a, RoadData[] b)
-        {
-            foreach (var set in new[] { a, b })
-                foreach (var r in set)
-                {
-                    if (r.bridge) continue;
-                    for (int i = 0; i + 5 < r.pts.Length; i += 3)
-                    {
-                        var s = new Seg { a = new Vector2(r.pts[i], r.pts[i + 2]), b = new Vector2(r.pts[i + 3], r.pts[i + 5]), hw = r.hw, pri = r.pri, fid = r.fid };
-                        float m = s.hw + 1f;
-                        int x0 = Mathf.FloorToInt((Mathf.Min(s.a.x, s.b.x) - m) / Cell), x1 = Mathf.FloorToInt((Mathf.Max(s.a.x, s.b.x) + m) / Cell);
-                        int z0 = Mathf.FloorToInt((Mathf.Min(s.a.y, s.b.y) - m) / Cell), z1 = Mathf.FloorToInt((Mathf.Max(s.a.y, s.b.y) + m) / Cell);
-                        for (int cx = x0; cx <= x1; cx++)
-                            for (int cz = z0; cz <= z1; cz++)
-                            {
-                                if (!grid.TryGetValue(Key(cx, cz), out var l)) grid[Key(cx, cz)] = l = new List<Seg>();
-                                l.Add(s);
-                            }
-                    }
-                }
-        }
-        /// <summary>True if (x,z) is on the carriageway of a road that outranks priority `pri` (asphalt over dirt, then wider, then longer).</summary>
-        public bool UnderRanking(float x, float z, float pri, int self)
-        {
-            if (!grid.TryGetValue(Key(Mathf.FloorToInt(x / Cell), Mathf.FloorToInt(z / Cell)), out var list)) return false;
-            var p = new Vector2(x, z);
-            foreach (var s in list)
-            {
-                if (s.fid == self || s.pri <= pri) continue;
-                Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
-                if ((p - (s.a + ab * t)).magnitude < s.hw - 0.1f) return true;
-            }
-            return false;
-        }
-
-        /// <summary>True if (x,z) lies within `inset` metres inside the carriageway of a road that is not feature `self`.</summary>
-        public bool OnOther(float x, float z, int self, float inset = 0f)
-        {
-            if (!grid.TryGetValue(Key(Mathf.FloorToInt(x / Cell), Mathf.FloorToInt(z / Cell)), out var list)) return false;
-            var p = new Vector2(x, z);
-            foreach (var s in list)
-            {
-                if (s.fid == self) continue;
-                Vector2 ab = s.b - s.a; float t = Mathf.Clamp01(Vector2.Dot(p - s.a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
-                if ((p - (s.a + ab * t)).magnitude < s.hw - inset) return true;
-            }
-            return false;
-        }
-    }
-
     static Color32 C(int r, int g, int b) => new Color32((byte)r, (byte)g, (byte)b, 255);
     static Color32 Tint(Color32 c, float f) => new Color32((byte)Mathf.Clamp(c.r * f, 0, 255), (byte)Mathf.Clamp(c.g * f, 0, 255), (byte)Mathf.Clamp(c.b * f, 0, 255), 255);
     static readonly Color32 Asphalt = new Color32(94, 94, 98, 255), Shoulder = new Color32(108, 102, 84, 255), Dirt = new Color32(158, 132, 96, 255),
-        Concrete = new Color32(170, 168, 160, 255), Paint = new Color32(236, 232, 214, 255), WaterCol = new Color32(52, 96, 112, 255);
+        Concrete = new Color32(170, 168, 160, 255), Wall = new Color32(150, 142, 126, 255), Paint = new Color32(236, 232, 214, 255), WaterCol = new Color32(52, 96, 112, 255);
     public const float RoadLift = 0.012f;                                  // the drawn road sits a hair above the road height; the terrain is cut away instead of the road being raised
 
     // ------------------------------------------------------------------ mid tier
     public static ChunkMeshes BuildMid(ChunkData d)
     {
         var m = new ChunkMeshes();
-        m.roadsHere = new RoadIndex(d.Roads); m.roadsHere.Add(-1, d.Ctx);
         m.BuildTerrainLow(d);
-        m.joints = new Joints(d.Roads, d.Ctx);
-        m.BuildRoads(d, new Corridors(d.Roads, d.Ctx));
+        m.BuildRoads(d);
         m.BuildBuildingShells(d);
         m.BuildWater(d);
         return m;
     }
 
-    /// <summary>16 m terrain (26 x 26 vertices, each averaging a 3 x 3 patch), colours keep forests and villages, skirts hide cracks against neighbours.</summary>
+    /// <summary>16 m terrain (26 x 26 vertices, heights from the world builder: already below every road), colours keep forests and villages, skirts hide cracks against neighbours.</summary>
     void BuildTerrainLow(ChunkData d)
     {
-        const int q = 25, n = q + 1, CV = ChunkData.CV;
+        const int q = 25, n = q + 1;
         var mb = TerrainLow;
         for (int z = 0; z < n; z++)
             for (int x = 0; x < n; x++)
             {
-                float hs = 0; int cnt = 0;
-                for (int dz = -2; dz <= 2; dz += 2)
-                    for (int dx = -2; dx <= 2; dx += 2)
-                    {
-                        int sx = Mathf.Clamp(x * 4 + dx, 0, CV - 1), sz = Mathf.Clamp(z * 4 + dz, 0, CV - 1);
-                        hs += d.H[sz * CV + sx]; cnt++;
-                    }
-                int ci = (z * n + x) * 3;
-                mb.Vertex(new Vector3(d.x0 + x * 16f, CutToRoad(d.x0 + x * 16f, d.z0 + z * 16f, hs / cnt), d.z0 + z * 16f), new Color32(d.LowCol[ci], d.LowCol[ci + 1], d.LowCol[ci + 2], 255));
+                int i = z * n + x;
+                mb.Vertex(new Vector3(d.x0 + x * 16f, d.LowH[i], d.z0 + z * 16f), new Color32(d.LowCol[i * 3], d.LowCol[i * 3 + 1], d.LowCol[i * 3 + 2], 255));
             }
         for (int z = 0; z < q; z++)
             for (int x = 0; x < q; x++)
@@ -158,70 +58,68 @@ public class ChunkMeshes
         for (int i = 0; i < q; i++) { Skirt(i, i + 1); Skirt(q * n + i, q * n + i + 1); Skirt(i * n, (i + 1) * n); Skirt(i * n + q, (i + 1) * n + q); }
     }
 
-    const float TaperLength = 7f;
-    static void Ribbon(RoadData r, int ri, Corridors cor, Joints jn, bool overlapEnds, out Vector3[] left, out Vector3[] right)
+    const float VergeWidth = 0.45f, VergeDrop = 0.09f, WallFrom = 0.25f;         // a gravel strip along every paved edge, sloping down into the ground so the road never shows a floating rim
+    static readonly Vector3 Lift = Vector3.up * RoadLift;
+
+    /// <summary>
+    /// The road surface exactly as the world builder computed it: a quad between the two edges of every drawn road segment, and the junction meshes.
+    /// Roads end where junctions begin and share their end vertices with them, so nothing overlaps and nothing needs to be layered.
+    /// </summary>
+    void BuildRoads(ChunkData d)
     {
-        int n = r.pts.Length / 3; left = new Vector3[n]; right = new Vector3[n];
-        int c0 = 1, c1 = 1; float m0 = r.hw, m1 = r.hw; var sFrom = new float[n]; float total = 0f;
-        if (jn != null && !r.bridge)
+        var mb = Roads;
+        foreach (var r in d.Roads)
         {
-            if (r.lead == 0) jn.Query(r, true, out c0, out m0);
-            if (r.trail == 0) jn.Query(r, false, out c1, out m1);
-            for (int i = 1; i < n; i++) { total += Mathf.Sqrt(Mathf.Pow(r.pts[i * 3] - r.pts[(i - 1) * 3], 2) + Mathf.Pow(r.pts[i * 3 + 2] - r.pts[(i - 1) * 3 + 2], 2)); sFrom[i] = total; }
+            var col = r.dirt ? Dirt : Asphalt;
+            for (int k = 0; k + 1 < r.Count; k++)
+            {
+                if (!r.drawn[k]) continue;
+                Vector3 l0 = r.P(r.left, k) + Lift, r0 = r.P(r.right, k) + Lift, l1 = r.P(r.left, k + 1) + Lift, r1 = r.P(r.right, k + 1) + Lift;
+                mb.Quad(mb.Vertex(l0, col), mb.Vertex(r0, col), mb.Vertex(r1, col), mb.Vertex(l1, col));
+                if (r.bridge)                                     // concrete deck edges hanging below the road
+                {
+                    Vector3 dn = Vector3.down * 1.2f;
+                    mb.Quad(mb.Vertex(l0, Concrete), mb.Vertex(l1, Concrete), mb.Vertex(l1 + dn, Concrete), mb.Vertex(l0 + dn, Concrete));
+                    mb.Quad(mb.Vertex(r0, Concrete), mb.Vertex(r0 + dn, Concrete), mb.Vertex(r1 + dn, Concrete), mb.Vertex(r1, Concrete));
+                }
+                else
+                {
+                    Vector3 out0 = Flat(l0 - r0).normalized, out1 = Flat(l1 - r1).normalized;
+                    Verge(mb, d, r0, r1, -out0, -out1, !r.dirt); Verge(mb, d, l1, l0, out1, out0, !r.dirt);
+                }
+            }
         }
-        for (int i = 0; i < n; i++)
+        foreach (var j in d.Junctions)
         {
-            Vector3 p = new Vector3(r.pts[i * 3], r.pts[i * 3 + 1], r.pts[i * 3 + 2]);
-            Vector3 q0 = new Vector3(r.pts[Mathf.Max(i - 1, 0) * 3], 0, r.pts[Mathf.Max(i - 1, 0) * 3 + 2]);
-            Vector3 q1 = new Vector3(r.pts[Mathf.Min(i + 1, n - 1) * 3], 0, r.pts[Mathf.Min(i + 1, n - 1) * 3 + 2]);
-            Vector3 dir = q1 - q0; dir.y = 0; dir = dir.sqrMagnitude > 1e-6f ? dir.normalized : Vector3.forward;
-            Vector2 joint = i == 0 && r.lead == 0 ? r.t0 : (i == n - 1 && r.trail == 0 ? r.t1 : Vector2.zero);
-            if (joint.sqrMagnitude > 0.5f) { Vector3 jd = new Vector3(joint.x, 0, joint.y); dir = Vector3.Dot(jd, dir) >= 0 ? jd : -jd; }      // both roads at a joint use one tangent: no wedge between their ribbons
-            float hw = r.hw;
-            if (c0 == 2) hw = Mathf.Lerp(m0, hw, Mathf.Clamp01(sFrom[i] / TaperLength));                           // two roads of different width meet: both taper to their mean width at the joint
-            if (c1 == 2) hw = Mathf.Lerp(m1, hw, Mathf.Clamp01((total - sFrom[i]) / TaperLength));
-            Vector3 fwd = q1 - q0; fwd.y = 0; fwd = fwd.sqrMagnitude > 1e-6f ? fwd.normalized : Vector3.forward;
-            if (overlapEnds && c0 >= 3 && i == 0) p -= fwd * (r.hw * 0.9f);                                                       // a junction of three or more: overlap the ends into the junction instead of butting them with a straight cut
-            if (overlapEnds && c1 >= 3 && i == n - 1) p += fwd * (r.hw * 0.9f);
-            Vector3 side = new Vector3(dir.z, 0, -dir.x) * hw;
-            p.y += RoadLift + (ri % 6) * 0.0009f;                  // tiny per-road bias so overlapping ribbons never z-fight
-            left[i] = p - side; right[i] = p + side;
-            if (cor != null && !r.bridge)
-            {   // where this ribbon runs under a higher-ranking road, dip it just below that road's surface: the better road stays visually on top
-                if (cor.UnderRanking(left[i].x, left[i].z, r.pri, r.fid)) left[i].y -= 0.03f;
-                if (cor.UnderRanking(right[i].x, right[i].z, r.pri, r.fid)) right[i].y -= 0.03f;
+            var col = j.dirt ? Dirt : Asphalt; int first = mb.V.Count;
+            for (int i = 0; i * 3 < j.v.Length; i++) mb.Vertex(new Vector3(j.v[i * 3], j.v[i * 3 + 1], j.v[i * 3 + 2]) + Lift, col);
+            for (int t = 0; t + 2 < j.tri.Length; t += 3) mb.Tri(first + j.tri[t], first + j.tri[t + 1], first + j.tri[t + 2]);
+            for (int e = 0; e < j.mouth.Length; e++)              // kerb edges get the verge, road mouths do not
+            {
+                if (j.mouth[e]) continue;
+                Vector3 a = mb.V[first + j.edge[e * 2]], b = mb.V[first + j.edge[e * 2 + 1]], along = Flat(b - a);
+                if (along.sqrMagnitude < 1e-6f) continue;
+                Vector3 outward = new Vector3(along.z, 0f, -along.x).normalized;      // the surface lies on the left of the edge
+                Verge(mb, d, a, b, outward, outward, !j.dirt);
             }
         }
     }
 
-    void BuildRoads(ChunkData d, Corridors cor)
+    static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
+
+    /// <summary>
+    /// Along the road edge a -> b (the road on its left), reaching outwards along out0 / out1: a gravel strip on paved roads, and,
+    /// where the ground beside the road lies well below it (a road on a terrace above another one), a retaining wall down to the ground.
+    /// </summary>
+    static void Verge(MeshBuilder mb, ChunkData d, Vector3 a, Vector3 b, Vector3 out0, Vector3 out1, bool gravel)
     {
-        var mb = Roads;
-        for (int ri = 0; ri < d.Roads.Length; ri++)
-        {
-            var r = d.Roads[ri]; Ribbon(r, ri, cor, joints, true, out var left, out var right); Ribbon(r, ri, cor, joints, false, out var left0, out var right0);      // asphalt overlaps into junctions; verges follow the plain ribbon
-            int n = left.Length, last = n - 1 - r.trail;
-            var col = r.dirt ? Dirt : Asphalt;
-            for (int k = r.lead; k < last; k++)
-            {
-                mb.Quad(mb.Vertex(left[k], col), mb.Vertex(right[k], col), mb.Vertex(right[k + 1], col), mb.Vertex(left[k + 1], col));
-                if (r.bridge)                                     // concrete deck edges hanging below the road
-                {
-                    Vector3 dn = Vector3.down * 1.2f;
-                    mb.Quad(mb.Vertex(left[k], Concrete), mb.Vertex(left[k + 1], Concrete), mb.Vertex(left[k + 1] + dn, Concrete), mb.Vertex(left[k] + dn, Concrete));
-                    mb.Quad(mb.Vertex(right[k], Concrete), mb.Vertex(right[k] + dn, Concrete), mb.Vertex(right[k + 1] + dn, Concrete), mb.Vertex(right[k + 1], Concrete));
-                }
-                else if (!r.dirt)                                 // gravel verge on both sides
-                {
-                    Vector3 wl0 = (left0[k] - right0[k]).normalized, wl1 = (left0[k + 1] - right0[k + 1]).normalized, down = Vector3.down * 0.012f;
-                    Vector3 lm = (left0[k] + left0[k + 1]) * 0.5f + wl0 * 0.2f, rm = (right0[k] + right0[k + 1]) * 0.5f - wl0 * 0.2f;
-                    if (!cor.UnderRanking(lm.x, lm.z, r.pri, r.fid))                              // no verge across the mouth of a side road, or inside the main road it joins
-                    mb.Quad(mb.Vertex(left0[k] + down, Shoulder), mb.Vertex(left0[k + 1] + down, Shoulder), mb.Vertex(left0[k + 1] + wl1 * 0.45f + down * 2f, Shoulder), mb.Vertex(left0[k] + wl0 * 0.45f + down * 2f, Shoulder));
-                    if (!cor.UnderRanking(rm.x, rm.z, r.pri, r.fid))
-                    mb.Quad(mb.Vertex(right0[k] + down, Shoulder), mb.Vertex(right0[k + 1] + down, Shoulder), mb.Vertex(right0[k + 1] - wl1 * 0.45f + down * 2f, Shoulder), mb.Vertex(right0[k] - wl0 * 0.45f + down * 2f, Shoulder));
-                }
-            }
-        }
+        float reach = gravel ? VergeWidth : 0.05f;
+        Vector3 a1 = a + out0 * reach + Vector3.down * VergeDrop, b1 = b + out1 * reach + Vector3.down * VergeDrop, inner = Vector3.down * 0.004f;
+        if (gravel) mb.Quad(mb.Vertex(a + inner, Shoulder), mb.Vertex(a1, Shoulder), mb.Vertex(b1, Shoulder), mb.Vertex(b + inner, Shoulder));
+        float ga = d.Height(a1.x, a1.z), gb = d.Height(b1.x, b1.z);
+        if (a1.y - ga < WallFrom && b1.y - gb < WallFrom) return;
+        Vector3 a2 = new Vector3(a1.x, Mathf.Min(ga, a1.y) - 0.15f, a1.z), b2 = new Vector3(b1.x, Mathf.Min(gb, b1.y) - 0.15f, b1.z);
+        mb.Quad(mb.Vertex(a1, Wall), mb.Vertex(b1, Wall), mb.Vertex(b2, Wall), mb.Vertex(a2, Wall));
     }
 
     void BuildWater(ChunkData d)
@@ -305,11 +203,9 @@ public class ChunkMeshes
     // ------------------------------------------------------------------ near tier
     public static ChunkMeshes BuildNear(ChunkData d, ChunkMeshes m)
     {
-        m.roadsHere = new RoadIndex(d.Roads); m.roadsHere.Add(-1, d.Ctx);
         m.BuildTerrainFull(d);
-        m.joints = new Joints(d.Roads, d.Ctx);
-        m.BuildMarks(d, new Corridors(d.Roads, d.Ctx));
-        var local = new RoadIndex(d.Roads); local.Add(-1, d.Ctx);                       // own + neighbouring roads: clearance for everything solid
+        m.BuildMarks(d);
+        var local = new RoadIndex(); local.Add(-2, d.Roads, d.Junctions); local.Add(-1, d.Ctx, d.CtxJunctions);      // own + neighbouring roads: clearance for everything solid
         var boxes = m.BuildBuildingDetail(d, local);
         m.BuildStreetFurniture(d, local, boxes);
         m.BuildTrees(d, local);
@@ -324,7 +220,7 @@ public class ChunkMeshes
             for (int x = 0; x < CV; x++)
             {
                 int gi = z * CV + x;
-                mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, CutToRoad(d.x0 + x * WorldData.Cell, d.z0 + z * WorldData.Cell, d.H[gi]), d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
+                mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, d.H[gi], d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
             }
         for (int z = 0; z < CV - 1; z++)
             for (int x = 0; x < CV - 1; x++)
@@ -340,44 +236,81 @@ public class ChunkMeshes
     ///   - one-way roads and dual carriageways: a dashed line between each pair of lanes, no centre line
     ///   - edge lines: thin dashed from ~5.5 m, solid from ~6.5 m and on dual carriageways / motorways
     ///   - roundabouts: lane lines only when the ring has two lanes or more
+    /// Lines stop where a junction begins. Dashes are laid out by distance along the whole road, so they stay in step across chunks.
     /// </summary>
-    void BuildMarks(ChunkData d, Corridors cor)
+    void BuildMarks(ChunkData d)
     {
-        var mb = Marks; Vector3 lift = Vector3.up * 0.03f;
-        for (int ri = 0; ri < d.Roads.Length; ri++)
+        var mb = Marks; Vector3 lift = Vector3.up * (RoadLift + 0.018f);
+        foreach (var r in d.Roads)
         {
-            var r = d.Roads[ri]; if (r.dirt || r.bridge || r.kind == 5) continue;
-            Ribbon(r, ri, cor, joints, false, out var left, out var right); int last = left.Length - 1 - r.trail;
-            float width = 2f * r.hw / WorldData.RoadWidthScale; int lanes = r.lanes; bool oneWay = r.oneway != 0, dual = r.kind == 2 || r.kind == 3;
+            if (r.dirt || r.bridge || r.kind == 5) continue;
+            float width = r.realWidth; int lanes = r.lanes; bool oneWay = r.oneway != 0, dual = r.kind == 2 || r.kind == 3;
             bool centre = false; int dividers = 0;
             if (r.kind == 1) { if (lanes >= 2) dividers = lanes - 1; }                                                 // roundabout ring: lane lines only
             else if (oneWay || dual) { if (lanes >= 2) dividers = lanes - 1; else if (lanes == 0 && width >= 6.5f) dividers = 1; }
             else if (lanes >= 4) { centre = true; dividers = 2; }
             else centre = true;                                                                                       // every paved two-way road carries a centre line
             bool edgeThin = r.kind != 1 && width >= 5.5f, edgeSolid = r.kind != 1 && (width >= 6.5f || dual);
+            for (int g = 0; g < r.giveWayAt.Length; g++) GiveWayLine(mb, r, r.giveWayAt[g], r.giveWayAfter[g], centre, lift);
             if (!centre && dividers == 0 && !edgeThin) continue;
-            Vector3 At(int k, float u) { Vector3 across = right[k] - left[k]; float w = across.magnitude; return left[k] + across / Mathf.Max(w, 1e-3f) * Mathf.Clamp(u, 0f, w); }
-            void Stripe(int k0, int k1, float u0, float uFrac, bool fromRight, float half)
-            {   // a stripe between ribbon points k0 and k1 at across-position u (metres from an edge, or as a fraction of the width when uFrac > 0)
-                Vector3 a0 = fromRight ? At(k0, (right[k0] - left[k0]).magnitude - u0) : At(k0, uFrac > 0f ? (right[k0] - left[k0]).magnitude * uFrac : u0);
-                Vector3 a1 = fromRight ? At(k1, (right[k1] - left[k1]).magnitude - u0) : At(k1, uFrac > 0f ? (right[k1] - left[k1]).magnitude * uFrac : u0);
-                Vector3 dv = a1 - a0; if (dv.sqrMagnitude < 1e-4f) return;
-                Vector3 mid = (a0 + a1) * 0.5f; if (cor.UnderRanking(mid.x, mid.z, r.pri, r.fid)) return;             // never across a higher-ranking road
-                Vector3 side = Vector3.Cross(Vector3.up, dv.normalized) * half;
-                mb.Quad(mb.Vertex(a0 - side + lift, Paint), mb.Vertex(a0 + side + lift, Paint), mb.Vertex(a1 + side + lift, Paint), mb.Vertex(a1 - side + lift, Paint));
-            }
-            for (int k = r.lead; k < last; k++)
+
+            // a stripe along segment k from fraction t0 to t1 of its length, `across` of the way from the left edge to the right one, or `inset` metres inside an edge
+            void Stripe(int k, float t0, float t1, float across, float inset, float half)
             {
-                int k1 = k + 1;
-                if (centre && (k - r.lead) % 3 == 0) Stripe(k, Mathf.Min(k + 1, last), 0f, 0.5f, false, 0.09f);                          // 2 m painted, 4 m gap (points are 2 m apart)
-                for (int dvd = 1; dvd <= dividers; dvd++)
-                    if (((k - r.lead) & 1) == 0 || dual) Stripe(k, k1, 0f, dvd / (float)(dividers + 1), false, 0.075f);                     // lane lines: 2 m painted, 2 m gap
-                if (edgeThin || edgeSolid)
+                Vector3 la = Vector3.Lerp(r.P(r.left, k), r.P(r.left, k + 1), t0), ra = Vector3.Lerp(r.P(r.right, k), r.P(r.right, k + 1), t0);
+                Vector3 lb = Vector3.Lerp(r.P(r.left, k), r.P(r.left, k + 1), t1), rb = Vector3.Lerp(r.P(r.right, k), r.P(r.right, k + 1), t1);
+                float fa = inset > 0f ? inset / Mathf.Max((ra - la).magnitude, 0.1f) : across, fb = inset > 0f ? inset / Mathf.Max((rb - lb).magnitude, 0.1f) : across;
+                if (inset > 0f && across > 0.5f) { fa = 1f - fa; fb = 1f - fb; }
+                Vector3 a = Vector3.Lerp(la, ra, fa), b = Vector3.Lerp(lb, rb, fb), side = (ra - la).normalized * half;
+                mb.Quad(mb.Vertex(a - side + lift, Paint), mb.Vertex(a + side + lift, Paint), mb.Vertex(b + side + lift, Paint), mb.Vertex(b - side + lift, Paint));
+            }
+            // dashes `on` metres long every `period` metres (period 0: a solid line)
+            void Line(float on, float period, float across, float inset, float half)
+            {
+                float s = r.s0;
+                for (int k = 0; k + 1 < r.Count; k++)
                 {
-                    bool paint = edgeSolid || ((k - r.lead) & 1) == 0;
-                    if (paint) { Stripe(k, k1, 0.20f, 0f, false, edgeSolid ? 0.055f : 0.045f); Stripe(k, k1, 0.20f, 0f, true, edgeSolid ? 0.055f : 0.045f); }
+                    float len = Vector3.Distance(r.P(r.pts, k), r.P(r.pts, k + 1)), s1 = s + len;
+                    if (r.drawn[k] && len > 1e-3f)
+                    {
+                        if (period <= 0f) Stripe(k, 0f, 1f, across, inset, half);
+                        else
+                            for (float start = Mathf.Floor(s / period) * period; start < s1; start += period)
+                            {
+                                float a = Mathf.Max(start, s), b = Mathf.Min(start + on, s1);
+                                if (b - a > 0.05f) Stripe(k, (a - s) / len, (b - s) / len, across, inset, half);
+                            }
+                    }
+                    s = s1;
                 }
             }
+            if (centre) Line(3f, 9f, 0.5f, 0f, 0.09f);
+            for (int dvd = 1; dvd <= dividers; dvd++) Line(3f, dual ? 0f : 6f, dvd / (float)(dividers + 1), 0f, 0.075f);
+            if (edgeSolid) { Line(0f, 0f, 0f, 0.22f, 0.055f); Line(0f, 0f, 1f, 0.22f, 0.055f); }
+            else if (edgeThin) { Line(3f, 6.5f, 0f, 0.22f, 0.045f); Line(3f, 6.5f, 1f, 0.22f, 0.045f); }
+        }
+    }
+
+    /// <summary>
+    /// "Cédez le passage": a line of 0.5 m blocks across the lane that arrives at the junction (the right-hand half of a two-way road
+    /// seen by the driver coming to it, the whole width of a one-way road), half a metre before the junction begins.
+    /// </summary>
+    static void GiveWayLine(MeshBuilder mb, RoadData r, int i, bool after, bool twoLanes, Vector3 lift)
+    {
+        if (r.oneway == (after ? 1 : 2)) return;                                        // one-way away from the junction: nobody arrives here
+        int j = i + (after ? 1 : -1); if (j < 0 || j >= r.Count) return;
+        Vector3 along = Flat(r.P(r.pts, j) - r.P(r.pts, i)); float len = along.magnitude; if (len < 0.2f) return;
+        float t = Mathf.Clamp01(0.5f / len);
+        Vector3 left = Vector3.Lerp(r.P(r.left, i), r.P(r.left, j), t), right = Vector3.Lerp(r.P(r.right, i), r.P(r.right, j), t), mid = (left + right) * 0.5f;
+        bool whole = r.oneway != 0 || !twoLanes;                                        // no centre line: the line spans the road
+        Vector3 from = whole ? left : mid, to = whole ? right : (after ? left : right);      // else the arriving driver's right-hand half
+        Vector3 across = to - from; float width = across.magnitude; if (width < 1f) return;
+        across /= width; Vector3 depth = along / len * 0.25f;
+        for (float u = 0.3f; u + 0.5f <= width - 0.2f; u += 1f)
+        {
+            Vector3 a = from + across * u + lift, b = from + across * (u + 0.5f) + lift;
+            mb.Quad(mb.Vertex(a - depth, Paint), mb.Vertex(a + depth, Paint), mb.Vertex(b + depth, Paint), mb.Vertex(b - depth, Paint));
+            mb.Quad(mb.Vertex(b - depth, Paint), mb.Vertex(b + depth, Paint), mb.Vertex(a + depth, Paint), mb.Vertex(a - depth, Paint));      // either winding: the block faces up whichever way the road was digitised
         }
     }
 
@@ -470,7 +403,7 @@ public class ChunkMeshes
             if (r.dirt || r.bridge || r.pts.Length < 12) continue;
             int n = r.pts.Length / 3; float acc = 0, spacing = 0; int sideSign = rng.Next(2) == 0 ? -1 : 1;
             Vector3 prevPole = default; bool hasPrev = false;
-            for (int k = Mathf.Max(r.lead, 1); k <= n - 1 - r.trail; k++)
+            for (int k = 1; k <= n - 1; k++)
             {
                 Vector3 a = new Vector3(r.pts[(k - 1) * 3], r.pts[(k - 1) * 3 + 1], r.pts[(k - 1) * 3 + 2]), b = new Vector3(r.pts[k * 3], r.pts[k * 3 + 1], r.pts[k * 3 + 2]);
                 acc += Vector3.Distance(a, b);

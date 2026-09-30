@@ -272,7 +272,7 @@ public class WorldBuilder : MonoBehaviour
         if (!m.Buildings.Empty) c.buildings = MakeObject("buildings", c.root, m.Buildings.ToMesh("buildings"), buildingMat, true, true);
         if (!m.Water.Empty) c.water = MakeObject("water", c.root, m.Water.ToMesh("water"), waterMat, false, false);
         Data.Chunks[c.key] = c.data; Data.Changed();
-        Roads.Add(c.key, c.data.Roads);
+        Roads.Add(c.key, c.data.Roads, c.data.Junctions);
         UpdateFarCoverage(c, +1);
     }
 
@@ -431,7 +431,7 @@ public class WorldBuilder : MonoBehaviour
     public float GroundHeight(float x, float z, float refY, out Surface surface)
     {
         if (Flat) { surface = Surface.Asphalt; return FlatY; }
-        float terrain = Roads.CutTerrain(x, z, Data.TerrainHeight(x, z));      // same cut as the drawn terrain: the ground beside a road never stands above it
+        float terrain = Data.TerrainHeight(x, z);                              // already shaped around the roads by the world builder
         surface = Roads.Query(x, z, refY, out float deck, out float roadY, out float wgt);
         if (TerrainPhysicsOnly) { return float.IsNaN(deck) ? terrain : deck + RoadLift; }        // old behaviour (benchmark comparison)
         if (!float.IsNaN(deck)) return deck + RoadLift;

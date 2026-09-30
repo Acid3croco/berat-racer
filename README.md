@@ -13,7 +13,7 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 
 ## What is in it
 
-- **Real world**: the terrain follows the LiDAR bare-earth model; roads are the BD TOPO centrelines draped on it with real widths, level bridge decks (from the LiDAR *surface* model), a network-consistent height profile, painted centre and edge lines, gravel verges.
+- **Real world**: the terrain follows the LiDAR bare-earth model; roads come from the BD TOPO centrelines with their surveyed widths (drawn 27 % wider) and OpenStreetMap attributes, rebuilt by a road pipeline (`tools/roads`, see `docs/roads.md`): smooth curves that stay within 1.5 m of the survey, real junction surfaces with rounded kerbs (nothing overlaps), one height profile for the whole network with limits on grade and on crest / sag radius, level bridge decks (from the LiDAR *surface* model), terrain shaped around the roads, painted centre and edge lines, gravel verges.
 - **Procedural buildings**: BD TOPO footprints (about 60,000 in the whole map) (cut out of every road corridor) with facades chosen per building type (house, barn, shop, pharmacy, town hall, school, church...), gable roofs only where the roof truly fits, regional colours (crépi, brique foraine, canal tiles). Types come from BD TOPO plus OSM places (Pharmacie Vert Nature, Mairie, Église Saint-Pierre with its octagonal tower...). See `docs/berat-style-guide.md`.
 - **A 1,000 km² world, streamed** (`WorldBuilder`, `ChunkMeshes`, `tools/build_world.py`): the map is cut into 400 m chunks. Everything within **5 km** of the car is loaded (16 m terrain, roads, building shells, water); within **1.6 km** it gets full detail (4 m terrain, road markings, facades, trees, hedges, poles, building colliders). The whole map out to **50 km** stays resident as a 64 m terrain with the orthophoto colours (forests and villages included). Chunks are read, parsed and meshed on worker threads; the main thread only creates Unity objects, a few ms per frame, and holds the car still if it ever outruns the terrain.
 - **Water**: BD TOPO ponds, reservoirs, river surfaces, streams and canals, with levels taken from the LiDAR ground and a channel carved into the terrain. Animated, translucent water shader with sun glint and sky reflection; driving through it slows the car (drag, less grip, spray).
@@ -70,10 +70,14 @@ uv sync
 cd tools
 uv run python fetch_big.py        # LiDAR HD MNT/MNH (2 m) + orthophoto (4 m), 900 tiles, resumable  -> tools/data/big
 uv run python fetch_vectors.py    # BD TOPO roads, buildings, hydrography + OSM points of interest, 10 x 10 sectors, resumable
-uv run python build_world.py      # -> world/ (chunks/, far.bin, spawn.json, world.json; copied into the app by the build)
+uv run python -m roads build      # roads of the area -> data/big/roads/ (default area: the 10 x 10 km "small" map; docs/roads.md)
+uv run python build_world.py --list data/big/small_sectors.json --out ../world_small --far-cache data/big/far_small_v2.npz
+uv run python check_roads.py ../world_small      # no terrain above a road, every road end meets its junction
 ```
 
-`build_world.py` processes the 100 sectors of 3.2 km in parallel, each with a 240 m margin so borders match exactly (`--sectors 4:4,5:5` for a subset, `--jobs N`). The area is `CX`, `CY` in `tools/fetch.py` (Lambert-93) and `HALF` in `fetch_big.py`: change them to build a different place in France.
+Run the player on a generated world with `BERAT_WORLD=/path/to/world_small`. The 1,000 km² and region worlds in `world/` predate the road pipeline (it solves one build area at a time, sized for the small map so far); they still load, with their old roads.
+
+`build_world.py` processes the sectors of 3.2 km in parallel, each with a 240 m margin so borders match exactly (`--sectors 4:4,5:5` for a subset, `--jobs N`). The area is `CX`, `CY` in `tools/fetch.py` (Lambert-93) and `HALF` in `fetch_big.py`: change them to build a different place in France.
 
 ## Headless tests
 

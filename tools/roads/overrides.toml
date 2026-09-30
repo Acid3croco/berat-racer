@@ -1,0 +1,7 @@
+# Hand corrections, one table per road section, keyed by its BD TOPO `cleabs` (shown by `python -m roads inspect --at x,z`).
+# `skip = true` removes the section; any other key replaces the field of the same name in roads/source.py `Edge`.
+#
+# ["TRONROUT0000000012345678"]
+# width_real = 5.5          # surveyed width in metres (the drawn width follows)
+# dirt = false
+# limit = 50

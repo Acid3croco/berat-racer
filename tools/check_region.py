@@ -1,31 +1,11 @@
-"""Verify a region build (BM04 chunks): every m_ chunk parses to the last byte, n_ chunks parse, world.json / far.bin agree, steepest 4 m height step,
+"""Verify a region build (BM05 chunks; roads against terrain: check_roads.py): every m_ chunk parses to the last byte, n_ chunks parse, world.json / far.bin agree, steepest 4 m height step,
 seam mismatches between neighbouring chunks. Usage: uv run python check_region.py DIR [--jobs 4]"""
 import gzip, json, struct, sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
-from check_hg import R, CV
-
-def parse_mid(raw):
-    r = R(raw); assert r.take(4) == b"BM04"
-    d = dict(ci=r.i(), cj=r.i()); assert r.i() == CV
-    base, step = r.f(), r.f()
-    q = np.frombuffer(r.take(CV * CV * 2), "<u2").reshape(CV, CV)
-    d["H"] = base + q.astype(np.float64) * np.float32(step); d["step"] = step
-    r.take(CV * CV * 3); r.take(26 * 26 * 3)
-    for name in ("roads", "ctx"):
-        n = r.i(); d[name] = n
-        for _ in range(n):
-            r.f(); r.take(9); r.i(); r.f(); r.fl(4); r.st(); r.fl(3 * r.i())
-    na = r.i(); d["areas"] = na
-    for _ in range(na): r.fl(3 * r.i())
-    nl = r.i(); d["lines"] = nl
-    for _ in range(nl): r.f(); r.u8(); r.u8(); r.fl(3 * r.i())
-    nb = r.i(); d["bld"] = nb
-    for _ in range(nb):
-        r.fl(2 * r.i()); r.fl(3); r.fl(r.i()); r.take(6); r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)
-    assert r.o == len(raw), (r.o, len(raw))
-    return d
+from check_hg import R
+from check_roads import parse_mid
 
 def parse_near(raw):
     r = R(raw); assert r.take(4) == b"BN01"

@@ -239,7 +239,7 @@ public class RoadFollower
         Vector2 dirOut = forward ? dInc : -dInc;                                                    // direction of travel at the end of this piece
         foreach (var r in data.Roads)
         {
-            if (r == from || (r.dirt && !allowDirt) || r.hw < (allowDirt ? 1.0f : 1.6f) || r.Length < 3f) continue;
+            if (r == from || (r.dirt && !allowDirt) || r.hw < (allowDirt ? 1.0f : 1.6f) || r.Length < 0.3f) continue;
             for (int end = 0; end < 2; end++)
             {
                 bool enterFwd = end == 0;                                                          // entering at the start means travelling in the increasing direction
