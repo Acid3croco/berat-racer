@@ -91,6 +91,16 @@ class Samples:
         self.tile = np.floor(self.xy / config.PROFILE_TILE).astype(int)
         planar = self.plane >= 0
         self.tile[planar] = self.junction_tile[self.plane[planar]]
+        # samples by the tile they lie in and by the tile that owns them: a block only looks at the 3 x 3 tiles around its own
+        assert config.PROFILE_HALO <= config.PROFILE_TILE
+        self.by_tile = [_group(np.floor(self.xy / config.PROFILE_TILE).astype(int)), _group(self.tile)]
+
+
+def _group(tiles):
+    """{tile: indices (ascending) of the rows of `tiles` equal to it}."""
+    order = np.lexsort((tiles[:, 1], tiles[:, 0]))
+    keys, starts = np.unique(tiles[order], axis=0, return_index=True)
+    return {tuple(k): order[a:b] for k, a, b in zip(keys.tolist(), starts, np.r_[starts[1:], len(order)])}
 
 
 def _tilt_rows(network, junction):
@@ -109,11 +119,13 @@ def make_block(samples, tile, known_z, known_plane):
     junctions = np.flatnonzero(((samples.centres >= lo) & (samples.centres < hi)).all(axis=1)) if len(samples.centres) else np.zeros(0, int)
     local = np.full(len(samples.centres), -1)
     local[junctions] = np.arange(len(junctions))
-    inside = ((samples.xy >= lo) & (samples.xy < hi)).all(axis=1)
-    planar = samples.plane >= 0
-    take = inside & ~planar
-    take[planar] = local[samples.plane[planar]] >= 0                                  # a stub goes with its junction
-    ids = np.flatnonzero(take)
+    # candidates: every sample lying in, or owned by, one of the 3 x 3 tiles around this one (the halo is shorter than a tile)
+    near = [group.get((tile[0] + dx, tile[1] + dy), np.zeros(0, int)) for group in samples.by_tile for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+    candidates = np.unique(np.concatenate(near))
+    inside = ((samples.xy[candidates] >= lo) & (samples.xy[candidates] < hi)).all(axis=1)
+    plane = samples.plane[candidates]
+    take = np.where(plane >= 0, local[np.maximum(plane, 0)] >= 0, inside)          # a stub goes with its junction
+    ids = candidates[take]
     breaks = np.flatnonzero((np.diff(ids) != 1) | (np.diff(samples.link[ids]) != 0)) + 1      # runs: consecutive samples of one link
     plane = samples.plane[ids]
     return dict(

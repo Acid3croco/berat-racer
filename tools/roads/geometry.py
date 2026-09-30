@@ -126,8 +126,9 @@ def clamp_widths(links):
         share = dist * hw[i] / (hw[i] + hw[j]) - 0.5 * config.CLAMP_GAP
         np.minimum.at(limit, i, np.maximum(share, config.CLAMP_MIN_HALF_WIDTH))
     narrowed = 0
+    start = np.searchsorted(owner, np.arange(len(links) + 1))                     # the points of a link are consecutive (appended link by link)
     for k in np.unique(owner[np.isfinite(limit)]):
-        link, mine = links[k], owner == k
+        link, mine = links[k], slice(start[k], start[k + 1])
         cap = np.interp(np.arange(len(link.dense_s)), index[mine], np.minimum(limit[mine], 1e3))
         size = max(int(config.WIDTH_TAPER / config.ALIGN_STEP), 1) | 1
         cap = uniform_filter1d(minimum_filter1d(cap, size, mode="nearest"), size, mode="nearest")     # never wider than the tightest spot nearby, eased in and out
