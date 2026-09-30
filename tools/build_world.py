@@ -21,8 +21,12 @@ Haute-Garonne extension: the sector list is data/big/hg_sectors.json (indices ma
 indices RELATIVE to it (ci = floor((x - x0) / 400)). Sectors 0..9 x 0..9 read the float32 .npy tiles, all others the compressed files of
 data/big/hg (see HG_README.txt). Terrain heights of a chunk are base + uint16 * step (step >= 5 mm, larger for mountain chunks).
 
+Rebuilds: a sector leaves a key in <out>/keys, a hash of everything its chunks were made from (its roads, the raster and vector files
+under it, this code and its tuning). A sector whose key is unchanged and whose chunks are all there is not built again (--fresh: build
+every sector).
+
 Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs 8] [--out DIR] [--list data/big/hg_sectors.json] [--far-cache F]
-       [--far-cell 64] [--skip-existing] [--min-free-gb G] [--stop-file F]   (whole region: --list data/big/region_sectors.json --far-cell 128 --out ../world_region)
+       [--far-cell 64] [--fresh] [--skip-existing] [--min-free-gb G] [--stop-file F]   (whole region: --list data/big/region_sectors.json --far-cell 128 --out ../world_region)
        (the world geometry always comes from --list; --sectors only selects which of them to (re)build)
 """
 import argparse, functools, os, shutil, gzip, math, hashlib, json, struct, sys, time, collections, zlib
@@ -37,10 +41,16 @@ from scipy.ndimage import (correlate, distance_transform_edt, gaussian_filter, m
 from scipy.spatial import cKDTree
 from shapely.geometry import Point, box, shape
 from shapely.strtree import STRtree
+import pyproj
+import rasterio
+import fetch
+import rasters
+import vec_io
 from fetch import CX, CY
 from rasters import BIG, HALF, SECTOR, Mosaic
 from vec_io import exists_vec, read_vec
 from roads import build as road_build, config as road_config, surface as road_surface, terrain as road_terrain
+from roads.digest import code_stamp, digest
 
 CHUNK = 400                      # m
 CPS = SECTOR // CHUNK            # 8 chunks per sector side
@@ -66,27 +76,31 @@ class Window(Mosaic):
 
 # ------------------------------------------------------------------ vectors
 
+VECTOR_LAYERS = ("hydro_areas", "hydro_lines", "buildings")
+
+def vector_bases(name, si, sj):
+    """The vector files (without extension) a sector reads for one layer: its own and its eight neighbours'."""
+    return [BIG / "vec" / f"{name}_{si + di}_{sj + dj}" for dj in (-1, 0, 1) for di in (-1, 0, 1)]
+
 def load_vectors(name, si, sj):
     """Features of every vector file touching the sector's window, de-duplicated on cleabs."""
     seen, out = set(), []
-    for dj in (-1, 0, 1):
-        for di in (-1, 0, 1):
-            i, j = si + di, sj + dj
-            base = BIG / "vec" / f"{name}_{i}_{j}"
-            if not exists_vec(base): continue
-            for feat in read_vec(base):
-                key = feat["properties"].get("cleabs") or feat.get("id")
-                if key in seen: continue
-                seen.add(key); out.append(feat)
+    for base in vector_bases(name, si, sj):
+        if not exists_vec(base): continue
+        for feat in read_vec(base):
+            key = feat["properties"].get("cleabs") or feat.get("id")
+            if key in seen: continue
+            seen.add(key); out.append(feat)
     return out
+
+def poi_files():
+    return [f for f in [BIG / "vec" / n for n in ("osm_poi.json", "osm_poi_hg.json")] + sorted((BIG / "vec").glob("osm_poi_hg_*.json.gz")) if f.exists()]
 
 @functools.lru_cache(maxsize=1)
 def load_pois():
     """OSM points of interest of every download (original block, Haute-Garonne bbox, one file per other departement), de-duplicated on (type, id)."""
     seen, out = set(), []
-    files = [BIG / "vec" / n for n in ("osm_poi.json", "osm_poi_hg.json")] + sorted((BIG / "vec").glob("osm_poi_hg_*.json.gz"))
-    for f in files:
-        if not f.exists(): continue
+    for f in poi_files():
         text = gzip.open(f, "rt", encoding="utf-8").read() if f.suffix == ".gz" else f.read_text()
         for e in json.loads(text)["elements"]:
             if (e["type"], e["id"]) in seen: continue
@@ -329,16 +343,40 @@ def put_junctions(buf, items):
         wi(buf, len(tri)); buf += tri.astype("<u2").tobytes()
         wi(buf, len(j.boundary)); buf += j.boundary[:, :2].astype("<u2").tobytes(); buf += j.boundary[:, 2].astype(np.uint8).tobytes()
 
+@functools.lru_cache(maxsize=1)
+def code_key():
+    """What this process builds sectors with: the code, its tuning, the libraries and the points of interest."""
+    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain]
+    return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
+
+def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes):
+    """Hash of everything the chunks of a sector are made from. Of the roads, what the builder reads: not where a link or a node sits in the network's lists."""
+    roads = digest(pieces, [(j.paved, j.polygon, j.centre, j.plane, j.triangles, j.boundary, v) for j, v in meshes], skip=("link", "a", "b"))
+    size = SECTOR + 2 * MARGIN
+    ground = rasters.stamp(-HALF + si * SECTOR - MARGIN, -HALF + sj * SECTOR - MARGIN, size, size, kinds=("mnt", "mnh", "ortho"))
+    vectors = [rasters.file_stamp(vec_io.vec_file(base) or base) for name in VECTOR_LAYERS for base in vector_bases(name, si, sj)]
+    return digest(roads, ground, vectors, code_key(), [si, sj, ci0, cj0, far_cell])
+
+def key_file(out_dir, si, sj):
+    return Path(out_dir).parent / "keys" / f"sector_{si}_{sj}.key"
+
+def chunk_files(out_dir, si, sj, ci0, cj0):
+    return [Path(out_dir) / f"{kind}_{ci - ci0}_{cj - cj0}.bin.gz" for cj in range(sj * CPS, (sj + 1) * CPS) for ci in range(si * CPS, (si + 1) * CPS) for kind in "mn"]
+
 def process_sector(args):
-    si, sj, out_dir, ci0, cj0, far_cell, road_tag = args                                       # (ci0, cj0): chunk index of the world origin
+    si, sj, out_dir, ci0, cj0, far_cell, road_tag, reuse = args                                # (ci0, cj0): chunk index of the world origin
     t0 = time.time()
     out_dir = Path(out_dir)
     ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
-    win = Window(si, sj)
-    wbox = box(win.x0 + 10, win.z0 + 10, win.x0 + win.size - 10, win.z0 + win.size - 10)
 
     # ---- roads: the finished surface of the road pipeline, cut to this window (the same geometry in every sector, so borders match)
     pieces, meshes = road_build.load_sector(road_tag, si, sj)
+    made_from, stamp = sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes), key_file(out_dir, si, sj)
+    if reuse and stamp.exists() and stamp.read_text() == made_from and all(f.exists() for f in chunk_files(out_dir, si, sj, ci0, cj0)):
+        return si, sj, None, None, dict(sector=(si, sj), unchanged=True, secs=round(time.time() - t0, 1))
+    stamp.unlink(missing_ok=True)                                                    # from here on the chunks on disk are not what that key described
+    win = Window(si, sj)
+    wbox = box(win.x0 + 10, win.z0 + 10, win.x0 + win.size - 10, win.z0 + win.size - 10)
     road_pts = np.vstack([np.c_[p.xy, p.z, p.hw] for p in pieces if not p.bridge] or [np.zeros((0, 4))])       # centreline samples on the ground: x, north, height, half width
     footprint = road_terrain.Footprint(road_surface.footprints(pieces, meshes), win.x0, win.z0, win.size, win.size)
     cloud = road_surface.cloud(pieces, meshes)
@@ -615,6 +653,8 @@ def process_sector(args):
     fh = win.sample(coarse, fgx.ravel(), fgz.ravel(), 2).reshape(fgx.shape)
     if far_cell > FAR_CELL: far_raw = uniform_filter(far_raw, size=(far_cell // 16, far_cell // 16, 1), mode="nearest")     # coarser far grid: average the colour instead of aliasing it
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
+    stamp.parent.mkdir(exist_ok=True)
+    stamp.write_text(made_from)
     stats = dict(sector=(si, sj), chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
 
@@ -652,6 +692,7 @@ def main():
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--far-cache", default=str(DEFAULT_FAR_CACHE), help="npz keeping the far arrays between partial rebuilds")
     ap.add_argument("--far-cell", type=int, default=FAR_CELL, help="far terrain vertex spacing in metres (divides 3200, multiple of 16)")
+    ap.add_argument("--fresh", action="store_true", help="build every sector, even those whose inputs did not change since their chunks were written")
     ap.add_argument("--skip-existing", action="store_true", help="skip a sector whose 64 m_ chunk files exist, are newer than this script and whose far patch is in the far cache")
     ap.add_argument("--min-free-gb", type=float, default=0.0, help="stop submitting new sectors when the free disk space of --out falls below this (0 = no check)")
     ap.add_argument("--stop-file", default="", help="stop submitting new sectors as soon as this file exists")
@@ -686,7 +727,11 @@ def main():
         todo = [s for s in secs if not (chunks_done(out, *s, CPS * si_min, CPS * sj_min, mtime) and covered[(s[1] - sj_min) * per, (s[0] - si_min) * per])]
         print(f"--skip-existing: {len(secs) - len(todo)} of {len(secs)} sectors already done", flush=True)
         secs = todo
-    jobs = [(i, j, str(out / "chunks"), CPS * si_min, CPS * sj_min, far_cell, road_tag) for i, j in secs]
+    def far_patch(i, j):
+        r, c = (j - sj_min) * per, (i - si_min) * per
+        return slice(r, r + per + 1), slice(c, c + per + 1)
+    # an unchanged sector may be skipped only if its far patch is still in the cache
+    jobs = [(i, j, str(out / "chunks"), CPS * si_min, CPS * sj_min, far_cell, road_tag, not a.fresh and bool(covered[far_patch(i, j)].all())) for i, j in secs]
 
     def stop_reason():
         if a.stop_file and Path(a.stop_file).exists(): return f"stop file {a.stop_file}"
@@ -694,7 +739,7 @@ def main():
         if a.min_free_gb and free < a.min_free_gb: return f"free disk {free:.1f} GB < {a.min_free_gb} GB"
         return None
 
-    failed, t0, n_done, stopped = [], time.time(), 0, None
+    failed, unchanged, t0, n_done, stopped = [], 0, time.time(), 0, None
     pending, todo_iter = set(), iter(jobs)
     with ProcessPoolExecutor(a.jobs, max_tasks_per_child=40) as ex:
         exhausted = False
@@ -712,10 +757,14 @@ def main():
             except Exception as e:                                                             # worker died (e.g. out of memory): the pool is unusable
                 print(f"POOL BROKEN {e!r}: saving the far cache, re-run with --skip-existing", flush=True); save_cache(); raise
             n_done += 1
+            if st.get("unchanged"):
+                unchanged += 1
+                if unchanged % 50 == 0: print(f"[{n_done}/{len(jobs)}] {unchanged} sectors unchanged so far  elapsed {time.time() - t0:.0f}s", flush=True)
+                continue
             if fh is None:
                 failed.append((si, sj)); print(f"[{n_done}/{len(jobs)}] FAILED {si}:{sj} {st['error']}\n{st['trace']}", flush=True); continue
-            r, c = (sj - sj_min) * per, (si - si_min) * per
-            far_h[r:r + per + 1, c:c + per + 1] = fh; far_c[r:r + per + 1, c:c + per + 1] = fc; covered[r:r + per + 1, c:c + per + 1] = True
+            patch = far_patch(si, sj)
+            far_h[patch] = fh; far_c[patch] = fc; covered[patch] = True
             print(f"[{n_done}/{len(jobs)}] {st}  elapsed {time.time() - t0:.0f}s", flush=True)
             if n_done % 25 == 0: save_cache()
     save_cache()
@@ -725,7 +774,7 @@ def main():
         fo.write(fh_.astype("<f4").tobytes()); fo.write(fc_.tobytes())
     (out / "world.json").write_text(json.dumps(dict(x0=x0, z0=z0, ncx=ncx, ncz=ncz, chunk=CHUNK, cell=CELL, cv=CV, farCell=far_cell, farNx=far_nx, farNz=far_nz, lambertE=CX, lambertN=CY)))
     shutil.copy(DEFAULT_SPAWN, out / "spawn.json")
-    print("stopped early:" if stopped else "done,", stopped or "", "failed sectors:", failed, flush=True)
+    print("stopped early:" if stopped else "done,", stopped or "", f"{n_done - unchanged - len(failed)} sectors built, {unchanged} unchanged, failed sectors:", failed, flush=True)
 
 if __name__ == "__main__":
     main()
