@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using UnityEngine;
 
-/// <summary>Timestamped log to the Unity console/Player.log AND ~/Library/Logs/BeratRacer/berat.log (easy to tail).</summary>
+/// <summary>Timestamped log to the Unity console/Player.log AND berat.log (easy to tail): ~/Library/Logs/BeratRacer on macOS, %LOCALAPPDATA%\BeratRacer on Windows.</summary>
 public static class Log
 {
     static StreamWriter file;
@@ -14,7 +14,9 @@ public static class Log
         if (file != null) return;
         try
         {
-            string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library/Logs/BeratRacer");
+            string dir = Application.platform == RuntimePlatform.WindowsPlayer
+                ? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BeratRacer")
+                : System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library/Logs/BeratRacer");
             Directory.CreateDirectory(dir);
             string name = Application.isBatchMode ? "berat.batch" : "berat";        // automated headless runs must not clobber the log of a game being played
             Path_ = System.IO.Path.Combine(dir, name + ".log");

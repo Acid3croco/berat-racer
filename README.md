@@ -58,9 +58,9 @@ Road benchmark (autopilot, 150 s on the real roads): invisible stops 3 -> 0, ver
 
 ## Run it
 
-0. **Just want to play?** Download `BeratRacer-macos-arm64.zip` from the [latest release](../../releases/latest) (Apple Silicon; unsigned, so right-click ▸ Open the first time, or `xattr -cr` it). It contains the berat70 map (70 x 70 km, new road pipeline).
+0. **Just want to play?** Download `BeratRacer-windows-x64.zip` from the [latest release](../../releases/latest), unzip it and run `BeratRacer\BeratRacer.exe` (Windows 10/11 x64; unsigned, so SmartScreen may ask you to confirm with *More info ▸ Run anyway*). It contains the berat70 map (70 x 70 km, new road pipeline). Logs: `%LOCALAPPDATA%\BeratRacer\berat.log`.
 1. Get the map data into `world/`: either `tools/fetch_world.sh` (downloads the berat70 world of the latest release, ~1.9 GB, a few minutes), or generate it yourself (about 30-60 min of downloading plus processing; see *Build the map data* below). It is not committed.
-2. Install Unity **6000.0.84f1** (Apple Silicon build), open the `unity/` folder, run *Berat ▸ Build macOS* (or `BuildTools.BuildMac` in batch mode; `-world path/to/world_x` packs another world than `world/`).
+2. Install Unity **6000.0.84f1** (Apple Silicon build), open the `unity/` folder, run *Berat ▸ Build macOS* (or `BuildTools.BuildMac` in batch mode; `-world path/to/world_x` packs another world than `world/`). *Berat ▸ Build Windows* (`BuildTools.BuildWindows`, needs the *Windows Build Support (Mono)* module) cross-builds `Build/win/BeratRacer.exe` from the Mac.
 3. Launch `Build/BeratRacer.app`. Logs: `~/Library/Logs/BeratRacer/berat.log`.
 
 ## Build the map data
