@@ -57,7 +57,7 @@ public static class PhysTest
         world.Flat = true; world.FlatY = world.Data.TerrainHeight(0, 0) + 0.02f;
         Time.timeScale = 6f;
         yield return new WaitForSecondsRealtime(0.5f);
-        var modes = new[] { Assist.Sport, Assist.Full, Assist.Arcade };
+        var modes = new[] { Assist.Sport, Assist.Full, Assist.Arcade, Assist.Drift };
         foreach (var mode in modes)
         {
             car.AssistMode = mode; int lost = 0, runs = 0;
@@ -100,6 +100,49 @@ public static class PhysTest
             Info($"==== {car.Spec.Name}, assist {mode}: lost control in {lost} of {runs} abuse runs ====");
         }
         System.IO.File.WriteAllLines(System.IO.Path.Combine(Application.dataPath, "..", "..", "..", "docs", $"stability-{car.Spec.Name.Replace(' ', '_')}.txt"), summary);
+        Application.Quit();
+    }
+
+    /// <summary>
+    /// Drift test: the same drift manoeuvres in each assist mode. Measures how long the car holds a drift (15-55 deg of sideslip), how smooth it is
+    /// (peak rate of change of the sideslip, low = no snap), the speed kept, spins (sideslip past 80 deg) and whether it straightens after the
+    /// driver lets go (sideslip under 10 deg 2.5 s after release). Run: -drifttest [-car N]
+    /// </summary>
+    public static IEnumerator DriftRun(WorldBuilder w, CarController c)
+    {
+        world = w; car = c; summary.Clear();
+        world.Flat = true; world.FlatY = world.Data.TerrainHeight(0, 0) + 0.02f;
+        Time.timeScale = 6f;
+        yield return new WaitForSecondsRealtime(0.5f);
+        foreach (var mode in new[] { Assist.Sport, Assist.Arcade, Assist.Drift })
+        {
+            car.AssistMode = mode;
+            for (int sc = 0; sc < 3; sc++)
+            {
+                Place(0, 0, 0); yield return new WaitForSeconds(0.3f);
+                string name = sc == 0 ? "60 km/h handbrake entry, hold 6 s, release" : sc == 1 ? "50 km/h power-over entry, hold 6 s, release" : "60 km/h drift, switch sides at 3 s, release";
+                yield return ReachSpeed(sc == 1 ? 50f : 60f);
+                float t0 = Time.time, v0 = Kmh, held = 0f, peakRate = 0f, prev = SlipAngleDeg, sum = 0f, vEnd = 0f, exitBeta = 0f, maxBeta = 0f; int n = 0; bool spun = false;
+                while (Time.time - t0 < 9f)
+                {
+                    float t = Time.time - t0; bool holding = t < 6f;
+                    float side = sc == 2 && t > 3f ? -1f : 1f;
+                    car.Steer = holding ? -0.6f * side : 0f;
+                    car.Throttle = holding ? (sc == 1 ? 1f : 0.75f) : 0.3f;
+                    car.Handbrake = (sc != 1) && t > 0.2f && t < 0.7f;
+                    car.Brake = 0f;
+                    yield return new WaitForFixedUpdate();
+                    float beta = SlipAngleDeg, ab = Mathf.Abs(beta);
+                    if (Kmh > 15f && prev != 0f) { peakRate = Mathf.Max(peakRate, Mathf.Abs(Mathf.DeltaAngle(prev, beta)) / Time.fixedDeltaTime); maxBeta = Mathf.Max(maxBeta, ab); if (ab > 80f) spun = true; }
+                    prev = beta;
+                    if (holding && t > 1f) { n++; if (ab > 15f && ab < 55f) held++; sum += ab; vEnd = Kmh; }
+                    if (t > 8.5f) exitBeta = ab;
+                }
+                car.Handbrake = false;
+                Info($"  [{mode,-6}] drift held {100f * held / Mathf.Max(n, 1),5:F0}%  mean {sum / Mathf.Max(n, 1),5:F1} deg  max {maxBeta,5:F1}  peak rate {peakRate,5:F0} deg/s  speed {v0:F0} -> {vEnd:F0} km/h  after release {exitBeta,5:F1} deg{(spun ? "  SPUN" : "")}   {name}");
+            }
+        }
+        System.IO.File.WriteAllLines(System.IO.Path.Combine(Application.dataPath, "..", "..", "..", "docs", $"drift-{car.Spec.Name.Replace(' ', '_')}.txt"), summary);
         Application.Quit();
     }
 

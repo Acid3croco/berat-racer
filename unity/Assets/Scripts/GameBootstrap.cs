@@ -24,7 +24,7 @@ public class GameBootstrap : MonoBehaviour
     float fps, fpsAcc, fpsMin = 999f; int fpsN; float fpsNext, telemetryNext;
     GUIStyle big, small, mono;
     float lastInputErr; bool inputTest, mapTest, shotsMode; Vector3? shotFocus;
-    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-stabtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hitboxtest") >= 0;   // physics harness owns the car inputs
+    bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-stabtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-drifttest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hitboxtest") >= 0;   // physics harness owns the car inputs
     bool showHelp = true, showDebug; Autopilot auto; bool autoOn;
     string padName = "none"; float steerIn, thrIn, brkIn; bool handIn;
 
@@ -90,6 +90,7 @@ public class GameBootstrap : MonoBehaviour
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-carshots") >= 0) StartCoroutine(CarShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0) StartCoroutine(PhysTest.Run(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-stabtest") >= 0) StartCoroutine(PhysTest.StabRun(world, car));
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-drifttest") >= 0) StartCoroutine(PhysTest.DriftRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hitboxtest") >= 0) StartCoroutine(PhysTest.HitboxRun(world, car));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-camtest") >= 0) StartCoroutine(CamTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smokeshots") >= 0) StartCoroutine(SmokeShots());
@@ -281,10 +282,10 @@ public class GameBootstrap : MonoBehaviour
     }
 
     /// <summary>C / D-pad up: next camera.  Right stick or hold right mouse: look around.  Hold B / R3: rear view.</summary>
-    static readonly string[] AssistInfo = { "no driver aids", "traction control + ABS", "traction control + ABS + stability control", "arcade: forgiving, stability + steering help" };
+    static readonly string[] AssistInfo = { "no driver aids", "traction control + ABS", "traction control + ABS + stability control", "arcade: forgiving, stability + steering help", "drift: smooth held slides, throttle + stick set the angle, auto counter-steer" };
     string toast; float toastAt = -10f;
     void Announce(string text) { toast = text; toastAt = Time.unscaledTime; Log.I("hud", text.Replace("\n", " | ")); }
-    void CycleAssist() { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % 4); Announce($"ASSIST: {car.AssistMode.ToString().ToUpper()}\n{AssistInfo[(int)car.AssistMode]}"); }
+    void CycleAssist() { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % AssistInfo.Length); Announce($"ASSIST: {car.AssistMode.ToString().ToUpper()}\n{AssistInfo[(int)car.AssistMode]}"); }
     void CycleModel() { car.SetModel(car.ModelIndex + 1); Announce($"DRIVING MODEL: {DrivingModels.Names[car.ModelIndex]}"); }
 
     void HandleCameraInput()
