@@ -31,7 +31,7 @@ import shapely
 from pyproj import Transformer
 from rasterio import features
 from rasterio.transform import from_origin
-from scipy.ndimage import (distance_transform_edt, gaussian_filter, map_coordinates, maximum_filter, uniform_filter, uniform_filter1d)
+from scipy.ndimage import (median_filter, distance_transform_edt, gaussian_filter, map_coordinates, maximum_filter, uniform_filter, uniform_filter1d)
 from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point, Polygon, box, shape
 from shapely.strtree import STRtree
@@ -47,6 +47,8 @@ CPS = SECTOR // CHUNK            # 8 chunks per sector side
 CELL = 4                         # terrain vertex spacing (m)
 CV = CHUNK // CELL + 1           # 101 vertices per chunk side
 FAR_CELL = 64
+SPIKE = 100.0                    # m: a 2 m ground pixel this far from its 5 x 5 median is a data error
+MIN_GROUND = -20.0               # m: nothing in the region lies below this, lower samples are data errors
 MARGIN = 240
 BIG = Path("data/big")
 DEFAULT_OUT = Path("../world_hg")
@@ -84,11 +86,15 @@ class Window:
         self.mnt = self._paste("mnt", 1600, 2, n2, np.nan, np.float32)
         self.mnh = self._paste("mnh", 1600, 2, n2, 0.0, np.float32)
         self.ortho = self._paste("ortho", 3200, 4, n4, 0, np.uint8, channels=3)
+        self.mnt[self.mnt < MIN_GROUND] = np.nan                                     # LiDAR / RGE ALTI garbage (a few pits of -20..-100 m in some Pyrenees tiles): filled from the nearest valid ground below
         bad = ~np.isfinite(self.mnt)
         if bad.all(): self.mnt[:] = 0.0
         elif bad.any():
             iy, ix = distance_transform_edt(bad, return_distances=False, return_indices=True)
             self.mnt = self.mnt[iy, ix]
+        med = median_filter(self.mnt, size=5, mode="nearest")                          # single-pixel spikes / pits of hundreds of metres (bad LiDAR returns): take the local median
+        spike = np.abs(self.mnt - med) > SPIKE
+        if spike.any(): self.mnt[spike] = med[spike]
 
     def _paste(self, kind, tile_m, res, n, fill, dtype, channels=None):
         shape_ = (n, n) if channels is None else (n, n, channels)
