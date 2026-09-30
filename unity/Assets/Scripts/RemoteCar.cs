@@ -4,6 +4,7 @@ using UnityEngine;
 /// Another player's car, drawn from the states it streams (NetSession): body pose blended ~0.1 s in the past, wheels steered, dropped and spun,
 /// brake / reverse lamps, and the same tyre smoke and skid marks as the local car (TyreFx reads this through IWheelFx).
 /// Its body is a kinematic box: the local car bumps into it, it does not get pushed (each player owns his car).
+/// Its engine, tyre squeal and road noise come from its own CarSynth, placed in 3D (RemoteCarAudio).
 /// </summary>
 public class RemoteCar : MonoBehaviour, IWheelFx
 {
@@ -21,7 +22,7 @@ public class RemoteCar : MonoBehaviour, IWheelFx
 
     const float MaxExtrapolate = 0.25f;                 // s: past the newest state the car coasts on its velocity for at most this long, then holds
     readonly Timeline<CarSnap> line = new Timeline<CarSnap>();
-    CarVisualRefs vis; Rigidbody rb;
+    CarVisualRefs vis; Rigidbody rb; RemoteCarAudio sound;
     readonly float[] spin = new float[4];
     double newestT = double.NegativeInfinity; bool snap = true;
 
@@ -38,6 +39,7 @@ public class RemoteCar : MonoBehaviour, IWheelFx
         float yBottom = spec.GroundY + 0.16f, yTop = spec.GroundY + spec.Height * 0.72f;
         box.center = new Vector3(0, 0.5f * (yTop + yBottom), 0.5f * (spec.ZFront + spec.ZRear)); box.size = new Vector3(spec.Width * 0.98f, yTop - yBottom, (spec.ZFront - spec.ZRear) * 0.98f);
         go.AddComponent<TyreFx>().Init(rc);
+        rc.sound = go.AddComponent<RemoteCarAudio>(); rc.sound.Init(spec);
         Log.I("net", $"remote car {first.Id} '{first.Name}' ({spec.Name}) appears at {first.Pos}");
         return rc;
     }
@@ -89,6 +91,7 @@ public class RemoteCar : MonoBehaviour, IWheelFx
             SurfaceUnderWheel[i] = s.WheelSurface(i);
         }
         vis.brakeGlow.SetActive((s.Lights & 1) != 0); vis.reverseGlow.SetActive((s.Lights & 2) != 0);
+        sound.Set(s.Rpm, stale ? 0f : s.Load, s.Vel.magnitude, stale ? 0f : s.Slip, s.Surface);
     }
 
     /// <summary>The local car as a state for the others.</summary>
@@ -98,6 +101,7 @@ public class RemoteCar : MonoBehaviour, IWheelFx
         {
             CarIndex = (byte)carIndex, Respawns = respawns, Name = name, T = t,
             Pos = car.Body.position, Rot = car.Body.rotation, Vel = car.Body.linearVelocity, Surface = car.CurrentSurface,
+            Rpm = car.Rpm, Load = car.EngineLoad, Slip = car.SlipAmount,
             Lights = (byte)((car.Brake > 0.1f && car.Gear > 0 || car.Gear < 0 && car.Throttle > 0.1f ? 1 : 0) | (car.Gear < 0 ? 2 : 0)),
         };
         for (int i = 0; i < 4; i++)
@@ -108,5 +112,44 @@ public class RemoteCar : MonoBehaviour, IWheelFx
             s.SurfBits |= (byte)(((int)car.SurfaceUnderWheel[i] & 3) << (2 * i));
         }
         return s;
+    }
+}
+
+/// <summary>
+/// Another player's car heard from outside: a CarSynth like the local car's, placed in 3D (distance fade, left / right, Doppler-free).
+/// The AudioSource plays a constant 1.0 "carrier" with full 3D settings and the synth multiplies into it, so the result is synth x 3D gain
+/// whichever way Unity orders the filter and the spatializer. Loudness follows the player's volume and mute ([ ] N).
+/// </summary>
+[RequireComponent(typeof(AudioSource))]
+public class RemoteCarAudio : MonoBehaviour
+{
+    public readonly CarSynth Synth = new CarSynth { WindGain = 0.15f };
+    int sampleRate = 48000; float[] voice = new float[0];
+
+    public void Init(CarSpec spec)
+    {
+        sampleRate = AudioSettings.outputSampleRate;
+        Synth.PulsesPerRev = spec.Cylinders / 2f;
+        Synth.Brightness = spec.Style == BodyStyle.Sports ? 1.35f : spec.Style == BodyStyle.Sedan ? 0.85f : 1f;
+        var src = GetComponent<AudioSource>();
+        var ones = new float[sampleRate]; for (int i = 0; i < ones.Length; i++) ones[i] = 1f;
+        src.clip = AudioClip.Create("remote-carrier", sampleRate, 1, sampleRate, false); src.clip.SetData(ones, 0);
+        src.loop = true; src.playOnAwake = false; src.spatialBlend = 1f; src.dopplerLevel = 0f;
+        src.rolloffMode = AudioRolloffMode.Logarithmic; src.minDistance = 7f; src.maxDistance = 600f;     // full volume within 7 m, halves every doubling beyond
+        src.Play();
+    }
+
+    public void Set(float rpm, float load, float speed, float slip, Surface surface)
+    {
+        Synth.Rpm = rpm; Synth.Load = Mathf.Clamp01(Mathf.Lerp(0.15f, 1f, load)); Synth.SpeedMs = speed; Synth.Slip = slip;
+        Synth.Rough = surface == Surface.Asphalt ? 1f : surface == Surface.Dirt ? 2.2f : 1.8f;
+        Synth.Master = CarAudio.PlayerVolume;
+    }
+
+    void OnAudioFilterRead(float[] data, int channels)
+    {
+        if (voice.Length != data.Length) voice = new float[data.Length];           // once: the buffer size does not change
+        Synth.Fill(voice, channels, sampleRate);
+        for (int i = 0; i < data.Length; i++) data[i] *= voice[i];
     }
 }

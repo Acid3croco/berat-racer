@@ -1,6 +1,6 @@
 # Online play
 
-Drive the same map with friends: you see their car live (the right model, wheels steering and spinning, brake and reverse lamps), their tyre smoke and skid marks, and everybody sees the same traffic.
+Drive the same map with friends: you see their car live (the right model, wheels steering and spinning, brake and reverse lamps), their tyre smoke and skid marks, you hear their engine and tyres where they are, and everybody sees the same traffic.
 
 ## Playing
 
@@ -18,18 +18,21 @@ From the command line: `-host [port] -password P -name N`, or `-join ip:port -pa
 
 | | owned by | the others get |
 |---|---|---|
-| each player's car | that player: his own physics, driving model, assists (T), camera | pose, velocity, wheels (drop, steer, spin rate), smoke / skid intensity and surface per wheel, lamps, car model, respawns — 30 times a second |
+| each player's car | that player: his own physics, driving model, assists (T), camera | pose, velocity, wheels (drop, steer, spin rate), smoke / skid intensity and surface per wheel, lamps, engine rpm and load, tyre slip, car model, respawns — 30 times a second |
 | traffic | the host: it spawns around **every** player and brakes for all of them | each client receives the vehicles within 1.3 km of his car, 20 times a second, and only mirrors them |
 
 - Switching car (F) is seen by the others at once: a new model rebuilds the remote car.
 - Reset (R), teleport (J, map) and car switches make the remote car jump instead of flying across the map, and its skid marks do not join the old ones.
 - The others' cars and the traffic are solid (kinematic): you bump into them, they are not pushed (each player drives his own car; there is no shared collision).
 - Online, opening the map does not pause the game (the world goes on for the others); your car is held with the brakes while the map or the panel is open.
+- Their engine, tyre squeal and road noise come from the same synthesizer as your car (`CarSynth`), fed with their rpm, load, slip and surface, placed in 3D: full volume within 7 m, fading with distance, left / right from where they are. It follows your volume and mute (`[` `]` `N`); the wind noise, which is what a driver hears inside, is mostly left out. `-netaudiotest` checks the panning and the fade through Unity's real mixer (silently).
 - Remote things are drawn 0.1 s in the past, blended between two received states, so they move smoothly despite network jitter. If states stop arriving a car coasts on its velocity for 0.25 s, then waits.
 
 ## Protocol (`NetProtocol.cs`, `NetSession.cs`)
 
 Plain UDP, one message per datagram (at most ~1.2 KB, below any internet MTU), little-endian, starting with `BR`, the protocol version and the message kind. No server beyond the host's game, no package dependencies: .NET sockets only, so macOS and Windows players can play together (on Windows the socket ignores ICMP "port unreachable", which would otherwise break the receive loop).
+
+The protocol version (2 since the engine sound) is in every message. A host refuses a player with another version, in that player's own version so he reads why ("your game is older than the host's: update it"); a host older than the player just does not answer.
 
 Joining: `Hello(name)` -> `Challenge(16 random bytes)` -> `Auth(HMAC-SHA256(password, challenge))` -> `Welcome(player id)` or `Reject(reason)`. The password never travels; a wrong one is refused. The client repeats Hello every second until it gets an answer (UDP may drop it) and gives up after 15 s. Up to 8 players.
 
@@ -47,4 +50,4 @@ APP=Build/BeratRacer.app/Contents/MacOS/"Berat Racer"
 "$APP" -batchmode -join 127.0.0.1:27960 -password test -name Guest -car 2 -logname mp-guest &
 ```
 
-Limits: no NAT punch-through (the host forwards the port), no voice or chat, no engine sound for the others' cars yet.
+Limits: no NAT punch-through (the host forwards the port, by hand or with UPnP; Tailscale / ZeroTier / playit.gg work too), no voice or chat.

@@ -13,7 +13,7 @@ using UnityEngine;
 /// </summary>
 public static class NetProtocol
 {
-    public const byte Version = 1;
+    public const byte Version = 2;                     // 2: engine sound (rpm, load, slip) in State
     public const int DefaultPort = 27960, MaxPlayers = 8, MaxDatagram = 1200;
     public const byte HostId = 0;
 
@@ -89,6 +89,7 @@ public struct CarSnap
     public double T;                                     // sender's clock, s
     public Vector3 Pos, Vel; public Quaternion Rot;
     public float SteerL, SteerR;                         // front wheel angles, rad
+    public float Rpm, Load, Slip;                        // engine speed, engine load 0..1, tyre slip 0..1: the sound of the car
     public Surface Surface;
     public Wheels4 Drop, Omega, Fx;                      // suspension drop below the mount (m), wheel spin rate (rad/s), smoke / skid intensity 0..1
     public byte SurfBits;                                // 2 bits per wheel: the surface under it
@@ -99,13 +100,17 @@ public struct CarSnap
     {
         w.U8(Id); w.U8(CarIndex); w.U8(Respawns); w.U8(Lights); w.Str(Name); w.F64(T);
         w.V3(Pos); w.Q(Rot); w.V3(Vel); w.F32(SteerL); w.F32(SteerR); w.U8((byte)Surface); w.U8(SurfBits);
-        for (int i = 0; i < 4; i++) { w.F32(Drop[i]); w.F32(Omega[i]); w.U8((byte)Mathf.RoundToInt(Mathf.Clamp01(Fx[i]) * 255f)); }
+        w.F32(Rpm); w.U8(Byte01(Load)); w.U8(Byte01(Slip));
+        for (int i = 0; i < 4; i++) { w.F32(Drop[i]); w.F32(Omega[i]); w.U8(Byte01(Fx[i])); }
     }
+
+    static byte Byte01(float v) => (byte)Mathf.RoundToInt(Mathf.Clamp01(v) * 255f);
 
     public static CarSnap Read(PacketReader r)
     {
         var s = new CarSnap { Id = r.U8(), CarIndex = r.U8(), Respawns = r.U8(), Lights = r.U8(), Name = r.Str(), T = r.F64() };
         s.Pos = r.V3(); s.Rot = r.Q(); s.Vel = r.V3(); s.SteerL = r.F32(); s.SteerR = r.F32(); s.Surface = (Surface)r.U8(); s.SurfBits = r.U8();
+        s.Rpm = r.F32(); s.Load = r.U8() / 255f; s.Slip = r.U8() / 255f;
         for (int i = 0; i < 4; i++) { s.Drop[i] = r.F32(); s.Omega[i] = r.F32(); s.Fx[i] = r.U8() / 255f; }
         return s;
     }
@@ -117,6 +122,7 @@ public struct CarSnap
         s.T = a.T + (b.T - a.T) * k;
         s.Pos = Vector3.LerpUnclamped(a.Pos, b.Pos, k); s.Rot = Quaternion.Slerp(a.Rot, b.Rot, k); s.Vel = Vector3.Lerp(a.Vel, b.Vel, k);
         s.SteerL = Mathf.Lerp(a.SteerL, b.SteerL, k); s.SteerR = Mathf.Lerp(a.SteerR, b.SteerR, k);
+        s.Rpm = Mathf.Lerp(a.Rpm, b.Rpm, k); s.Load = Mathf.Lerp(a.Load, b.Load, k); s.Slip = Mathf.Lerp(a.Slip, b.Slip, k);
         for (int i = 0; i < 4; i++) { s.Drop[i] = Mathf.Lerp(a.Drop[i], b.Drop[i], k); s.Omega[i] = Mathf.Lerp(a.Omega[i], b.Omega[i], k); s.Fx[i] = Mathf.Lerp(a.Fx[i], b.Fx[i], k); }
         return s;
     }

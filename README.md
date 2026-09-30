@@ -27,7 +27,7 @@ A low-poly, sim-arcade driving game set on the **real roads and terrain of Béra
 - **Minimap** (bottom-left, heading-up, roads and buildings without tree canopy, north marker): `Z` cycles the range 120 m / 250 m / 500 m / 1 km.
 - **Bug-report coordinates**: the top-right box shows the 5 x 5 m cell, local metres, elevation and Lambert-93. `K` copies the spot, `J` jumps to coordinates on the clipboard, `-goto x,z` starts there.
 - **Autopilot** that follows the real road network (demo and test driver).
-- **Online play** (`O`): open a session protected by a password and give your friends your `ip:port`; everyone sees the others' cars live (model, wheels, lamps, tyre smoke and skid marks) and the same traffic, simulated by the host. Plain UDP, macOS and Windows together, same map required. See `docs/multiplayer.md`.
+- **Online play** (`O`): open a session protected by a password and give your friends your `ip:port`; everyone sees and hears the others' cars live (model, wheels, lamps, tyre smoke and skid marks, engine and tyre sound in 3D) and the same traffic, simulated by the host. Plain UDP, macOS and Windows together, same map required. See `docs/multiplayer.md`.
 
 ## Physics results (headless test suite, `docs/physics-*.txt`)
 
@@ -83,7 +83,7 @@ Run the player on a generated world with `BERAT_WORLD=/path/to/world_small`. The
 
 ## Headless tests
 
-The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-maptest`, `-camtest`, `-shots`, `-worldshots` (streaming showcase: chase, long view, 8 km overview, 40 km horizon, water), `-carshots`, `-smokeshots`, `-audiotest`, `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
+The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-maptest`, `-camtest`, `-shots`, `-worldshots` (streaming showcase: chase, long view, 8 km overview, 40 km horizon, water), `-carshots`, `-smokeshots`, `-audiotest`, `-netaudiotest` (other players' engine sound: panning and distance fade through the real mixer), `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
 
 ## Data & attribution
 

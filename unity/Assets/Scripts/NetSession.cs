@@ -166,7 +166,12 @@ public class NetSession : MonoBehaviour
         if (role == Role.Off) return;
         for (int n = 0; n < 4096 && inbox.TryDequeue(out var m); n++)
         {
-            try { var r = new PacketReader(m.data); if (r.Valid) { if (role == Role.Host) HostReceive(m.from, r); else ClientReceive(m.from, r); } }
+            try
+            {
+                var r = new PacketReader(m.data);
+                if (r.Valid) { if (role == Role.Host) HostReceive(m.from, r); else ClientReceive(m.from, r); }
+                else if (role == Role.Host) RejectOtherVersion(m.from, m.data);
+            }
             catch (System.FormatException) { }                                        // truncated or garbage datagram
         }
         if (role == Role.Off) return;                                                 // a Reject or Bye ended it
@@ -251,6 +256,16 @@ public class NetSession : MonoBehaviour
 
     void SendWelcome(Peer p) { w.Begin(K.Welcome).U8(p.id); Send(p.ep); }
 
+    /// <summary>A player with another version of the game says Hello: refuse in HIS protocol version (Reject is the same in all of them), so he reads why.</summary>
+    void RejectOtherVersion(IPEndPoint from, byte[] data)
+    {
+        if (data.Length < 4 || data[0] != 'B' || data[1] != 'R' || data[3] != (byte)K.Hello) return;
+        Log.I("net", $"{from} runs protocol v{data[2]}, we run v{NetProtocol.Version}: refused");
+        w.Begin(K.Reject).Str(data[2] < NetProtocol.Version ? "your game is older than the host's: update it" : "the host's game is older than yours: the host must update");
+        w.Buf[2] = data[2];
+        Send(from);
+    }
+
     byte FreeId()
     {
         for (byte id = 1; id < 255; id++) if (!peers.Values.Any(q => q.authed && q.id == id)) return id;
@@ -329,7 +344,7 @@ public class NetSession : MonoBehaviour
     {
         if (!welcomed)
         {
-            if (now - joinedAt > JoinGiveUp) { Leave($"no answer from {server} (address, port, firewall?)"); return; }
+            if (now - joinedAt > JoinGiveUp) { Leave($"no answer from {server} (address, port forward, firewall, or an older game on the host?)"); return; }
             if (now >= helloNext) { helloNext = now + 1.0; w.Begin(K.Hello).Str(playerName); Send(server); }   // UDP may drop it: say it again
         }
         else if (now - serverHeard > Timeout) Leave("lost the connection to the host");

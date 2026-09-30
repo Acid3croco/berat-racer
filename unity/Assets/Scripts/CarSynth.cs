@@ -8,6 +8,7 @@ using System;
 public class CarSynth
 {
     public float Rpm = 900f, Load, SpeedMs, Slip, Rough = 1f, Master = 0.15f;
+    public float WindGain = 1f;                          // wind is what the driver hears; heard from outside the car it is much quieter
     public bool Muted; public float PulsesPerRev = 2f, Brightness = 1f;
     public float LastPeak; public int Buffers; public bool NaNSeen;
 
@@ -47,7 +48,7 @@ public class CarSynth
             float wn = Noise();
             float wc = Coef(250f + speedS * 38f, sr);
             windLp1 += (wn - windLp1) * wc; windLp2 += (windLp1 - windLp2) * wc;
-            float wind = windLp2 * sp * sp * 1.5f;
+            float wind = windLp2 * sp * sp * 1.5f * WindGain;
 
             // ---- road rumble (rougher on dirt / grass)
             rumbleLp += (Noise() - rumbleLp) * Coef(140f, sr);

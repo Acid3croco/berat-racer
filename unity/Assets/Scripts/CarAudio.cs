@@ -7,6 +7,7 @@ public class CarAudio : MonoBehaviour
     public CarController Car;
     public readonly CarSynth Synth = new CarSynth();
     public float Volume = 0f;                     // master volume: 0% by default (the user's request); ] raises it in 5% steps, [ lowers it
+    public static float PlayerVolume { get; private set; }     // the volume the player chose, muted = 0: the other players' cars follow it
     public int Gear { get; private set; } = 1;
     public float Rpm => Synth.Rpm;
     int sampleRate = 48000;
@@ -37,5 +38,6 @@ public class CarAudio : MonoBehaviour
         Synth.Slip = paused ? 0f : Car.SlipAmount;
         Synth.Rough = Car.CurrentSurface == Surface.Asphalt ? 1f : Car.CurrentSurface == Surface.Dirt ? 2.2f : 1.8f;
         Synth.Master = paused ? Volume * 0.2f : Volume;
+        PlayerVolume = Synth.Muted ? 0f : Volume;
     }
 }

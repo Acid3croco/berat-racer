@@ -97,6 +97,7 @@ public class GameBootstrap : MonoBehaviour
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-camtest") >= 0) StartCoroutine(CamTest());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smokeshots") >= 0) StartCoroutine(SmokeShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audiotest") >= 0) StartCoroutine(AudioTest());
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-netaudiotest") >= 0) StartCoroutine(NetAudioTest());
     }
 
     // ------------------------------------------------------------ logging helpers
@@ -711,6 +712,56 @@ public class GameBootstrap : MonoBehaviour
         }
         Log.I("audiotest", "done -> " + dir);
         Application.Quit();
+    }
+
+    /// <summary>Records the listener's final mix while a fake remote car revs 10 m to the right, 10 m to the left, then 80 m away: its sound must pan and fade.</summary>
+    IEnumerator NetAudioTest()
+    {
+        yield return new WaitForSeconds(2f);
+        audio.Volume = 0.5f; audio.GetComponent<AudioSource>().Stop();                // other cars follow the player's volume; our own engine stays out of the recording
+        var probe = mainCam.gameObject.AddComponent<MixProbe>();
+        RemoteCar rc = null; int fails = 0;
+        probe.Reset(); yield return new WaitForSeconds(1.5f);
+        probe.Read(out float l0, out float r0);                                          // floor: our own car's filter writes even with its source stopped
+        { Log.I("netaudio", $"baseline, no remote car: rms left {l0:F4} right {r0:F4}; listeners={FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length} sources playing={System.Linq.Enumerable.Count(FindObjectsByType<AudioSource>(FindObjectsSortMode.None), a => a.isPlaying)}"); }
+        var cases = new (string name, float side, float dist, System.Func<float, float, bool> ok)[] {
+            ("right 10 m", 1f, 10f, (l, r) => r > 1.6f * l && r > 0.01f), ("left 10 m", -1f, 10f, (l, r) => l > 1.6f * r && l > 0.01f), ("right 80 m", 1f, 80f, (l, r) => true) };
+        float near = 0f;
+        foreach (var c in cases)
+        {
+            for (float t = 0; t < 2.5f; t += Time.deltaTime)
+            {
+                var cp = mainCam.transform.position; var right = mainCam.transform.right; right.y = 0; right.Normalize();
+                var snap = new CarSnap { Id = 9, CarIndex = 2, Name = "probe", T = Time.realtimeSinceStartupAsDouble, Pos = cp + right * c.side * c.dist, Rot = Quaternion.identity, Rpm = 6500f, Load = 1f, Surface = Surface.Asphalt };
+                if (rc == null) { rc = RemoteCar.Create(snap, carMat); rc.GetComponent<Rigidbody>().detectCollisions = false; }
+                rc.Push(snap, Time.realtimeSinceStartupAsDouble);
+                if (t > 0.6f && t - Time.deltaTime <= 0.6f) probe.Reset();                  // measure once it has settled there
+                yield return null;
+            }
+            probe.Read(out float lm, out float rm);
+            float l = Mathf.Sqrt(Mathf.Max(0f, lm * lm - l0 * l0)), r = Mathf.Sqrt(Mathf.Max(0f, rm * rm - r0 * r0));      // the remote car alone
+            bool ok = c.ok(l, r);
+            if (c.dist < 20f) near = Mathf.Max(near, Mathf.Max(l, r));
+            else { ok = Mathf.Max(l, r) < near * 0.25f && Mathf.Max(l, r) > near * 0.05f; }        // 7 m full volume, 1/distance beyond: ~0.125 at 80 m
+            if (!ok) fails++;
+            Log.I("netaudio", $"{(ok ? "PASS" : "FAIL")}  {c.name}: remote car alone rms left {l:F4} right {r:F4}  (car {Vector3.Distance(rc.transform.position, FindFirstObjectByType<AudioListener>().transform.position):F1} m from the listener)");
+        }
+        Log.I("netaudio", fails == 0 ? "all passed" : $"{fails} failed");
+        Application.Quit();
+    }
+
+    /// <summary>On the listener: RMS of the final mix, left and right.</summary>
+    class MixProbe : MonoBehaviour
+    {
+        double l, r; long n; readonly object gate = new object();
+        public void Reset() { lock (gate) { l = r = 0; n = 0; } }
+        public void Read(out float left, out float right) { lock (gate) { left = n > 0 ? (float)System.Math.Sqrt(l / n) : 0f; right = n > 0 ? (float)System.Math.Sqrt(r / n) : 0f; } }
+        void OnAudioFilterRead(float[] data, int channels)
+        {
+            if (channels < 2) return;
+            lock (gate) for (int i = 0; i + 1 < data.Length; i += channels) { l += data[i] * data[i]; r += data[i + 1] * data[i + 1]; n++; }
+            System.Array.Clear(data, 0, data.Length);                                    // measured, not played: the test is silent
+        }
     }
 
     static void WriteWav(string path, short[] pcm, int sr)
