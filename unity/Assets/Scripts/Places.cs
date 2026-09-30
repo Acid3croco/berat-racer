@@ -42,17 +42,15 @@ public static class Places
         return 6;
     }
 
+    /// <summary>Towns and villages are named up to the highest zoom (100 km): the label placer draws the most important first and
+    /// skips what would overlap, so a wide view shows as many names as fit, spread over the whole map. Hamlets appear from ~20 km.</summary>
     static float MaxAltitude(PlaceEntry p)
     {
         switch (Tier(p))
         {
-            case 0: return 1e9f;
-            case 1: return 130000f;
-            case 2: return 75000f;
-            case 3: return 42000f;
-            case 4: return 24000f;
-            case 5: return 12000f;
-            default: return 5000f;
+            case 0: case 1: case 2: case 3: return 1e9f;
+            case 4: case 5: return 150000f;
+            default: return 30000f;
         }
     }
     public static float MaxAlt(int i) => maxAlt[i];
