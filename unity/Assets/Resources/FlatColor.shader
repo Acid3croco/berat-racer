@@ -42,7 +42,8 @@ Shader "Berat/FlatColor"
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
                 o.col = v.color;
-                o.wp = mul(unity_ObjectToWorld, v.vertex).xyz;
+                // camera-relative position: large world coordinates (tens of km from the origin) have too little float precision for the screen-space-derivative normals
+                o.wp = mul((float3x3)unity_ObjectToWorld, v.vertex.xyz) + (float3(unity_ObjectToWorld[0].w, unity_ObjectToWorld[1].w, unity_ObjectToWorld[2].w) - _WorldSpaceCameraPos);
                 TRANSFER_SHADOW(o);
                 UNITY_TRANSFER_FOG(o, o.pos);
                 return o;
@@ -58,16 +59,18 @@ Shader "Berat/FlatColor"
 
             fixed4 frag (v2f i) : SV_Target
             {
-                if (_HoleRadius > 0.0) { float2 dh = i.wp.xz - _HoleCenter.xz; if (dot(dh, dh) < _HoleRadius * _HoleRadius) discard; }       // far terrain: the detailed chunks cover this disc
+                if (_HoleRadius > 0.0) { float2 dh = i.wp.xz + _WorldSpaceCameraPos.xz - _HoleCenter.xz; if (dot(dh, dh) < _HoleRadius * _HoleRadius) discard; }       // far terrain: the detailed chunks cover this disc
                 float3 n = normalize(cross(ddy(i.wp), ddx(i.wp)));
-                float3 V = normalize(_WorldSpaceCameraPos - i.wp);
+                float3 V = normalize(-i.wp);
                 n *= sign(dot(n, V));                                           // always face the viewer
                 float3 albedo = GammaToLinearSpace(i.col.rgb);
-                float camDist = length(_WorldSpaceCameraPos - i.wp);
+                float3 wabs = i.wp + _WorldSpaceCameraPos;
+                float3 wq = float3(fmod(wabs.x, 2048.0), wabs.y, fmod(wabs.z, 2048.0));      // noise coordinates: float precision at tens of km from the origin would turn every hash into static
+                float camDist = length(i.wp);
                 float grainFade = saturate(1.0 - (camDist - 40.0) / 180.0);            // fine grain would alias into shimmer at range
                 if (_Noise > 0 && grainFade > 0.01)
                 {
-                    float nz = vnoise(i.wp * _NoiseScale) * 0.65 + vnoise(i.wp * _NoiseScale * 3.7 + 11.0) * 0.35;
+                    float nz = vnoise(wq * _NoiseScale) * 0.65 + vnoise(wq * _NoiseScale * 3.7 + 11.0) * 0.35;
                     albedo *= 1.0 + _Noise * grainFade * (nz - 0.5) * 2.0;
                 }
                 if (_Detail > 0 && i.col.a > 0.9)
@@ -81,23 +84,23 @@ Shader "Berat/FlatColor"
                     float d = 1.0;
                     // tarmac: aggregate speckle up close, patched repairs further out
                     float f1 = saturate(1.0 - (camDist - 6.0) / 30.0), f2 = saturate(1.0 - (camDist - 30.0) / 150.0);
-                    d += isGrey * flatUp * (mx < 0.35 ? 1.0 : 0.4) * ((h31(floor(i.wp * float3(46.0, 1.0, 46.0))) - 0.5) * 0.16 * f1 + (vnoise(i.wp * 0.45) - 0.5) * 0.14 * f2);
+                    d += isGrey * flatUp * (mx < 0.35 ? 1.0 : 0.4) * ((h31(floor(wq * float3(46.0, 1.0, 46.0))) - 0.5) * 0.16 * f1 + (vnoise(wq * 0.45) - 0.5) * 0.14 * f2);
                     // grass: blade streaks and broad mottling
                     float g1 = saturate(1.0 - (camDist - 8.0) / 60.0), g2 = saturate(1.0 - (camDist - 40.0) / 400.0);
-                    d += isGreen * flatUp * ((vnoise(float3(i.wp.x * 7.0, 0.0, i.wp.z * 2.3)) - 0.5) * 0.18 * g1 + (vnoise(i.wp * 0.06) - 0.5) * 0.22 * g2);
+                    d += isGreen * flatUp * ((vnoise(float3(wq.x * 7.0, 0.0, wq.z * 2.3)) - 0.5) * 0.18 * g1 + (vnoise(wq * 0.06) - 0.5) * 0.22 * g2);
                     // roof tiles: courses across the slope, offset every other row, each tile slightly different
                     float2 tang = normalize(float2(-n.z, n.x) + 1e-4);
-                    float th = dot(i.wp.xz, tang), rows = i.wp.y * 3.0 / max(0.35, 1.0 - n.y * n.y);
+                    float th = dot(wq.xz, tang), rows = wq.y * 3.0 / max(0.35, 1.0 - n.y * n.y);
                     float rf = frac(rows), cf = frac(th * 2.6 + floor(rows) * 0.5);
                     float tileFade = saturate(1.0 - (camDist - 15.0) / 55.0) * saturate(1.0 - fwidth(rows) * 1.6);
                     float mortar = (1.0 - smoothstep(0.0, 0.10, rf)) * 0.5 + (1.0 - smoothstep(0.0, 0.07, cf)) * 0.3;
                     d += isWarm * roofy * tileFade * (-mortar * 0.28 + (h31(float3(floor(th * 2.6 + floor(rows) * 0.5), floor(rows), 3.0)) - 0.5) * 0.14);
                     // walls: brick courses on warm walls, faint render streaks on pale ones
-                    float wrows = i.wp.y * 6.5, wt = dot(i.wp.xz, normalize(float2(-n.z, n.x) + 1e-4));
+                    float wrows = wq.y * 6.5, wt = dot(wq.xz, normalize(float2(-n.z, n.x) + 1e-4));
                     float wf = saturate(1.0 - (camDist - 10.0) / 40.0) * saturate(1.0 - fwidth(wrows) * 1.6);
                     float bm = (1.0 - smoothstep(0.0, 0.12, frac(wrows))) * 0.6 + (1.0 - smoothstep(0.0, 0.05, frac(wt * 4.0 + floor(wrows) * 0.5))) * 0.4;
                     d += wall * wf * (isWarm * smoothstep(0.12, 0.25, mx) * (-bm * 0.22 + (h31(float3(floor(wt * 4.0 + floor(wrows) * 0.5), floor(wrows), 7.0)) - 0.5) * 0.10)
-                                      + (1.0 - isWarm * smoothstep(0.12, 0.25, mx)) * (vnoise(float3(wt * 1.5, i.wp.y * 0.35, 0.0)) - 0.5) * 0.10);
+                                      + (1.0 - isWarm * smoothstep(0.12, 0.25, mx)) * (vnoise(float3(wt * 1.5, wq.y * 0.35, 0.0)) - 0.5) * 0.10);
                     albedo *= d;
                 }
                 float gloss = 1.0 - i.col.a;                                    // alpha 255 = matte
