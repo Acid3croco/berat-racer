@@ -282,7 +282,7 @@ public class GameBootstrap : MonoBehaviour
     }
 
     /// <summary>C / D-pad up: next camera.  Right stick or hold right mouse: look around.  Hold B / R3: rear view.</summary>
-    static readonly string[] AssistInfo = { "no driver aids", "traction control + ABS", "traction control + ABS + stability control", "arcade: forgiving, stability + steering help", "drift: smooth held slides, throttle + stick set the angle, auto counter-steer" };
+    static readonly string[] AssistInfo = { "no driver aids", "traction control + ABS", "traction control + ABS + stability control", "arcade: forgiving, stability + steering help", "drift: smooth held slides, stick into the turn adds angle, centred holds, out or lift ends it" };
     string toast; float toastAt = -10f;
     void Announce(string text) { toast = text; toastAt = Time.unscaledTime; Log.I("hud", text.Replace("\n", " | ")); }
     void CycleAssist() { car.AssistMode = (Assist)(((int)car.AssistMode + 1) % AssistInfo.Length); Announce($"ASSIST: {car.AssistMode.ToString().ToUpper()}\n{AssistInfo[(int)car.AssistMode]}"); }

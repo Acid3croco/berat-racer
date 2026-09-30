@@ -117,17 +117,17 @@ public static class PhysTest
         foreach (var mode in new[] { Assist.Sport, Assist.Arcade, Assist.Drift })
         {
             car.AssistMode = mode;
-            for (int sc = 0; sc < 3; sc++)
+            for (int sc = 0; sc < 4; sc++)
             {
                 Place(0, 0, 0); yield return new WaitForSeconds(0.3f);
-                string name = sc == 0 ? "60 km/h handbrake entry, hold 6 s, release" : sc == 1 ? "50 km/h power-over entry, hold 6 s, release" : "60 km/h drift, switch sides at 3 s, release";
+                string name = sc == 3 ? "60 km/h handbrake entry, centre the stick at 1.5 s, throttle on" : sc == 0 ? "60 km/h handbrake entry, hold 6 s, release" : sc == 1 ? "50 km/h power-over entry, hold 6 s, release" : "60 km/h drift, switch sides at 3 s, release";
                 yield return ReachSpeed(sc == 1 ? 50f : 60f);
                 float t0 = Time.time, v0 = Kmh, held = 0f, peakRate = 0f, prev = SlipAngleDeg, sum = 0f, vEnd = 0f, exitBeta = 0f, maxBeta = 0f; int n = 0; bool spun = false;
                 while (Time.time - t0 < 9f)
                 {
                     float t = Time.time - t0; bool holding = t < 6f;
                     float side = sc == 2 && t > 3f ? -1f : 1f;
-                    car.Steer = holding ? -0.6f * side : 0f;
+                    car.Steer = holding && !(sc == 3 && t > 1.5f) ? -0.6f * side : 0f;
                     car.Throttle = holding ? (sc == 1 ? 1f : 0.75f) : 0.3f;
                     car.Handbrake = (sc != 1) && t > 0.2f && t < 0.7f;
                     car.Brake = 0f;
@@ -135,7 +135,7 @@ public static class PhysTest
                     float beta = SlipAngleDeg, ab = Mathf.Abs(beta);
                     if (Kmh > 15f && prev != 0f) { peakRate = Mathf.Max(peakRate, Mathf.Abs(Mathf.DeltaAngle(prev, beta)) / Time.fixedDeltaTime); maxBeta = Mathf.Max(maxBeta, ab); if (ab > 80f) spun = true; }
                     prev = beta;
-                    if (holding && t > 1f) { n++; if (ab > 15f && ab < 55f) held++; sum += ab; vEnd = Kmh; }
+                    if (holding && t > (sc == 3 ? 2.5f : 1f)) { n++; if (ab > 15f && ab < 55f) held++; sum += ab; vEnd = Kmh; }
                     if (t > 8.5f) exitBeta = ab;
                 }
                 car.Handbrake = false;

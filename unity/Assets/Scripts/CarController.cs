@@ -88,7 +88,7 @@ public class CarController : MonoBehaviour
     Wheel[] w;
     Drivetrain drivetrain;
     int dA, dB;                                   // indices of the two driven wheels (front pair for FWD, rear pair for RWD)
-    float steerSm, steerCentre, driveSm, brakeSm, prevFwdSpeed, flipTimer, tcsCut, prevBeta;
+    float steerSm, steerCentre, driveSm, brakeSm, prevFwdSpeed, flipTimer, tcsCut, prevBeta, driftHold;
 
     // ---- Drift assist, after the GTA V drift handling tunes (handling.meta): the values they change, mapped onto our tyre model
     const float DriftLockDeg = 50f;             // fSteeringLock: drift tunes run 55-73 deg; this much lock at parking speed, tapering with speed
@@ -101,8 +101,9 @@ public class CarController : MonoBehaviour
     const float DriftMaxAngle = 0.78f;          // soft wall at 45 deg of sideslip: past it the car is rotated back, so a drift does not become a spin
     const float DriftDamping = 1.6f;            // yaw damping on the sideslip rate: slides start and end smoothly instead of snapping
     const float DriftPush = 1.5f;               // m/s2 along the travel direction at full throttle and full angle: the drift keeps its speed
-    const float DriftAngleThrottle = 0.35f, DriftAngleSteer = 0.35f;   // rad of drift angle asked by full throttle / full stick into the turn
-    const float DriftAngleGain = 4f;            // how firmly (rad/s2 per rad) a drift eases toward that angle; the tyres still do most of the work
+    const float DriftHoldSlip = 0.12f;          // in a drift a centred stick keeps the front wheels ~7 deg into the turn (near peak grip), so the drift holds by itself
+    const float DriftAngleRate = 0.8f;          // rad/s the held drift angle moves at full stick (into the turn: more angle, out: less) or with the throttle released
+    const float DriftAngleGain = 4f;            // how firmly (rad/s2 per rad) a drift eases toward the held angle; the tyres still do most of the work
     Vector3[] belly; readonly float[] prevBrakeTq = new float[4];
 
     /// <summary>Largest front steering angle at speed v. The arcade styles keep far more lock at speed (the aids catch the rest); the realistic ones taper like a real rack + driver.</summary>
@@ -178,7 +179,7 @@ public class CarController : MonoBehaviour
             var q = w[i]; q.omega = 0; q.fy = 0; q.steer = 0; q.d = DStatic; q.x = q.xPrev = DroopTravel; q.kappa = q.s = 0; q.grounded = false;
             WheelFx[i] = WheelSlip[i] = WheelKappa[i] = 0;
         }
-        drivetrain.Reset(); steerSm = steerCentre = driveSm = brakeSm = prevBeta = 0; SlipAmount = LongAccel = 0; prevFwdSpeed = 0; tcsCut = 0;
+        drivetrain.Reset(); steerSm = steerCentre = driveSm = brakeSm = prevBeta = driftHold = 0; SlipAmount = LongAccel = 0; prevFwdSpeed = 0; tcsCut = 0;
         Model?.OnReset();
     }
 
@@ -390,13 +391,16 @@ public class CarController : MonoBehaviour
         float dCmd = steerSm * MaxSteerRad(speed);
         if (AssistMode == Assist.Drift && speed > 3f)
         {   // the front wheels follow the direction the front axle travels and the stick adds a slip angle to it: counter-steer is automatic,
-            // the stick says where to go. Full range at parking speed, +-15 deg around the travel direction at speed.
+            // the stick says where to go. Full range at parking speed, +-15 deg around the travel direction at speed. In a drift the centre
+            // position keeps the wheels a little into the turn, so letting go of the stick holds the drift rather than straightening it.
             Vector3 lv = transform.InverseTransformDirection(Body.linearVelocity), la = transform.InverseTransformDirection(Body.angularVelocity);
             if (lv.z > 1f)
             {
                 float gammaF = Mathf.Atan2(lv.x + FrontZ * la.y, lv.z), lockRad = MaxSteerRad(0f);
                 float range = Mathf.Lerp(lockRad, DriftSteerRange, Mathf.InverseLerp(4f, 20f, speed));
-                float aim = Mathf.Clamp(gammaF + steerSm * range, -lockRad, lockRad);
+                float beta = Mathf.Atan2(lv.x, lv.z), drifting = Mathf.InverseLerp(0.08f, 0.20f, Mathf.Abs(beta));
+                float hold = -Mathf.Sign(beta) * DriftHoldSlip * drifting;                        // centred stick in a drift: wheels stay into the turn, the drift holds
+                float aim = Mathf.Clamp(gammaF + hold + steerSm * range, -lockRad, lockRad);
                 dCmd = Mathf.Lerp(dCmd, aim, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(3f, 9f, speed)));
             }
         }
@@ -506,7 +510,7 @@ public class CarController : MonoBehaviour
 
     /// <summary>
     /// Drift assist yaw control. It never pulls the car straight at small angles (that is what makes the Arcade aid feel like "grip or drift");
-    /// instead, once the car is sliding, it eases the drift toward the angle the throttle and the stick ask for, and it (1) damps how fast the sideslip changes, so a slide grows and dies smoothly and a regained rear does not snap back into a tank-slapper,
+    /// instead, once the car is sliding, it holds the drift angle (stick into the turn adds angle, stick out or a lift takes it away), and it (1) damps how fast the sideslip changes, so a slide grows and dies smoothly and a regained rear does not snap back into a tank-slapper,
     /// (2) rotates the car back softly past 45 deg of sideslip so a drift does not become a spin, (3) with throttle, pushes along the direction of travel
     /// to make up for the scrub of the sliding tyres, so a held drift keeps its speed.
     /// </summary>
@@ -519,11 +523,18 @@ public class CarController : MonoBehaviour
         if (grounded < 3 || v < 5f || lv.z < 1f) return;
         float Iy = Body.inertiaTensor.y;
         float torque = Mathf.Clamp(betaRate, -3f, 3f) * DriftDamping * Iy;
-        // once drifting, throttle and stick into the turn set the angle; lift and centre the stick and the drift winds down
+        // the held drift angle: follows the car until it slides; then stick into the turn adds angle, a centred stick keeps it,
+        // stick out of the turn (or lifting off the throttle) takes it away and the drift winds down
         float drifting = Mathf.InverseLerp(0.08f, 0.20f, Mathf.Abs(beta));
-        float into = Mathf.Clamp01(-steerSm * Mathf.Sign(beta));
-        float target = Mathf.Min(DriftAngleThrottle * drivePedal + DriftAngleSteer * into, DriftMaxAngle);
-        torque += Mathf.Sign(beta) * (Mathf.Abs(beta) - target) * DriftAngleGain * drifting * Iy;
+        float stick = -steerSm * Mathf.Sign(beta);                                                // +1 full into the turn, -1 full out of it
+        if (drifting <= 0f) driftHold = Mathf.Abs(beta);
+        else
+        {
+            if (stick > 0f) driftHold = Mathf.Max(driftHold, Mathf.Abs(beta));                  // into the turn: never hold the car back from rotating further
+            driftHold += (stick - Mathf.Clamp01(1f - drivePedal / 0.3f)) * DriftAngleRate * dt;
+            driftHold = Mathf.Clamp(driftHold, 0f, DriftMaxAngle);
+        }
+        torque += Mathf.Sign(beta) * (Mathf.Abs(beta) - driftHold) * DriftAngleGain * drifting * Iy;
         if (Mathf.Abs(beta) > DriftMaxAngle) torque += Mathf.Sign(beta) * (Mathf.Abs(beta) - DriftMaxAngle) * 16f * Iy;
         Body.AddTorque(transform.up * Mathf.Clamp(torque, -7f * Iy, 7f * Iy));
         if (drivePedal > 0.05f && drivetrain.Gear > 0)
