@@ -2,11 +2,33 @@
 
   uv run python compare_roads.py smallbase smallnew        # tags, as in data/big/roads/<tag>.network.pkl
 """
+import dataclasses
 import sys
 
 import numpy as np
 
 from roads import build
+
+
+def difference(a, b):
+    """Largest absolute difference between two values of the same structure (arrays, dataclasses, lists, numbers); inf when they differ in kind."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        a, b = np.asarray(a), np.asarray(b)
+        if a.shape != b.shape:
+            return np.inf
+        if a.dtype.kind in "fc" or b.dtype.kind in "fc":
+            same_nan = np.isnan(a) == np.isnan(b)
+            return float(np.nanmax(np.abs(a - b), initial=0.0)) if same_nan.all() else np.inf
+        return 0.0 if np.array_equal(a, b) else np.inf
+    if dataclasses.is_dataclass(a) and type(a) is type(b):
+        return max((difference(getattr(a, f.name), getattr(b, f.name)) for f in dataclasses.fields(a)), default=0.0)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return max((difference(x, y) for x, y in zip(a, b)), default=0.0) if len(a) == len(b) else np.inf
+    if isinstance(a, dict) and isinstance(b, dict):
+        return max((difference(a[k], b[k]) for k in a), default=0.0) if a.keys() == b.keys() else np.inf
+    if isinstance(a, float) and isinstance(b, float):
+        return abs(a - b) if not (np.isnan(a) and np.isnan(b)) else 0.0
+    return 0.0 if a == b else np.inf
 
 
 def main(tag_a, tag_b):
@@ -22,6 +44,8 @@ def main(tag_a, tag_b):
     for name, net in ((tag_a, a), (tag_b, b)):
         err = np.abs(np.concatenate([link.z - link.ground for link in net.links]))
         print(f"  {name:<12} road to ground: mean {err.mean() * 100:.2f} cm, within 10 cm {np.mean(err < 0.1):.2%}")
+    worst = [difference(build.load_sector(tag_a, *sector), build.load_sector(tag_b, *sector)) for sector in a.sectors]
+    print(f"sector files (what the world builder reads): {sum(w == 0.0 for w in worst)} of {len(worst)} identical, largest difference {max(worst) * 1000:.2e} mm")
 
 
 if __name__ == "__main__":

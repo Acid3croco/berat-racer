@@ -10,7 +10,10 @@ kerbs never cross (the far side of a T, the outside of a bend), the area under o
 
 When the trims of the two ends of a link leave nothing to draw, the link is swallowed: it becomes part of the surface and its two
 nodes share one junction (staggered crossroads, tiny roundabouts, slip-road triangles).
+
+Junctions do not depend on each other, so they are built and outlined side by side in forked workers (`_in_workers`).
 """
+import multiprocessing
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -22,6 +25,22 @@ from . import config
 from .geometry import left_normals, tangents
 
 ISLAND_MIN = 12.0                 # m2: a hole in a junction smaller than this is paved over
+BATCH = 64                        # junctions handed to a worker at a time
+
+_shared = None                    # what the workers read (graph, links, ...): set before they are forked, so they see it without a copy
+
+
+def _in_workers(function, items, shared, jobs):
+    """[function(item) for item in items], in that order, across `jobs` forked workers that all read `shared`."""
+    global _shared
+    _shared = shared
+    try:
+        if jobs <= 1 or len(items) < 2 * BATCH:
+            return [function(item) for item in items]
+        with multiprocessing.get_context("fork").Pool(jobs) as pool:
+            return pool.map(function, items, chunksize=BATCH)
+    finally:
+        _shared = None
 
 
 @dataclass
@@ -186,11 +205,17 @@ def _make_junction(graph, links, nodes, touching, internal):
     return junction
 
 
-def build_junctions(graph, links):
+def _make_shared(nodes):
+    graph, links, touching, internal = _shared
+    return _make_junction(graph, links, nodes, touching, internal)
+
+
+def build_junctions(graph, links, jobs=1):
     """Group junction nodes into junctions and trim every arm. Sets `junction`, `trim`, `internal` on the links. Returns the junction list.
 
     Every junction node starts as its own junction. A link left with nothing to draw between its two trims is swallowed and its
-    junctions merge; only the junctions that changed are built again, until nothing changes."""
+    junctions merge; only the junctions that changed are built again, until nothing changes. The junctions of one pass are built
+    side by side: a junction only reads the links, and those change between passes, not within one."""
     parent = {n: n for n in range(len(graph.nodes)) if graph.is_junction(n)}
     members = {n: [n] for n in parent}
     touching = {n: [] for n in parent}
@@ -209,8 +234,9 @@ def build_junctions(graph, links):
     internal, built, dirty = set(), {}, set(parent)
     while dirty:
         affected = set()
-        for root in sorted(dirty):
-            junction = built[root] = _make_junction(graph, links, sorted(members[root]), touching, internal)
+        roots = sorted(dirty)
+        for root, junction in zip(roots, _in_workers(_make_shared, [sorted(members[root]) for root in roots], (graph, links, touching, internal), jobs)):
+            built[root] = junction
             for arm in junction.arms:
                 links[arm.link].trim[arm.end] = arm.trim
                 affected.add(arm.link)
@@ -310,6 +336,20 @@ def _pieces(junction, graph, links, mouth_of):
                 j = (i + 1) % len(fan)
                 pieces.append((None, _corner(a, fan[j], junction.corners[node][i], ends[i][1], ends[j][0], graph.nodes[node])))
     return pieces
+
+
+def _outline_shared(i):
+    graph, links, junctions = _shared
+    junction = junctions[i]
+    outline(junction, graph, links)
+    return junction.polygon, junction.vertices, junction.triangles, junction.boundary, junction.valid, junction.problem
+
+
+def outline_all(junctions, graph, links, jobs=1):
+    """`outline` of every junction, side by side."""
+    results = _in_workers(_outline_shared, range(len(junctions)), (graph, links, junctions), jobs)
+    for junction, result in zip(junctions, results):
+        junction.polygon, junction.vertices, junction.triangles, junction.boundary, junction.valid, junction.problem = result
 
 
 def outline(junction, graph, links):

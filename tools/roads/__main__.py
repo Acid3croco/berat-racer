@@ -84,7 +84,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("fetch-osm").set_defaults(run=cmd_fetch_osm)
     build = commands.add_parser("build")
-    build.add_argument("--jobs", type=int, default=6, help="tiles of the height solve run side by side")
+    build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
     build.set_defaults(run=cmd_build)
     commands.add_parser("report").set_defaults(run=cmd_report)
     inspect = commands.add_parser("inspect")

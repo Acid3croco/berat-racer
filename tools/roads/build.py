@@ -104,11 +104,11 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6):
         nodes = graph_stage.chain_nodes(graph, chain)
         links.append(geometry.make_link(graph, chain, (nodes[0], nodes[-1])))
     narrowed = geometry.clamp_widths(links)
-    junctions = junction_stage.build_junctions(graph, links)
+    junctions = junction_stage.build_junctions(graph, links, jobs)
     for link in links:
         geometry.sample(link)
+    junction_stage.outline_all(junctions, graph, links, jobs)
     for junction in junctions:
-        junction_stage.outline(junction, graph, links)
         junction.slim()
     for link in links:
         link.slim()
