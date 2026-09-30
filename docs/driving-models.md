@@ -46,5 +46,5 @@ the throttle and the stick ask for (lift and centre the stick and it winds down)
 | 50 km/h power-over, hold 6 s | 25% | 7% | 100%, mean 44° |
 | 60 km/h, switch sides at 3 s | 3%, spins | 10% | 91%, mean 36° |
 
-Every Drift run is straight again (<1°) within a second of letting go. In `-stabtest` the Drift assist recovers from every abuse run; the one it
-counts as lost (60 km/h corner at full throttle) is an intended 41° power drift that straightens on release.
+Every Drift run is straight again (<1°) within a second of letting go. In `-stabtest` the Drift assist recovers from every abuse run (under 1° at the
+end); the runs it counts as lost (Hot Hatch 1/6, GT3 2/6, Peugeot 0/6) are 36-41° drifts past the test's 35° line that straighten on release.
