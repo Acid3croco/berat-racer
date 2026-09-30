@@ -93,6 +93,25 @@ def load_pois():
             seen.add((e["type"], e["id"])); out.append(e)
     return out
 
+@functools.lru_cache(maxsize=1)
+def load_poi_points():
+    """The points of interest that name a kind of building: (kinds, names, x, y in local coordinates), in file order."""
+    kinds, names, lon, lat = [], [], [], []
+    for e in load_pois():
+        where = e if e["type"] == "node" else e["center"]
+        kind = poi_kind(e["tags"])
+        if not kind: continue
+        kinds.append(kind); names.append(e["tags"].get("name", "")); lon.append(where.get("lon")); lat.append(where.get("lat"))
+    x, y = Transformer.from_crs(4326, 2154, always_xy=True).transform(np.array(lon, float), np.array(lat, float))
+    return kinds, names, x - CX, y - CY
+
+def feature_bounds(f):
+    """(min x, min y, max x, max y) of a GeoJSON polygon / multipolygon feature in its own coordinates, from the outer rings."""
+    g = f["geometry"]
+    rings = [g["coordinates"][0]] if g["type"] == "Polygon" else [poly[0] for poly in g["coordinates"]]
+    xs = [c[0] for ring in rings for c in ring]; ys = [c[1] for ring in rings for c in ring]
+    return min(xs), min(ys), max(xs), max(ys)
+
 def local(coords):
     a = np.asarray(coords, float)[:, :2]
     return np.c_[a[:, 0] - CX, a[:, 1] - CY]
@@ -351,22 +370,28 @@ def process_sector(args):
         shore = distance_transform_edt(wmask) * CELL
         bed = wlevel - WATER_DEPTH * np.clip(0.35 + shore / 4.0, 0.35, 1.0)
         hh_ = h.reshape(nv, nv); hh_[wmask] = np.minimum(hh_[wmask], bed[wmask]); h = hh_.ravel()
+    def vertices_near(seg, reach):
+        """(indices into `pts`, distance to the polyline `seg`, nearest point of it) of the grid vertices within `reach` of it."""
+        lo = np.maximum(np.floor((seg[:, :2].min(axis=0) - reach - (win.x0, win.z0)) / CELL).astype(int) - 1, 0)
+        hi = np.minimum(np.ceil((seg[:, :2].max(axis=0) + reach - (win.x0, win.z0)) / CELL).astype(int) + 1, nv - 1)
+        if (hi < lo).any(): return np.zeros(0, int), np.zeros(0), np.zeros(0, int)
+        at = (np.arange(lo[1], hi[1] + 1)[:, None] * nv + np.arange(lo[0], hi[0] + 1)).ravel()      # the vertices of the bounding box: nothing further away can be within reach
+        dd, ii = cKDTree(seg[:, :2]).query(pts[at], distance_upper_bound=reach)
+        m = np.isfinite(dd)
+        return at[m], dd[m], ii[m]
     for w in wlines:
         seg = densify_pts(np.c_[w["xy"], w["y"]], 1.0) if len(w["xy"]) > 1 else w["xy"]
-        dd, ii = cKDTree(seg[:, :2]).query(pts, distance_upper_bound=w["hw"] + 3.0)
-        m = np.isfinite(dd)
-        if not m.any(): continue
-        ly = seg[np.minimum(ii[m], len(seg) - 1), 2]
-        bed = ly - WATER_DEPTH + np.maximum(dd[m] - w["hw"], 0) * 0.35
+        m, dd, ii = vertices_near(seg, w["hw"] + 3.0)
+        if not len(m): continue
+        bed = seg[ii, 2] - WATER_DEPTH + np.maximum(dd - w["hw"], 0) * 0.35
         h[m] = np.minimum(h[m], bed)
     for p in pieces:                                                                 # under a bridge deck the ground falls away, so the terrain mesh can never poke through the deck
         if not p.bridge: continue
         seg, hw = densify_pts(np.c_[p.xy, p.z], 1.0), float(p.hw.max())
-        dd, ii = cKDTree(seg[:, :2]).query(pts, distance_upper_bound=hw + 6.0)
-        m = np.isfinite(dd)
-        if not m.any(): continue
-        drop = 1.4 * (1.0 - np.clip((dd[m] - (hw + 2.5)) / 3.5, 0.0, 1.0))
-        h[m] = np.minimum(h[m], seg[np.minimum(ii[m], len(seg) - 1), 2] - drop)
+        m, dd, ii = vertices_near(seg, hw + 6.0)
+        if not len(m): continue
+        drop = 1.4 * (1.0 - np.clip((dd - (hw + 2.5)) / 3.5, 0.0, 1.0))
+        h[m] = np.minimum(h[m], seg[ii, 2] - drop)
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
     H = road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud)
     H = road_terrain.bench(H, win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
@@ -375,7 +400,8 @@ def process_sector(args):
     LOW = road_terrain.bench(LOW, win.x0, win.z0, LOD_CELL, footprint, road_surface.thin(cloud, 4), road_config.LOD_SINK)
 
     # ---- ground colour
-    rgb = np.stack([win.sample(win.ortho[..., k].astype(np.float32), gx.ravel(), gz.ravel(), 4) for k in range(3)], axis=1).reshape(nv, nv, 3)
+    ortho = [win.ortho[..., k].astype(np.float32) for k in range(3)]
+    rgb = np.stack([win.sample(band, gx.ravel(), gz.ravel(), 4) for band in ortho], axis=1).reshape(nv, nv, 3)
     cov = maximum_filter(win.mnh, 3) > 1.3
     covered = win.sample(cov.astype(np.float32), gx.ravel(), gz.ravel(), 2).reshape(nv, nv) > 0.4
     C = ground_colour(rgb, covered)
@@ -383,11 +409,13 @@ def process_sector(args):
     low_col = uniform_filter(far_raw, size=(4, 4, 1), mode="nearest")               # 16 m LOD colours
 
     # ---- buildings
-    pois = load_pois()
     road_tree = cKDTree(road_pts[:, :2]) if len(road_pts) else None
     owned = box(ox, oz, ox + SECTOR, oz + SECTOR); owned_wide = owned.buffer(6)
     buildings, bpolys = [], []
+    reach_lo, reach_hi = (ox + CX - 8, oz + CY - 8), (ox + CX + SECTOR + 8, oz + CY + SECTOR + 8)      # `owned_wide` and a bit, in the features' coordinates
     for f in load_vectors("buildings", si, sj):
+        bx0, by0, bx1, by1 = feature_bounds(f)
+        if bx1 < reach_lo[0] or by1 < reach_lo[1] or bx0 > reach_hi[0] or by0 > reach_hi[1]: continue      # its centroid cannot lie in the sector
         p = f["properties"]
         g = geom_local(f)
         for poly in ([g] if g.geom_type == "Polygon" else list(g.geoms)):
@@ -407,9 +435,10 @@ def process_sector(args):
             poly = shapely.geometry.polygon.orient(cutp, 1.0)
             ring = np.array(poly.exterior.coords)[:-1]
             if not (ox <= ring[:, 0].mean() < ox + SECTOR and oz <= ring[:, 1].mean() < oz + SECTOR): continue      # the chunk is chosen from this same mean below
-            gx0, gz0, gx1, gz1 = poly.buffer(1.0).bounds
+            around = poly.buffer(1.0)
+            gx0, gz0, gx1, gz1 = around.bounds
             gxs, gzs = np.meshgrid(np.arange(gx0, gx1 + 1e-6, 0.75), np.arange(gz0, gz1 + 1e-6, 0.75))
-            inside = shapely.contains_xy(poly.buffer(1.0), gxs.ravel(), gzs.ravel())
+            inside = shapely.contains_xy(around, gxs.ravel(), gzs.ravel())
             gpts = np.c_[gxs.ravel()[inside], gzs.ravel()[inside]]
             ground = float(min(win.sample(win.mnt, ring[:, 0], ring[:, 1], 2).min(), win.sample(win.mnt, gpts[:, 0], gpts[:, 1], 2).min() if len(gpts) else 1e9))
             c = poly.centroid
@@ -448,7 +477,7 @@ def process_sector(args):
             rxs, rzs = np.meshgrid(np.arange(minx, maxx, 2.0), np.arange(minz, maxz, 2.0))
             mk = shapely.contains_xy(poly, rxs.ravel(), rzs.ravel())
             px, pz = (rxs.ravel()[mk], rzs.ravel()[mk]) if mk.any() else ([poly.centroid.x], [poly.centroid.y])
-            roof = np.clip(np.array([win.sample(win.ortho[..., k].astype(np.float32), px, pz, 4) for k in range(3)]).mean(axis=1) * 1.1, 0, 255).astype(int).tolist()
+            roof = np.clip(np.array([win.sample(band, px, pz, 4) for band in ortho]).mean(axis=1) * 1.1, 0, 255).astype(int).tolist()
             buildings.append(dict(k=kind, n="", fe=fe, tw=tower, cp=cp, cn=[len(ring)], p=np.round(ring, 2).ravel().tolist(), b=round(ground - 0.8, 2), h=round(wall + 0.8, 2),
                                   r=round(rise, 2), rc=[round(float(v), 2) for v in (*mrr.centroid.coords[0], *axis, long_, short)] if pitched else [], c=roof, w=list(WALLS[seed % len(WALLS)])))
             bpolys.append(poly)
@@ -456,13 +485,10 @@ def process_sector(args):
     # ---- collision rings proper (a building crossing a road keeps the road corridor free, computed against the uncut original in export_world; here the visual is already cut)
     # ---- POIs -> kind + name
     if bpolys:
-        strtree = STRtree(bpolys); tr = Transformer.from_crs(4326, 2154, always_xy=True)
-        for e in pois:
-            lat, lon = (e.get("lat"), e.get("lon")) if e["type"] == "node" else (e["center"]["lat"], e["center"]["lon"])
-            kind = poi_kind(e["tags"])
-            if not kind: continue
-            x, y = tr.transform(lon, lat); pt = Point(x - CX, y - CY)
-            if not owned.buffer(20).contains(pt): continue
+        strtree = STRtree(bpolys)
+        poi_kinds, poi_names, poi_x, poi_y = load_poi_points()
+        for e in np.flatnonzero(shapely.contains_xy(owned.buffer(20), poi_x, poi_y)):
+            kind, pt = poi_kinds[e], Point(poi_x[e], poi_y[e])
             hit = [i for i in strtree.query(pt) if bpolys[i].contains(pt)]
             if not hit:
                 j = int(strtree.nearest(pt))
@@ -470,7 +496,7 @@ def process_sector(args):
                 hit = [j]
             b = buildings[hit[0]]
             if kind == "church" and b["k"] == "chapel": kind = "chapel"
-            b["k"] = kind; b["n"] = e["tags"].get("name", "")
+            b["k"] = kind; b["n"] = poi_names[e]
         towers = [(b["tw"][2], i) for i, b in enumerate(buildings) if b.get("tw")]
         for h_i, i in sorted(towers, reverse=True):
             if not buildings[i]["tw"]: continue
