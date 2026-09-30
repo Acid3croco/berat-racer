@@ -76,7 +76,7 @@ def tag_of(list_path):
     return Path(list_path).stem.removesuffix("_sectors")
 
 
-def build(list_path, log=functools.partial(print, flush=True), jobs=6):
+def build(list_path, log=functools.partial(print, flush=True), jobs=6, reuse=True):
     sectors = [tuple(s) for s in json.loads(Path(list_path).read_text())["sectors"]]
     tag, report, clock = tag_of(list_path), {}, time.time()
 
@@ -116,7 +116,7 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6):
          invalid=sum(not j.valid for j in junctions))
 
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
-    done("profile", **profile.solve(network, log, jobs))
+    done("profile", **profile.solve(network, log, jobs, reuse))
     report["surface"] = metrics.surface_report(network)
     report["classes"] = metrics.profile_report(network)
     return network

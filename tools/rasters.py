@@ -20,18 +20,44 @@ TILE_M = {"mnt": 1600, "mnh": 1600, "ortho": 3200}
 RES = {"mnt": 2, "mnh": 2, "ortho": 4}
 
 
-def read_tile(kind, i, j, tile_m):
-    """One raster tile (i, j) of `kind`, north row first, or None if the file is missing."""
+def tile_file(kind, i, j, tile_m):
+    """The file holding raster tile (i, j) of `kind` (it may not exist)."""
     si, sj = i * tile_m // SECTOR, j * tile_m // SECTOR                               # sector owning the tile
     if 0 <= si < NS and 0 <= sj < NS:
-        f = BIG / f"{kind}_{i}_{j}.npy"
-        return np.load(f) if f.exists() else None
-    if kind == "ortho":
-        f = BIG / "hg" / f"ortho_{i}_{j}.jpg"
-        return np.asarray(Image.open(f).convert("RGB")) if f.exists() else None
-    f = BIG / "hg" / f"{kind}_{i}_{j}.npz"
+        return BIG / f"{kind}_{i}_{j}.npy"
+    return BIG / "hg" / (f"ortho_{i}_{j}.jpg" if kind == "ortho" else f"{kind}_{i}_{j}.npz")
+
+
+def tiles_over(kind, x0, z0, width, height):
+    """(i, j) of the raster tiles of `kind` under the rectangle x0 .. x0 + width, z0 .. z0 + height, row by row from the south."""
+    tile_m = TILE_M[kind]
+    return [(i, j) for j in range((z0 + HALF) // tile_m, (z0 + height + HALF - 1) // tile_m + 1)
+            for i in range((x0 + HALF) // tile_m, (x0 + width + HALF - 1) // tile_m + 1)]
+
+
+def file_stamp(path):
+    """What tells whether a data file changed: its name, size and modification time (None when it does not exist)."""
+    path = Path(path)
+    if not path.exists():
+        return str(path), None
+    stat = path.stat()
+    return str(path), stat.st_size, stat.st_mtime_ns
+
+
+def stamp(x0, z0, width, height, kinds):
+    """The stamps of every raster file a `Mosaic` of this rectangle reads."""
+    return [file_stamp(tile_file(kind, i, j, TILE_M[kind])) for kind in kinds for i, j in tiles_over(kind, int(x0), int(z0), int(width), int(height))]
+
+
+def read_tile(kind, i, j, tile_m):
+    """One raster tile (i, j) of `kind`, north row first, or None if the file is missing."""
+    f = tile_file(kind, i, j, tile_m)
     if not f.exists():
         return None
+    if f.suffix == ".npy":
+        return np.load(f)
+    if kind == "ortho":
+        return np.asarray(Image.open(f).convert("RGB"))
     a = np.load(f)["a"]
     if kind == "mnt":
         return np.where(a == 65535, np.nan, a / 20.0 - 100).astype(np.float32)
@@ -60,18 +86,17 @@ class Mosaic:
         else:
             out = np.full((rows, cols), np.nan if kind == "mnt" else 0.0, np.float32)
         px = tile_m // res
-        for j in range((self.z0 + HALF) // tile_m, (self.z1 + HALF - 1) // tile_m + 1):
-            for i in range((self.x0 + HALF) // tile_m, (self.x0 + self.width + HALF - 1) // tile_m + 1):
-                a = read_tile(kind, i, j, tile_m)
-                if a is None:
-                    continue
-                tx0, tz1 = -HALF + i * tile_m, -HALF + (j + 1) * tile_m                    # tile north-west corner
-                c0, r0 = (tx0 - self.x0) // res, (self.z1 - tz1) // res                    # position of the tile in the window (may be negative)
-                sc0, sr0 = max(-c0, 0), max(-r0, 0)
-                dc0, dr0 = max(c0, 0), max(r0, 0)
-                w, h = min(px - sc0, cols - dc0), min(px - sr0, rows - dr0)
-                if w > 0 and h > 0:
-                    out[dr0:dr0 + h, dc0:dc0 + w] = a[sr0:sr0 + h, sc0:sc0 + w]
+        for i, j in tiles_over(kind, self.x0, self.z0, self.width, self.height):
+            a = read_tile(kind, i, j, tile_m)
+            if a is None:
+                continue
+            tx0, tz1 = -HALF + i * tile_m, -HALF + (j + 1) * tile_m                    # tile north-west corner
+            c0, r0 = (tx0 - self.x0) // res, (self.z1 - tz1) // res                    # position of the tile in the window (may be negative)
+            sc0, sr0 = max(-c0, 0), max(-r0, 0)
+            dc0, dr0 = max(c0, 0), max(r0, 0)
+            w, h = min(px - sc0, cols - dc0), min(px - sr0, rows - dr0)
+            if w > 0 and h > 0:
+                out[dr0:dr0 + h, dc0:dc0 + w] = a[sr0:sr0 + h, sc0:sc0 + w]
         return out
 
     def _clean_ground(self):

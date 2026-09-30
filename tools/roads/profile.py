@@ -22,7 +22,13 @@ one round never touch and run in parallel. A tile is solved together with a halo
 Only the tile's own samples and junctions are kept. A road crossing a border is therefore one continuous profile: each side was solved
 with the other side either fixed or present. The influence of a height fades within a few smoothing wavelengths (tens of metres),
 far less than the halo, so the result is close to what one solve of the whole area would give.
+
+Rebuilds. The result of every tile is kept with a hash of what it was solved from (`block_key`). A tile whose samples, fixed
+neighbours, terrain files, tuning and solver code are all unchanged is not solved again. A change therefore costs the tiles it
+touches, and those around them that were solved after them.
 """
+import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import clarabel
@@ -30,9 +36,11 @@ import numpy as np
 from scipy import sparse
 from scipy.ndimage import median_filter, uniform_filter1d
 
-from rasters import Mosaic
+import rasters
+from rasters import BIG, Mosaic
 
 from . import config
+from .digest import code_stamp, digest
 
 ACROSS = (-0.7, -0.35, 0.0, 0.35, 0.7)            # ground is sampled at these fractions of the half width, the median is kept
 SOLVER = dict(verbose=False, max_threads=1)      # tiles already run side by side, one core each
@@ -194,14 +202,46 @@ def solve_qp(p, q, a, lower, upper):
     return x, status
 
 
+def _window(xy):
+    """(x0, z0, width, height) of the terrain a block needs: its samples and 40 m around, on the 4 m grid."""
+    x0, z0 = np.floor((xy.min(axis=0) - 40.0) / 4.0) * 4.0
+    x1, z1 = np.ceil((xy.max(axis=0) + 40.0) / 4.0) * 4.0
+    return x0, z0, x1 - x0, z1 - z0
+
+
+def block_key(block):
+    """Hash of everything the solve of a block depends on. The positions of its samples in the network (`ids`, `junctions`) are
+    left out: the same roads solve to the same heights wherever they sit in the arrays."""
+    data = {name: value for name, value in block.items() if name not in ("ids", "junctions")}
+    terrain = rasters.stamp(*_window(block["xy"]), kinds=("mnt", "mnh")) if len(block["ids"]) else []
+    return digest(data, terrain, code_stamp(sys.modules[__name__], rasters), SOLVER, ACROSS)
+
+
+def cache_file(tag, tile):
+    return BIG / "roads" / f"{tag}.cache" / "profile" / f"tile_{tile[0]}_{tile[1]}.npz"
+
+
+def solve_block_cached(block, path):
+    """`solve_block`, or its stored result when the block hashes as it did when `path` was written."""
+    key = block_key(block)
+    if path.exists():
+        with np.load(path) as stored:
+            if str(stored["key"]) == key:
+                return dict(tile=block["tile"], z=stored["z"], planes=stored["planes"], ground=stored["ground"], status=str(stored["status"]), reused=True)
+    result = solve_block(block)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
+    np.savez(scratch, key=key, z=result["z"], planes=result["planes"], ground=result["ground"], status=result["status"])
+    os.replace(scratch, path)
+    return result
+
+
 def solve_block(block):
     """Solve one tile with its halo. Returns dict(z per block sample, plane per block junction, ground, status)."""
     n, xy = len(block["ids"]), block["xy"]
     if n == 0:
         return dict(tile=block["tile"], z=np.zeros(0), planes=block["known_plane"], ground=np.zeros(0), status="empty")
-    x0, z0 = np.floor((xy.min(axis=0) - 40.0) / 4.0) * 4.0
-    x1, z1 = np.ceil((xy.max(axis=0) + 40.0) / 4.0) * 4.0
-    terrain = Mosaic(x0, z0, x1 - x0, z1 - z0, kinds=("mnt", "mnh"))
+    terrain = Mosaic(*_window(xy), kinds=("mnt", "mnh"))
 
     # ---- targets, smoothness, limits
     s, runs, seg = block["s"], block["runs"], block["seg"]
@@ -287,17 +327,23 @@ def solve_block(block):
 
 # ---------------------------------------------------------------- the whole area
 
-def solve(network, log=print, jobs=6):
-    """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report."""
+def solve(network, log=print, jobs=6, reuse=True):
+    """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report.
+    `reuse`: tiles whose inputs did not change since they were last solved take their stored result."""
     links, junctions = network.links, network.junctions
     samples = Samples(network)
     n = samples.offsets[-1]
     z, ground = np.full(n, np.nan), np.zeros(n)
     planes = np.full((len(junctions), 3), np.nan)
     tiles = sorted({tuple(t) for t in samples.tile.tolist()} | {tuple(t) for t in samples.junction_tile.tolist()})
-    statuses = {}
+    statuses, reused = {}, 0
+
+    def submit(pool, block):
+        return pool.submit(solve_block_cached, block, cache_file(network.tag, block["tile"])) if reuse else pool.submit(solve_block, block)
 
     def keep(block, result):
+        nonlocal reused
+        reused += result.get("reused", False)
         own = block["own"]
         z[block["ids"][own]], ground[block["ids"][own]] = result["z"][own], result["ground"][own]
         mine = (samples.junction_tile[block["junctions"]] == np.array(block["tile"])).all(axis=1)
@@ -307,11 +353,11 @@ def solve(network, log=print, jobs=6):
     with ProcessPoolExecutor(jobs) as pool:
         for colour in range(4):                                     # tiles of one colour never touch: they are solved side by side
             batch = [t for t in tiles if (t[0] & 1) + 2 * (t[1] & 1) == colour]
-            pending = {pool.submit(solve_block, block): block for block in (make_block(samples, t, z, planes) for t in batch)}
+            pending = {submit(pool, block): block for block in (make_block(samples, t, z, planes) for t in batch)}
             for count, future in enumerate(as_completed(pending), 1):
                 keep(pending[future], future.result())
                 if count % 20 == 0 or count == len(pending):
-                    log(f"    profile round {colour + 1}/4: {count}/{len(pending)} tiles  {statuses}")
+                    log(f"    profile round {colour + 1}/4: {count}/{len(pending)} tiles  {statuses}  ({reused} not solved again)")
 
     for i, junction in enumerate(junctions):
         junction.plane = planes[i]
@@ -319,7 +365,7 @@ def solve(network, log=print, jobs=6):
         span = slice(samples.offsets[k], samples.offsets[k + 1])
         link.z, link.ground = z[span].copy(), ground[span].copy()
         link.tilt = _tilt(link, junctions)
-    return dict(tiles=len(tiles), samples=int(n), statuses=statuses, unsolved_samples=int(np.isnan(z).sum()))
+    return dict(tiles=len(tiles), samples=int(n), statuses=statuses, unsolved_samples=int(np.isnan(z).sum()), tiles_reused=reused)
 
 
 def _fade(x):

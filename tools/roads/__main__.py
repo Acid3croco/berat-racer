@@ -40,7 +40,7 @@ def cmd_fetch_osm(args):
 
 
 def cmd_build(args):
-    network = build_stage.build(args.list, jobs=args.jobs)
+    network = build_stage.build(args.list, jobs=args.jobs, reuse=not args.fresh)
     path = build_stage.save(network)
     print_report(network.report)
     print(f"-> {path}")
@@ -85,6 +85,7 @@ def main():
     commands.add_parser("fetch-osm").set_defaults(run=cmd_fetch_osm)
     build = commands.add_parser("build")
     build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
+    build.add_argument("--fresh", action="store_true", help="solve every height tile again, even those whose inputs did not change")
     build.set_defaults(run=cmd_build)
     commands.add_parser("report").set_defaults(run=cmd_report)
     inspect = commands.add_parser("inspect")
