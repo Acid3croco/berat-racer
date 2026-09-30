@@ -22,7 +22,7 @@ DEFAULT_LIST = "data/big/small_sectors.json"
 
 
 def print_report(report):
-    for stage in ("source", "graph", "alignment", "junction", "profile", "surface", "save"):
+    for stage in ("source", "graph", "alignment", "junction", "crossing", "profile", "surface", "save"):
         if stage in report:
             print(f"{stage:<10} {json.dumps(report[stage], ensure_ascii=False)}")
     print(f"{'class':<11}{'km':>7}{'max grade %':>13}{'min crest m':>13}{'min sag m':>11}{'take-off km/h':>15}{'(draped)':>10}{'cut/fill p90':>14}{'p99':>7}{'max':>7}")

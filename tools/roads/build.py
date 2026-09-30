@@ -10,7 +10,7 @@ import numpy as np
 
 from rasters import BIG, HALF, SECTOR
 
-from . import alignment, geometry, graph as graph_stage, junction as junction_stage, metrics, osm, profile, source, surface
+from . import alignment, crossing, geometry, graph as graph_stage, junction as junction_stage, metrics, osm, profile, source, surface
 
 MARGIN = 300                      # roads are built this far beyond the sectors, so the world's border sees complete junctions
 
@@ -119,6 +119,9 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, fresh=Fal
         link.slim()
     done("junction", links=len(links), narrowed_side_by_side=narrowed, junctions=len(junctions), swallowed_links=sum(link.internal for link in links),
          invalid=sum(not j.valid for j in junctions))
+
+    crossing.flags(links, graph.edges)
+    done("crossing", **crossing.separate(links))
 
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
     done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag), fresh=fresh))

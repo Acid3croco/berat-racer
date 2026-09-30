@@ -1,6 +1,6 @@
-"""Stage 6: the finished road surface, in the shapes its consumers need.
+"""Stage 7: the finished road surface, in the shapes its consumers need.
 
-  pieces      one per surveyed section of a link: centreline, both edges (with heights), what is drawn. The game's road records.
+  pieces      one per surveyed section of a link (two or three where a bridge span starts or ends in it): centreline, both edges (with heights), what is drawn. The game's road records.
   junctions   vertices with heights + triangles + boundary edges. The game's junction meshes.
   footprints  plan polygons of everything that lies on the ground (bridges excluded): the terrain is shaped around them.
   cloud       points of the ground-level surface with its local gradient (its tangent plane): the height of the road at any place nearby.
@@ -32,10 +32,7 @@ class Piece:
     right: np.ndarray
     drawn: np.ndarray             # (n - 1,) segments that are rendered (the others lie inside a junction)
     give_way: list                # [(point index, drawn part lies after it)]: a give-way line is painted across the lane arriving there
-
-    @property
-    def bridge(self):
-        return self.edge.bridge
+    bridge: bool                  # the piece is carried over what lies below (a span of a section may be, see crossing.py)
 
     def polygon(self):
         """Plan outline of the drawn part (None when nothing is drawn). Drawn segments of a piece are always contiguous."""
@@ -74,14 +71,15 @@ def pieces(network):
             seg = np.flatnonzero(link.part == p)
             if not len(seg):
                 continue
-            first, last = seg[0], seg[-1] + 1                      # first and last sample of the piece
-            span = slice(first, last + 1)
             edge = network.edges[e]
-            # a line belongs to the piece that holds the drawn segment next to it
-            give_way = [(i - first, after) for i, after in lines if (first <= i < last if after else first < i <= last)]
-            out.append(Piece(link=k, edge=edge, oneway={1: 2, 2: 1}.get(edge.oneway, 0) if rev else edge.oneway,
-                             s=link.s[span], xy=link.xy[span], z=link.z[span], tan=link.tan[span], hw=link.hw[span], tilt=link.tilt[span],
-                             left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way))
+            for run in np.split(seg, np.flatnonzero(np.diff(link.bridge[seg])) + 1):          # one piece per section, split where a bridge starts or ends
+                first, last = run[0], run[-1] + 1                  # first and last sample of the piece
+                span = slice(first, last + 1)
+                # a line belongs to the piece that holds the drawn segment next to it
+                give_way = [(i - first, after) for i, after in lines if (first <= i < last if after else first < i <= last)]
+                out.append(Piece(link=k, edge=edge, oneway={1: 2, 2: 1}.get(edge.oneway, 0) if rev else edge.oneway,
+                                 s=link.s[span], xy=link.xy[span], z=link.z[span], tan=link.tan[span], hw=link.hw[span], tilt=link.tilt[span],
+                                 left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way, bridge=bool(link.bridge[first])))
     return out
 
 

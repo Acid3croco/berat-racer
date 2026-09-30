@@ -59,6 +59,8 @@ class Link:
     z: np.ndarray = None                  # centreline height
     ground: np.ndarray = None             # LiDAR ground under the centreline (debug)
     tilt: np.ndarray = None               # cross slope: the left edge is tilt * hw above the centre
+    bridge: np.ndarray = None             # per segment: carried over what lies below (see crossing.py)
+    tunnel: np.ndarray = None             # per segment
 
     @property
     def length(self):

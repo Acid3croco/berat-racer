@@ -1,6 +1,7 @@
 """Verify the roads of a built world (BM05 chunks) against its terrain, the way the game sees them:
 
   - the 4 m terrain mesh and the 16 m one never stand above a road surface (sampled on every road quad and junction triangle)
+  - the 4 m terrain mesh never stands above a bridge deck either (the ground falls away under it)
   - how far below the roads they lie (a road must not float either)
   - every road end at a junction meets a junction vertex exactly
 
@@ -82,17 +83,17 @@ def mesh_height(grid, cell, x, z):
     return np.where((ix + iz) % 2 == 0, even, odd)
 
 
-def surface_points(d):
-    """Points spread over every ground-level road triangle of the chunk: (n, 3) x, height, z."""
+def surface_points(d, bridges=False):
+    """Points spread over every ground-level road triangle of the chunk (`bridges`: over every bridge deck instead): (n, 3) x, height, z."""
     weights = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [.5, .5, 0], [0, .5, .5], [.5, 0, .5], [1 / 3, 1 / 3, 1 / 3]])
     tris = []
     for road in d["road_list"]:
-        if road["bridge"]:
+        if road["bridge"] != bridges:
             continue
         for k in np.flatnonzero(road["drawn"]):
             l0, r0, l1, r1 = road["left"][k], road["right"][k], road["left"][k + 1], road["right"][k + 1]
             tris += [(l0, r0, r1), (l0, r1, l1)]
-    for j in d["junction_list"]:
+    for j in d["junction_list"] if not bridges else []:
         tris += [tuple(j["v"][t]) for t in j["tri"]]
     if not tris:
         return np.zeros((0, 3))
@@ -119,13 +120,22 @@ def check(world_dir):
     world_dir = Path(world_dir)
     w = json.load(open(world_dir / "world.json"))
     files = sorted((world_dir / "chunks").glob("m_*"))
-    totals = dict(chunks=len(files), roads=0, junctions=0, points=0, above4=0, above16=0, worst4=0.0, worst16=0.0, loose=0, ends=0)
+    totals = dict(chunks=len(files), roads=0, junctions=0, points=0, above4=0, above16=0, worst4=0.0, worst16=0.0, loose=0, ends=0,
+                  deck_points=0, above_deck=0, worst_deck=0.0)
     gaps, where = [], []
     for path in files:
         d = parse_mid(gzip.open(path).read())
         x0, z0 = w["x0"] + d["ci"] * CHUNK, w["z0"] + d["cj"] * CHUNK
         loose, ends = loose_ends(d)
         totals["roads"] += d["roads"]; totals["junctions"] += d["junctions"]; totals["loose"] += loose; totals["ends"] += ends
+        deck = surface_points(d, bridges=True)
+        if len(deck):
+            lx, lz = deck[:, 0] - x0, deck[:, 2] - z0
+            inside = (lx >= 0) & (lx <= CHUNK) & (lz >= 0) & (lz <= CHUNK)
+            over = mesh_height(d["H"], CELL, lx[inside], lz[inside]) - (deck[inside, 1] + ROAD_LIFT)
+            totals["deck_points"] += len(over); totals["above_deck"] += int((over > 0).sum())
+            if len(over) and over.max() > totals["worst_deck"]:
+                totals["worst_deck"] = float(over.max()); where.append((round(float(over.max()), 3), "4 m / deck", round(float(x0 + lx[inside][over.argmax()]), 1), round(float(z0 + lz[inside][over.argmax()]), 1)))
         p = surface_points(d)
         if not len(p):
             continue
@@ -150,6 +160,6 @@ if __name__ == "__main__":
     report = check(sys.argv[1])
     for key, value in report.items():
         print(f"{key:<18} {value}")
-    ok = report["above4"] == 0 and report["above16"] == 0 and report["loose"] == 0
-    print("OK: no terrain above any road, every road end meets its junction" if ok else "PROBLEMS: see above4 / above16 / loose")
+    ok = report["above4"] == 0 and report["above16"] == 0 and report["above_deck"] == 0 and report["loose"] == 0
+    print("OK: no terrain above any road or bridge deck, every road end meets its junction" if ok else "PROBLEMS: see above4 / above16 / above_deck / loose")
     sys.exit(0 if ok else 1)

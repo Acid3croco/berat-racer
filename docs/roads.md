@@ -10,7 +10,7 @@ cd tools
 uv run python -m roads fetch-osm      # once: OpenStreetMap ways of the area (ssh to the OSM database host, read-only)
 uv run python -m roads build          # ~1.5 min for the small map: every stage, report, artefact in data/big/roads/
 uv run python build_world.py --list data/big/small_sectors.json --out ../world_small --far-cache data/big/far_small_v2.npz
-uv run python check_roads.py ../world_small      # terrain never above a road, every road end meets its junction
+uv run python check_roads.py ../world_small      # terrain never above a road nor a bridge deck, every road end meets its junction
 BERAT_WORLD=$PWD/../world_small ../Build/dev/BeratRacer.app/Contents/MacOS/*      # play it
 ```
 
@@ -72,7 +72,15 @@ two-way / one-way and the direction of a one-way road.
    their junctions merge (tiny roundabouts, slip-road triangles; islands of 12 m2 or more stay as holes).
    Junctions do not depend on each other: each pass of the merge loop, and the outlines, run across `--jobs` forked workers.
    Roads end exactly on the junction outline and share those vertices: nothing overlaps, nothing flickers.
-5. **profile** (vertical): a quadratic programme (Clarabel, an interior-point solver: a tile converges in about 17 iterations to
+5. **crossing**: where two drawn links cross without a junction, one passes over the other. BD TOPO's bridge flag says which and
+   is nearly always right; the LiDAR overrules it where the survey is wrong. The road passing over is the one whose ground climbs
+   3 m above the crossing on both sides, steeply (within 15 m: a trench wall or an abutment, not a valley side), within 60 m of it,
+   while the other road's ground stays down. Its span becomes a bridge, bank top to bank top; a surveyed bridge of the road below
+   within 15 m of the crossing, lying flat on the floor, is dropped. Bridge and tunnel flags are therefore per link segment, and a
+   surveyed section is cut into several pieces where a span starts or ends. On berat70 this changes the two crossings of the
+   Canal du Midi over the ring road at Herbettes / Rangueil (towpath and avenue on the aqueduct side surveyed as on the ground,
+   the ring road in its trench surveyed as the bridge) and nothing else.
+6. **profile** (vertical): a quadratic programme (Clarabel, an interior-point solver: a tile converges in about 17 iterations to
    the optimum, where OSQP at a practical tolerance stopped up to decimetres short on tiles with fixed neighbours). Unknowns: the height of every sample outside junctions and one plane per
    junction. Objective: stay on the LiDAR ground (robust: samples far from the solution are down-weighted), minimise the third
    derivative (grade changes become parabolas). Constraints: maximum grade and minimum crest / sag radius per class.
@@ -82,7 +90,7 @@ two-way / one-way and the direction of a one-way road.
    run in parallel). Each tile is solved with a 600 m halo of its neighbours: what a neighbour already solved is fixed and continued
    smoothly, what is not solved yet is solved along and thrown away. A road crossing a tile border is one continuous profile.
    Against one solve of the whole small map the tiled result differs by 2 - 8 mm on average (a few cm at the 99th percentile).
-6. **surface**: pieces (centreline + both edges + drawn flags per section), junction meshes, footprints and tangent planes for the terrain.
+7. **surface**: pieces (centreline + both edges + drawn flags per section and bridge span), junction meshes, footprints and tangent planes for the terrain.
 
 `build_world.py` then shapes the terrain around that surface (`roads/terrain.py`):
 

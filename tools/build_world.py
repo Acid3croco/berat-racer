@@ -323,7 +323,7 @@ def put_roads(buf, items):
     wi(buf, len(items))
     for p, a, b in items:
         e = p.edge
-        buf += bytes([(1 if e.dirt else 0) | (2 if e.bridge else 0) | (4 if e.lit else 0), int(e.importance) if e.importance.isdigit() else 0,
+        buf += bytes([(1 if e.dirt else 0) | (2 if p.bridge else 0) | (4 if e.lit else 0), int(e.importance) if e.importance.isdigit() else 0,
                       e.limit, e.avg, p.oneway, e.lanes, e.kind, e.road_class.rank])
         wi(buf, zlib.crc32(e.cleabs.encode()) & 0x7FFFFFFF); wf(buf, e.width_real, float(p.hw[a:b].mean()), float(p.s[a]))
         wstr(buf, e.name); wi(buf, b - a)

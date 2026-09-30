@@ -66,6 +66,14 @@ TILT_FADE = 14.0                  # a junction's cross slope is unwound over thi
 TILT_STIFFNESS = 20000.0           # how strongly a junction plane resists tilting across its most important arm (less for the lesser arms)
 BRIDGE_DECK_MAX_ABOVE = 8.0       # surface-model samples higher than this above the ground are trees, not a deck
 
+# ---------------------------------------------------------------- crossings without a junction
+
+CROSSING_RISE = 3.0               # the road passing over: its ground climbs at least this far above the crossing on both sides ...
+CROSSING_REACH = 60.0             # ... within this distance of it (the other road's ground does not) ...
+CROSSING_WALL = 15.0              # ... and steeply: from the floor to that height within this length (a wall, an abutment; not a valley side)
+CROSSING_BANK = 20.0              # the span goes on to the top of that bank, at most this much further
+CROSSING_FLAT = 1.5               # a surveyed bridge of the road below (within CROSSING_WALL of the crossing) is dropped only if its ground never dips more than this under the crossing
+
 # ---------------------------------------------------------------- terrain
 
 ROAD_SINK = 0.05                  # the ground under and beside a road lies this far below the road surface

@@ -1,4 +1,4 @@
-"""Stage 5: vertical alignment of the whole network.
+"""Stage 6: vertical alignment of the whole network.
 
 Unknowns: the height of every link sample outside the junctions, and a plane (height at the centre, two slopes) per junction.
 Link samples inside a junction lie on its plane by construction, so every road through a junction shares its height and its slope there.
@@ -10,6 +10,7 @@ Link samples inside a junction lie on its plane by construction, so every road t
                 -1 / crest_radius <= z'' <= 1 / sag_radius
 
 Bridges aim at their deck (surface model) instead of the ground below; tunnels have no target and are carried by their two ends.
+Both are flags of the link segments (crossing.py), not of whole surveyed sections.
 
 Tiles. The area is cut into square tiles (PROFILE_TILE). A sample belongs to the tile it lies in, a junction (with the road stubs on
 its plane) to the tile of its centre. Tiles are solved in four rounds, like the four colours of a 2 x 2 checkerboard, so the tiles of
@@ -77,13 +78,13 @@ class Samples:
                 if link.junction[1] >= 0:
                     self.plane[o + link.i1:o + m] = link.junction[1]
                 self.curve_ok[o + max(link.i0, 1):o + min(link.i1, m - 2) + 1] = True
+            self.seg_bridge[o:o + m - 1], self.seg_tunnel[o:o + m - 1] = link.bridge, link.tunnel
             for p in np.unique(link.part):
                 edge = edges[link.chain[p][0]]
                 c = edge.road_class
                 at = o + np.flatnonzero(link.part == p)
                 self.seg["max_grade"][at], self.seg["crest"][at], self.seg["sag"][at] = c.max_grade, c.crest_radius, c.sag_radius
                 self.seg["wavelength"][at] = c.profile_wavelength
-                self.seg_bridge[at], self.seg_tunnel[at] = edge.bridge, edge.tunnel
         self.centres = np.array([j.centre for j in network.junctions]).reshape(-1, 2)
         self.tilt_rows = [_tilt_rows(network, j) for j in network.junctions]
         # ownership: a sample belongs to the tile it lies in, a junction and the samples on its plane to the tile of its centre

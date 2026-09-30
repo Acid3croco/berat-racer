@@ -21,7 +21,7 @@ def surfaces(network):
     for k, link in enumerate(network.links):
         polygon = ribbon_polygon(link)
         if polygon is not None:
-            out.append((f"L{k}", polygon, any(network.edges[e].bridge for e, _ in link.chain)))
+            out.append((f"L{k}", polygon, bool(link.bridge.any())))
     for k, junction in enumerate(network.junctions):
         if junction.polygon is not None:
             out.append((f"J{k}", junction.polygon, False))
@@ -69,7 +69,7 @@ def profile_report(network):
         s, z, ground = link.s[body], link.z[body], link.ground[body]
         edges = [network.edges[link.chain[p][0]] for p in link.part[link.i0:link.i1]]            # per segment
         names = np.array([e.klass for e in edges])
-        bridge = np.array([e.bridge or e.tunnel for e in edges])
+        bridge = (link.bridge | link.tunnel)[link.i0:link.i1]
         grade, curve, raw, off = np.abs(np.diff(z) / np.diff(s)), _curvature(z, s), _curvature(ground, s), (z - ground)[:-1]
         for name in set(names):
             seg = names == name
