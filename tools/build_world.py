@@ -424,6 +424,20 @@ def run_holds(p, a, b, arrow):
     i = int(np.argmin(np.hypot(p.xy[:, 0] - arrow[0], p.xy[:, 1] - arrow[1])))
     return a <= i < b - 1 or (i == b - 1 == len(p.xy) - 1)
 
+def put_seam(buf, seam, weight):
+    """BM08: the ground around the paved surfaces as shared vertices and triangles of vertex indices, laid out to compress:
+    vertex count, then the four columns x, height, north, field weight one after the other, each as its four byte planes
+    (byte 0 of every float32, then byte 1, ...); triangle count, index width (2 or 4), then the corner indices as differences from
+    the previous one (int16 or int32). Vertices are shared as written (float32): the triangles are exactly BM07's."""
+    v = np.c_[seam[:, :, [0, 2, 1]].reshape(-1, 3), weight.reshape(-1)].astype("<f4")
+    uniq, idx = np.unique(v, axis=0, return_inverse=True) if len(v) else (np.zeros((0, 4), "<f4"), np.zeros(0, int))
+    wi(buf, len(uniq))
+    for k in range(4):
+        buf += np.ascontiguousarray(uniq[:, k]).view(np.uint8).reshape(-1, 4).T.tobytes()
+    delta = np.diff(idx.reshape(-1).astype(np.int64), prepend=0)
+    width = 2 if len(delta) == 0 or (delta.min() >= -32768 and delta.max() <= 32767) else 4
+    wi(buf, len(seam)); buf.append(width); buf += delta.astype("<i2" if width == 2 else "<i4").tobytes()
+
 def put_facade(buf, b):
     """BM07 facade of a building (tools/facades.py): seed, floors, floor height, era, wall material, then its walls (first outline point,
     edge count, flags, ground at both ends) each with its openings (along, floor, type, width, height, sill)."""
@@ -899,7 +913,7 @@ def process_sector(args):
             th = H[r0:r0 + CV, c0:c0 + CV]; tc = C[r0:r0 + CV, c0:c0 + CV]
             base = float(th.min()); step = max(0.005, math.ceil((float(th.max()) - base) / 65535 * 1000 - 1e-9) / 1000)
             q = np.clip(np.round((th - base) / step), 0, 65535).astype("<u2")
-            buf = bytearray(b"BM07"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
+            buf = bytearray(b"BM08"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
             buf += q.tobytes(); buf += tc.astype(np.uint8).tobytes()
             buf += np.clip(low_col[r0:r0 + CV:4, c0:c0 + CV:4], 0, 255).astype(np.uint8).tobytes()
             wfa(buf, LOW[r0 // 4:r0 // 4 + LV, c0 // 4:c0 // 4 + LV])                 # heights of the 16 m terrain (already kept below the roads)
@@ -917,7 +931,7 @@ def process_sector(args):
             lap("write")
             seam, seam_f = stitch.fill(surfaces, band_cut, H, win.x0, win.z0, CELL, (win.x0 + c0 * CELL, win.z0 + r0 * CELL, win.x0 + c0 * CELL + CHUNK, win.z0 + r0 * CELL + CHUNK), field, paved_height)
             lap("stitch_fill")
-            wi(buf, len(seam)); wfa(buf, seam[:, :, [0, 2, 1]].ravel()); wfa(buf, seam_f.ravel())   # BM07: the ground around the paved surfaces (x, y, z), its field weight per vertex
+            put_seam(buf, seam, seam_f)                                                  # BM08: the ground around the paved surfaces
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
                 b = buildings[k]

@@ -15,7 +15,7 @@ def content(path):
 
 def terrain_difference(a, b):
     """Largest difference in metres between the 4 m terrain heights of two BM05 - BM07 chunks (None when the layout differs)."""
-    if a[:4] not in (b"BM05", b"BM06", b"BM07") or b[:4] not in (b"BM05", b"BM06", b"BM07"):
+    if a[:4] not in (b"BM05", b"BM06", b"BM07", b"BM08") or b[:4] not in (b"BM05", b"BM06", b"BM07", b"BM08"):
         return None
     out = []
     for data in (a, b):

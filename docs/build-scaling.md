@@ -171,3 +171,23 @@ gone (the content keys decide what to rebuild). `far.bin`, which the game reads 
 sectors at a time (two passes: heights, then colours); a vertex no sector covers takes the nearest covered height of its band.
 Small map: `far.bin` byte for byte the same as before; a second run rebuilds 0 of 9 sectors. `places.json` comes from the place
 tiles of the map (step 2); `world.json` and `spawn.json` are a few hundred bytes.
+
+## Step 6: disk
+
+**Chunks BM08.** Three quarters of a chunk's bytes were the ground around the paved surfaces (BM07: every triangle as nine
+float32 and three weights). BM08 is BM07 with that list indexed and laid out to compress: the shared vertices as four columns (x,
+height, north, weight), each written as its four byte planes, then the corners as differences from the previous index (int16 when
+they fit). The vertices are shared as written (float32), so the game gets exactly BM07's triangles: `WorldData.cs` expands them into
+the same arrays (BM05 - BM07 still load). Small map: 92 -> 76 MB, `check_roads` / `check_gaps` unchanged, the roadtest gives the
+same figures on the BM07 and the BM08 build of the same roads. **Online play: hosts and players need the new build and the new map
+together** (an older player cannot read BM08).
+
+**Road intermediates** are zstd-compressed pickles per tile and pass (`align`, `network`, `profile`, `lanes`; the `surface` files
+are removed once numbered): b70s20 474 -> 290 MB (6.9 MB a tile). The whole-network pickle (2.5 GB for berat70new) and the
+per-sector copies (3.9 GB) are gone.
+
+| per km² | before | after |
+|---|---|---|
+| world output | 1.18 MB | 0.97 MB (b70s20) |
+| road intermediates | 2.4 MB | 0.68 MB (b70s20 incl. its ring of tiles) |
+| world keys, far patches | - | ~0.01 MB |

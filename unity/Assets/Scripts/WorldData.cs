@@ -275,7 +275,7 @@ public class ChunkData
             for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * step;
             d.Col = br.ReadBytes(CV * CV * 3); d.LowCol = br.ReadBytes(LV * LV * 3);
             int version = magic.StartsWith("BM") && int.TryParse(magic.Substring(2), out int v) ? v : 0;
-            if (version >= 5 && version <= 7)
+            if (version >= 5 && version <= 8)
             {
                 d.LowH = Floats(br, LV * LV);
                 d.Roads = ReadRoads(br, version); d.Ctx = ReadRoads(br, version);
@@ -292,7 +292,9 @@ public class ChunkData
                 d.Lanes = ReadLanes(br);
                 int nh = br.ReadInt32();
                 if (nh > 0) { d.Holes = new bool[(CV - 1) * (CV - 1)]; var hb = br.ReadBytes(nh * 2); for (int k = 0; k < nh; k++) d.Holes[hb[k * 2] | hb[k * 2 + 1] << 8] = true; }
-                int ns = br.ReadInt32(); d.Seam = Floats(br, ns * 9); d.SeamF = Floats(br, ns * 3); if (ns > 0) d.IndexSeam();
+                if (version >= 8) ReadIndexedSeam(br, d);
+                else { int ns = br.ReadInt32(); d.Seam = Floats(br, ns * 9); d.SeamF = Floats(br, ns * 3); }
+                if (d.Seam.Length > 0) d.IndexSeam();
             }
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)
@@ -321,6 +323,29 @@ public class ChunkData
                 d.Buildings[i] = b;
             }
             return d;
+        }
+    }
+
+    /// <summary>BM08: the ground around the paved surfaces as shared vertices and triangles of vertex indices (tools/build_world.py
+    /// put_seam): the columns x, y, z, field weight each as four byte planes, then the corner indices as differences from the previous
+    /// one (int16 or int32). Expanded to the BM07 arrays the rest of the game reads.</summary>
+    static void ReadIndexedSeam(BinaryReader br, ChunkData d)
+    {
+        int nv = br.ReadInt32();
+        var col = new float[4][];
+        for (int k = 0; k < 4; k++)
+        {
+            var planes = br.ReadBytes(nv * 4); var raw = new byte[nv * 4];
+            for (int i = 0; i < nv; i++) for (int p = 0; p < 4; p++) raw[i * 4 + p] = planes[p * nv + i];
+            col[k] = new float[nv]; Buffer.BlockCopy(raw, 0, col[k], 0, raw.Length);
+        }
+        int nt = br.ReadInt32(); int width = br.ReadByte();
+        d.Seam = new float[nt * 9]; d.SeamF = new float[nt * 3];
+        int at = 0;
+        for (int k = 0; k < nt * 3; k++)
+        {
+            at += width == 2 ? br.ReadInt16() : br.ReadInt32();
+            d.Seam[k * 3] = col[0][at]; d.Seam[k * 3 + 1] = col[1][at]; d.Seam[k * 3 + 2] = col[2][at]; d.SeamF[k] = col[3][at];
         }
     }
 

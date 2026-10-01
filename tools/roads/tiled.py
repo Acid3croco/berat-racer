@@ -21,8 +21,10 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
+import zstandard
 from scipy.spatial import cKDTree
 
 import sources
@@ -69,16 +71,15 @@ def tile_file(tag, name, t):
 
 
 def write_pickle(path, value):
+    """A tile file: the pickled value, zstd-compressed (level 3: the passes are not slowed by it), written atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    with open(scratch, "wb") as fh:
-        pickle.dump(value, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    scratch.write_bytes(zstandard.ZstdCompressor(level=3).compress(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)))
     os.replace(scratch, path)
 
 
 def read_pickle(path):
-    with open(path, "rb") as fh:
-        return pickle.load(fh)
+    return pickle.loads(zstandard.ZstdDecompressor().decompress(Path(path).read_bytes()))
 
 
 # ---------------------------------------------------------------- the area
