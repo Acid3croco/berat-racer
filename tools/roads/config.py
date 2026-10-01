@@ -92,7 +92,12 @@ PROFILE_ROBUST_ROUNDS = 2
 GRADE_FOLLOWS_GROUND = 1.2        # where the ground itself is steeper than the class allows, the road may be this much steeper than the ground
 GRADE_GROUND_WINDOW = 40.0        # ... the ground grade being measured over this length
 GRADE_ABSOLUTE_MAX = 0.45
-TILT_FADE = 14.0                  # a junction's cross slope is unwound over this length of each arm
+TILT_MAX = 0.10                   # no cross slope beyond this
+SUPERELEVATION_CLASSES = ("motorway", "ramp", "main", "collector", "local")      # banked in bends (streets, rings and tracks are not)
+SUPERELEVATION_SHARE = 0.5        # the bank takes this share of the lateral demand v^2 / (127 R) at the design speed ...
+SUPERELEVATION_MAX = 0.07         # ... up to this cross slope (French practice: 7 % in the tightest bends)
+SUPERELEVATION_WEIGHT = 50.0      # how strongly the cross slope follows that design value (a 1 % miss over 2 m weighs like 7 cm off the ground)
+TILT_WAVELENGTH = 10.0            # m: changes of cross slope shorter than this are smoothed away (the bank is run in and out)
 TILT_STIFFNESS = 20000.0           # how strongly a junction plane resists tilting across its most important arm (less for the lesser arms)
 BRIDGE_DECK_MAX_ABOVE = 8.0       # surface-model samples higher than this above the ground are trees, not a deck
 

@@ -6,8 +6,14 @@ Link samples inside a junction lie on its plane by construction, so every road t
     minimise    sum w_i (z_i - ground_i)^2                 stay on the LiDAR ground (robust: outliers are down-weighted and the solve repeated)
               + lambda * sum (third derivative of z)^2     grade changes as parabolas (zero third derivative), the curve of road design
               + tilt penalty                               a junction plane should not tilt across its important arms
+              + mu * sum (t_i - e_i)^2 + nu * sum t''^2     superelevation: the cross slope t of every sample follows its design value e
+                                                           (from the bend and the design speed), smoothly
     subject to  |grade| <= max_grade                       per road class
                 -1 / crest_radius <= z'' <= 1 / sag_radius
+                |t| <= TILT_MAX
+
+The cross slope of a sample on a junction plane is the plane's slope across the road, so the superelevation of each arm meets the
+junction's own tilt without a step.
 
 Bridges aim at their deck (surface model) instead of the ground below; tunnels have no target and are carried by their two ends.
 Both are flags of the link segments (crossing.py), not of whole surveyed sections.
@@ -68,6 +74,7 @@ class Samples:
         self.curve_ok = np.zeros(n, bool)                 # a curvature limit applies at the sample (from mouth to mouth)
         self.seg = {key: np.zeros(n) for key in ("max_grade", "crest", "sag", "wavelength")}       # of the segment after each sample
         self.seg_bridge, self.seg_tunnel = np.zeros(n, bool), np.zeros(n, bool)
+        self.bank = np.zeros(n)                           # design superelevation: cross slope, left edge above the centre positive
         for k, link in enumerate(links):
             o, m = self.offsets[k], len(link.s)
             if link.internal:
@@ -85,6 +92,7 @@ class Samples:
                 at = o + np.flatnonzero(link.part == p)
                 self.seg["max_grade"][at], self.seg["crest"][at], self.seg["sag"][at] = c.max_grade, c.crest_radius, c.sag_radius
                 self.seg["wavelength"][at] = c.profile_wavelength
+            self.bank[o:o + m] = superelevation(link, edges)
         self.centres = np.array([j.centre for j in network.junctions]).reshape(-1, 2)
         self.tilt_rows = [_tilt_rows(network, j) for j in network.junctions]
         # ownership: a sample belongs to the tile it lies in, a junction and the samples on its plane to the tile of its centre
@@ -95,6 +103,26 @@ class Samples:
         # samples by the tile they lie in and by the tile that owns them: a block only looks at the 3 x 3 tiles around its own
         assert config.PROFILE_HALO <= config.PROFILE_TILE
         self.by_tile = [_group(np.floor(self.xy / config.PROFILE_TILE).astype(int)), _group(self.tile)]
+
+
+def superelevation(link, edges):
+    """Design cross slope of every sample of a link: a share of the lateral demand v^2 / (127 R) at the class's design speed, up to
+    SUPERELEVATION_MAX, banked towards the inside of the bend (a left bend lowers the left edge); none on the classes that are not
+    banked, inside junctions and on bridges. Smoothed over the samples like the curve that produces it."""
+    n = len(link.s)
+    if n < 3 or link.internal:
+        return np.zeros(n)
+    heading = np.unwrap(np.arctan2(link.tan[:, 1], link.tan[:, 0]))
+    kappa = np.gradient(heading, link.s)                                           # 1 / m, left bends positive
+    kappa = uniform_filter1d(kappa, 5, mode="nearest")
+    seg_class = [edges[link.chain[p][0]].road_class for p in link.part]
+    kmh = np.array([c.design_kmh if c.name in config.SUPERELEVATION_CLASSES else 0.0 for c in seg_class])
+    kmh = np.r_[kmh, kmh[-1:]]
+    demand = kmh ** 2 * np.abs(kappa) / 127.0
+    bank = -np.sign(kappa) * np.clip(config.SUPERELEVATION_SHARE * demand, 0.0, config.SUPERELEVATION_MAX)
+    bank[:link.i0 + 1] = 0.0
+    bank[link.i1:] = 0.0
+    return bank
 
 
 def _group(tiles):
@@ -113,7 +141,7 @@ def _tilt_rows(network, junction):
     return [(np.array([-arm.tan[0][1], arm.tan[0][0]]), np.sqrt(config.TILT_STIFFNESS) * (rank / ranks.max()) ** 2) for arm, rank in zip(arms, ranks)]
 
 
-def make_block(samples, tile, known_z, known_plane):
+def make_block(samples, tile, known_z, known_plane, known_t=None):
     """Everything one tile solve needs, as plain arrays: the samples of the tile and of its halo, and what is already fixed among them."""
     lo = np.array(tile) * config.PROFILE_TILE - config.PROFILE_HALO
     hi = (np.array(tile) + 1) * config.PROFILE_TILE + config.PROFILE_HALO
@@ -135,7 +163,8 @@ def make_block(samples, tile, known_z, known_plane):
         plane=np.where(plane >= 0, local[np.maximum(plane, 0)], -1),
         curve_ok=samples.curve_ok[ids], seg={key: values[ids] for key, values in samples.seg.items()},
         seg_bridge=samples.seg_bridge[ids], seg_tunnel=samples.seg_tunnel[ids],
-        known_z=known_z[ids], own=(samples.tile[ids] == np.array(tile)).all(axis=1),
+        known_z=known_z[ids], known_t=(known_t if known_t is not None else np.zeros(len(known_z)))[ids], bank=samples.bank[ids],
+        own=(samples.tile[ids] == np.array(tile)).all(axis=1),
         junctions=junctions, centres=samples.centres[junctions], known_plane=known_plane[junctions],
         tilt_rows=[samples.tilt_rows[j] for j in junctions])
 
@@ -242,11 +271,11 @@ def solve_block_cached(block, path, fresh=False):
     if path.exists() and not fresh:
         with np.load(path) as stored:
             if str(stored["key"]) == key:
-                return dict(tile=block["tile"], z=stored["z"], planes=stored["planes"], ground=stored["ground"], status=str(stored["status"]), reused=True)
+                return dict(tile=block["tile"], z=stored["z"], planes=stored["planes"], ground=stored["ground"], status=str(stored["status"]), t=stored["t"], reused=True)
     result = solve_block(block)
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
-    np.savez(scratch, key=key, z=result["z"], planes=result["planes"], ground=result["ground"], status=result["status"])
+    np.savez(scratch, key=key, z=result["z"], planes=result["planes"], ground=result["ground"], status=result["status"], t=result["t"])
     os.replace(scratch, path)
     return result
 
@@ -255,7 +284,7 @@ def solve_block(block):
     """Solve one tile with its halo. Returns dict(z per block sample, plane per block junction, ground, status)."""
     n, xy = len(block["ids"]), block["xy"]
     if n == 0:
-        return dict(tile=block["tile"], z=np.zeros(0), planes=block["known_plane"], ground=np.zeros(0), status="empty")
+        return dict(tile=block["tile"], z=np.zeros(0), planes=block["known_plane"], ground=np.zeros(0), status="empty", t=np.zeros(0))
     terrain = Mosaic(*_window(xy), kinds=("mnt", "mnh"))
 
     # ---- targets, smoothness, limits
@@ -286,18 +315,34 @@ def solve_block(block):
     planar = np.flatnonzero(~fixed & (plane >= 0))
     base = np.where(fixed, known_z - datum, 0.0)                                       # z - datum = expand @ x + base
     if n_x == 0:
-        return dict(tile=block["tile"], z=base + datum, planes=block["known_plane"], ground=ground, status="fixed")
+        return dict(tile=block["tile"], z=base + datum, planes=block["known_plane"], ground=ground, status="fixed", t=block["known_t"].copy())
+    t_col = n_x + np.arange(len(free))                                                  # the cross slope of every free sample is unknown too
+    n_x += len(free)
     d = xy[planar] - block["centres"][plane[planar]]
     col = column[plane[planar]]
     expand = sparse.csr_matrix(
         (np.r_[np.ones(len(free)), np.ones(len(planar)), d[:, 0], d[:, 1]], (np.r_[free, planar, planar, planar], np.r_[np.arange(len(free)), col, col + 1, col + 2])),
         shape=(n, n_x))
+    nrm = block["nrm"][planar]                                                          # t = expand_t @ x + base_t
+    open_planar = col >= 0
+    expand_t = sparse.csr_matrix(
+        (np.r_[np.ones(len(free)), nrm[open_planar, 0], nrm[open_planar, 1]],
+         (np.r_[free, planar[open_planar], planar[open_planar]], np.r_[t_col, col[open_planar] + 1, col[open_planar] + 2])), shape=(n, n_x))
+    base_t = np.where(fixed, block["known_t"], 0.0)
+    known_plane_rows = planar[~open_planar]
+    base_t[known_plane_rows] = (nrm[~open_planar] * block["known_plane"][plane[known_plane_rows]][:, 1:]).sum(axis=1)
 
+    # superelevation: follow the design cross slope (not inside junctions: there the plane decides), smoothly
+    banked = np.r_[free]
+    bank_fit = sparse.diags(np.sqrt(config.SUPERELEVATION_WEIGHT * step[banked])) @ expand_t[banked]
+    bank_base = np.sqrt(config.SUPERELEVATION_WEIGHT * step[banked]) * (base_t[banked] - block["bank"][banked])
+    bank_smooth = curvature.multiply(np.sqrt(config.SUPERELEVATION_WEIGHT * config.TILT_WAVELENGTH ** 4 * np.diff(s)[mid_at])[:, None]).tocsr()
     tilts = [(column[j], scale * across) for j, rows in enumerate(block["tilt_rows"]) if column[j] >= 0 for across, scale in rows]
     tilt_col = np.array([c for c, _ in tilts], int)
     tilt = sparse.csr_matrix((np.array([v for _, v in tilts]).ravel(), (np.repeat(np.arange(len(tilts)), 2), np.column_stack([tilt_col + 1, tilt_col + 2]).ravel())),
                              shape=(len(tilts), n_x))
     smooth_x, smooth_base = smooth_z @ expand, smooth_z @ base
+    bank_x, bank_xbase = bank_smooth @ expand_t, bank_smooth @ base_t
     limits_z = sparse.vstack([grade, curve]).tocsr()
     limits_x = (limits_z @ expand).tocsr()
     limits_x.eliminate_zeros()
@@ -306,9 +351,13 @@ def solve_block(block):
     upper = np.r_[grade_max, curve_hi] - shift
     live = np.diff(limits_x.indptr) > 0                                                # limits between fixed heights only are not ours to enforce
     limits_x, lower, upper = limits_x[live].tocsc(), lower[live], upper[live]
-    regular = (smooth_x.T @ smooth_x + tilt.T @ tilt).tocsc()
+    bound_t = sparse.csr_matrix((np.ones(len(free)), (np.arange(len(free)), t_col)), shape=(len(free), n_x))
+    limits_x = sparse.vstack([limits_x, bound_t]).tocsc()
+    lower, upper = np.r_[lower, np.full(len(free), -config.TILT_MAX)], np.r_[upper, np.full(len(free), config.TILT_MAX)]
+    regular = (smooth_x.T @ smooth_x + tilt.T @ tilt + bank_x.T @ bank_x + bank_fit.T @ bank_fit).tocsc()
+    linear = smooth_x.T @ smooth_base + bank_x.T @ bank_xbase + bank_fit.T @ bank_base
 
-    at_fixed = np.asarray((limits_z[live][:, np.flatnonzero(fixed)] != 0).sum(axis=1)).ravel() > 0      # limits that involve a height fixed by a neighbour
+    at_fixed = np.r_[np.asarray((limits_z[live][:, np.flatnonzero(fixed)] != 0).sum(axis=1)).ravel() > 0, np.zeros(len(free), bool)]      # limits that involve a height fixed by a neighbour
 
     def run(slack):
         """Robust rounds; `slack`: per limit, the fraction it is widened by (None: as configured)."""
@@ -316,7 +365,7 @@ def solve_block(block):
         x, status, fit = None, "", weight * step
         for _ in range(config.PROFILE_ROBUST_ROUNDS + 1):
             p = sparse.triu(regular + expand.T @ sparse.diags(fit) @ expand, format="csc")
-            q = smooth_x.T @ smooth_base + expand.T @ (fit * (base - (target - datum)))
+            q = linear + expand.T @ (fit * (base - (target - datum)))
             x, status = solve_qp(p, q, limits_x, lower - widen * (np.abs(lower) + 1e-3), upper + widen * (np.abs(upper) + 1e-3))
             if x is None:
                 return None, status
@@ -334,10 +383,11 @@ def solve_block(block):
     if x is None:
         x = np.zeros(n_x)
     z = expand @ x + base + datum
+    t = expand_t @ x + base_t
     planes = block["known_plane"].copy()
     for j in np.flatnonzero(open_junction):
         planes[j] = x[column[j]:column[j] + 3] + np.array([datum, 0.0, 0.0])
-    return dict(tile=block["tile"], z=z, planes=planes, ground=ground, status=status)
+    return dict(tile=block["tile"], z=z, planes=planes, ground=ground, status=status, t=t)
 
 
 # ---------------------------------------------------------------- the whole area
@@ -349,7 +399,7 @@ def solve(network, log=print, jobs=6, keep_in=None, fresh=False):
     links, junctions = network.links, network.junctions
     samples = Samples(network)
     n = samples.offsets[-1]
-    z, ground = np.full(n, np.nan), np.zeros(n)
+    z, ground, tilt = np.full(n, np.nan), np.zeros(n), np.zeros(n)
     planes = np.full((len(junctions), 3), np.nan)
     tiles = sorted({tuple(t) for t in samples.tile.tolist()} | {tuple(t) for t in samples.junction_tile.tolist()})
     statuses, reused = {}, 0
@@ -361,7 +411,7 @@ def solve(network, log=print, jobs=6, keep_in=None, fresh=False):
         nonlocal reused
         reused += result.get("reused", False)
         own = block["own"]
-        z[block["ids"][own]], ground[block["ids"][own]] = result["z"][own], result["ground"][own]
+        z[block["ids"][own]], ground[block["ids"][own]], tilt[block["ids"][own]] = result["z"][own], result["ground"][own], result["t"][own]
         mine = (samples.junction_tile[block["junctions"]] == np.array(block["tile"])).all(axis=1)
         planes[block["junctions"][mine]] = result["planes"][mine]
         statuses[result["status"]] = statuses.get(result["status"], 0) + 1
@@ -369,7 +419,7 @@ def solve(network, log=print, jobs=6, keep_in=None, fresh=False):
     with ProcessPoolExecutor(jobs) as pool:
         for colour in range(4):                                     # tiles of one colour never touch: they are solved side by side
             batch = [t for t in tiles if (t[0] & 1) + 2 * (t[1] & 1) == colour]
-            pending = {submit(pool, block): block for block in (make_block(samples, t, z, planes) for t in batch)}
+            pending = {submit(pool, block): block for block in (make_block(samples, t, z, planes, tilt) for t in batch)}
             for count, future in enumerate(as_completed(pending), 1):
                 keep(pending[future], future.result())
                 if count % 20 == 0 or count == len(pending):
@@ -379,32 +429,5 @@ def solve(network, log=print, jobs=6, keep_in=None, fresh=False):
         junction.plane = planes[i]
     for k, link in enumerate(links):
         span = slice(samples.offsets[k], samples.offsets[k + 1])
-        link.z, link.ground = z[span].copy(), ground[span].copy()
-        link.tilt = _tilt(link, junctions)
+        link.z, link.ground, link.tilt = z[span].copy(), ground[span].copy(), tilt[span].copy()
     return dict(tiles=len(tiles), samples=int(n), statuses=statuses, unsolved_samples=int(np.isnan(z).sum()), tiles_reused=reused)
-
-
-def _fade(x):
-    """1 at x <= 0 falling smoothly to 0 at x >= 1."""
-    t = np.clip(x, 0.0, 1.0)
-    return 1.0 - t * t * (3.0 - 2.0 * t)
-
-
-def _tilt(link, junctions):
-    """Cross slope per sample: that of the junction plane inside a junction, unwound over TILT_FADE beyond each mouth."""
-    def plane_tilt(junction, i):
-        return link.nrm[i] @ junctions[junction].plane[1:]
-
-    n = len(link.s)
-    if link.internal:
-        return np.array([plane_tilt(max(link.junction), i) for i in range(n)])
-    tilt = np.zeros(n)
-    if link.junction[0] >= 0:
-        tilt += plane_tilt(link.junction[0], link.i0) * _fade((link.s - link.s[link.i0]) / config.TILT_FADE)
-    if link.junction[1] >= 0:
-        tilt += plane_tilt(link.junction[1], link.i1) * _fade((link.s[link.i1] - link.s) / config.TILT_FADE)
-    if link.junction[0] >= 0:
-        tilt[:link.i0 + 1] = [plane_tilt(link.junction[0], i) for i in range(link.i0 + 1)]
-    if link.junction[1] >= 0:
-        tilt[link.i1:] = [plane_tilt(link.junction[1], i) for i in range(link.i1, n)]
-    return tilt

@@ -24,6 +24,7 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 | 3 | Offline lane graph per chunk; traffic and autopilot follow it | done | 13,647 elements (4,681 lanes, 8,196 connectors, 770 U-turns); 0 kinks at joins (worst 6.6°), 0 gaps; controls from 25 stop / 40 give-way OSM nodes and ranks (3,064 priority, 984 give way, 36 stop, 4,112 priority to the right); 0 of 6 OSM restrictions apply on the small map (5 median U-turns, 1 off our network), 16 of 58 on the Herbettes sector; traffic kinks 18.5 / km -> 1.0 / km; autotest 2,507 m over 28 cells (2,242 m over 19 before), 0 stuck; check_roads: every successor exists and joins |
 | 4 | Tunnels out of the terrain, portals, hole mask (BM07) | done | OSM `tunnel` / service `layer<0` read; LiDAR keeps a tunnel only under 3 m of cover: small map 0 of 2 (both BD TOPO tunnels at grade under trees, so nothing changes there), Herbettes 3 of 7 kept (185 m): the ring road is no longer cut as a trench through the hill; 106 portal cells cut; `check_roads`: 0 tunnel points under terrain within headroom; a car drives through at 88 km/h without leaving the road. `parking=underground` polygons wait for step 9's fetch |
 | 5 | Terrain-road edge: ribbon + bench under it, crest-aware sink, lowest road, skirts, road pixels out of the ortho | done | verge roughness p99 0.162 -> 0.112 m, steps > 0.25 m 0.43 % -> 0.22 % (4 - 8 m from the edge: 0.21 - 0.24 -> 0.11 - 0.14); the drape takes the lowest ribbon (nearby roads), ribbons stop a metre before another road; crest sink cell^2 / 2R (16 m and 4 m mesh: still 0 points above a road); asphalt bleed: luminance near / far 130 / 126 -> 125 / 125; roadtest input 6.7 -> 5.6 m/s², hops 18 -> 19, harshness 0.43 -> 0.40; autotest 2,505 m, 0 stuck. Conforming triangulation not needed. Load 1.2 -> 1.8 s, managed memory 109 -> 329 MB (ribbon meshes) |
+| 6 | Superelevation in the profile QP | done | cross slope per sample solved with the heights; bends under 300 m radius banked >= 1 % inward on 89 - 91 % of their length (banked classes), max 8.4 %; junction planes max 10.2 -> 8.4 %; LiDAR fit p90 unchanged (p99 +0.03 - 0.04 m on local / collector); terrain above road 0; roadtest input 6.5 m/s², hops 19; autotest 2,346 m, 0 stuck |
 
 Legend for the *Status* column: **used**: read and has an effect · **dropped**: fetched or present, then ignored ·
 **absent**: not fetched at all.
@@ -85,7 +86,7 @@ Target:
     crests);
   - edge lines from the drawn width;
   - arrows from `turn:lanes`.
-- **Superelevation** in curves from the horizontal curvature and the class design speed (the profile QP can take the cross slope as a variable).
+- **Superelevation** in curves from the horizontal curvature and the class design speed (the profile QP can take the cross slope as a variable) (**done**, step 6).
 
 ### 1.3 Traffic path tracking
 

@@ -99,7 +99,13 @@ two-way / one-way and the direction of a one-way road.
    the optimum, where OSQP at a practical tolerance stopped up to decimetres short on tiles with fixed neighbours). Unknowns: the height of every sample outside junctions and one plane per
    junction. Objective: stay on the LiDAR ground (robust: samples far from the solution are down-weighted), minimise the third
    derivative (grade changes become parabolas). Constraints: maximum grade and minimum crest / sag radius per class.
-   Every arm lies on its junction's plane up to its mouth; its cross slope there is the plane's and is unwound over 14 m.
+   Every arm lies on its junction's plane up to its mouth. The cross slope of every sample is an unknown of the same QP
+   (superelevation): it follows a design value, half the lateral demand v^2 / (127 R) at the class's design speed up to 7 %, banked
+   towards the inside of the bend, on motorways, ramps, main, collector and local roads (streets, rings and tracks stay flat),
+   smoothly (changes shorter than 10 m are smoothed away), never beyond 10 %; on a junction plane it is the plane's slope across
+   the road, so each arm meets its junction without a step. Small map: 89 - 91 % of the length in bends under 300 m radius is
+   banked at least 1 % towards the inside (local 16.0 / 18.0 km, collector 12.7 / 14.0, main 1.1 / 1.2), at most 8.4 %; the
+   steepest junction plane went from 10.2 to 8.4 %.
    Bridges aim at their deck (surface model), not at the ground below.
    The area is solved in 3.2 km tiles, in four rounds like the colours of a 2 x 2 checkerboard (tiles of one round never touch and
    run in parallel). Each tile is solved with a 600 m halo of its neighbours: what a neighbour already solved is fixed and continued
@@ -209,7 +215,7 @@ The traffic log reports *kinks*: a car's path heading jumping faster than 90°/s
   redone on every build; junctions run in parallel but are also redone; only the height solve is tiled and kept between builds. The region-sized `world/` is still in the old format and loads through `LegacyChunk`.
 - Two roads closer than a terrain cell at different heights (a village terrace) cannot both sit on a 4 m terrain grid: the upper
   one gets a retaining wall along its edge.
-- Cross-sections are flat except near junctions; no superelevation in curves yet (the data and the physics already carry a cross slope).
+- Streets, rings and tracks are not banked; there is no crown (cross-sections are planes).
 - No pavements; lighting (`lit`) is carried in the data but not used yet. Give-way lines are painted where a paved road meets a
   junction as the lower-ranked arm (equal ranks get none: priority to the right); stop signs are not in the data.
 - Turn lanes that do not fit in the surveyed width are not drawn (Herbettes sector: 39 arrow sets skipped, 29 arrows drawn); the
