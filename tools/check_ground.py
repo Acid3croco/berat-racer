@@ -69,7 +69,7 @@ def measure_world(world_dir):
 
     import ground
     cv, classes, kinds = 101, Counter(), Counter()
-    rowed = vines_km = bays = parked = hedges_km = 0.0
+    rowed = vines_km = bays = parked = hedges_km = parks = park_m2 = 0.0
     for path in sorted(Path(world_dir, "chunks").glob("n_*")):
         raw = gzip.open(path).read()
         if raw[:4] != b"BN02":
@@ -89,12 +89,17 @@ def measure_world(world_dir):
         for _ in range(n):                                                               # height, point count, points
             k = struct.unpack_from("<i", raw, o + 4)[0]; xy = np.frombuffer(raw, "<f4", 2 * k, o + 8).reshape(-1, 2); o += 8 + 8 * k
             hedges_km += float(np.hypot(*np.diff(xy, axis=0).T).sum()) / 1000
+        n = struct.unpack_from("<i", raw, o)[0]; o += 4
+        for _ in range(n):                                                               # car-park surfaces: vertices (x, y, z), triangles
+            k = struct.unpack_from("<i", raw, o)[0]; v = np.frombuffer(raw, "<f4", 3 * k, o + 4).reshape(-1, 3); o += 4 + 12 * k
+            k = struct.unpack_from("<i", raw, o)[0]; t = np.frombuffer(raw, "<i4", 3 * k, o + 4).reshape(-1, 3); o += 4 + 12 * k
+            parks += 1; park_m2 += ground.plan_area(v[:, [0, 2]][t])
         assert o == len(raw), path
     total = sum(classes.values())
     if not total:
         return dict(classes={}, note="no BN02 near files: no ground classes")
     return dict(classes={ground.NAMES[k]: round(v / total, 4) for k, v in classes.most_common()}, rowed_share=round(rowed / total, 4),
-                vine_rows_km=round(vines_km, 1), bays=int(bays), parked=int(parked), hedges_km=round(hedges_km, 1),
+                vine_rows_km=round(vines_km, 1), bays=int(bays), parked=int(parked), hedges_km=round(hedges_km, 1), car_parks=int(parks), car_park_m2=round(park_m2),
                 trees_by_kind={["unknown", "broadleaf", "conifer", "poplar", "fruit"][k]: v for k, v in sorted(kinds.items())})
 
 

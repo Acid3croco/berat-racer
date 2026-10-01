@@ -47,6 +47,15 @@ public class RoadIndex
         }
     }
 
+    /// <summary>Registers paved areas (car parks) as asphalt under an owner id, like a road's surface.</summary>
+    public void AddPaved(int owner, PavedArea[] areas)
+    {
+        if (areas.Length == 0) return;
+        if (!ownerCells.TryGetValue(owner, out var cells)) ownerCells[owner] = cells = new List<long>();
+        foreach (var p in areas)
+            for (int k = 0; k + 2 < p.t.Length; k += 3) AddTri(cells, p.V(p.t[k]), p.V(p.t[k + 1]), p.V(p.t[k + 2]), Surface.Asphalt, false, owner);
+    }
+
     readonly Dictionary<int, List<long>> ribbonCells = new Dictionary<int, List<long>>();
 
     /// <summary>The embankment ribbons of these roads and junctions as ground for the car (BM07; only where the car can be: the near chunks).</summary>

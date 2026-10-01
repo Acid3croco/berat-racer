@@ -12,6 +12,7 @@ public class ChunkMeshes
     // mid tier
     public readonly MeshBuilder TerrainLow = new MeshBuilder(), Roads = new MeshBuilder(), Buildings = new MeshBuilder(), Water = new MeshBuilder();
     // near tier
+    public readonly MeshBuilder Paved = new MeshBuilder();          // BN02: car parks, drawn with the roads' material
     public readonly MeshBuilder Terrain = new MeshBuilder(), Marks = new MeshBuilder(), Facades = new MeshBuilder(), Collision = new MeshBuilder(), Trees = new MeshBuilder(), Street = new MeshBuilder();
     public readonly List<Obstacle> Obstacles = new List<Obstacle>();
 
@@ -910,17 +911,30 @@ public class ChunkMeshes
         }
     }
 
+    /// <summary>Height of the ground at (x, z) for things standing on it: a car park's surface where there is one, else the terrain.</summary>
+    static float StandHeight(ChunkData d, float x, float z)
+    {
+        foreach (var p in d.Parks) { float y = p.Height(x, z); if (!float.IsNaN(y)) return y; }
+        return d.Height(x, z);
+    }
+
     void BuildParking(ChunkData d, RoadIndex local)
     {
+        foreach (var p in d.Parks)
+        {
+            int b = Paved.V.Count;
+            for (int i = 0; i * 3 < p.v.Length; i++) Paved.Vertex(p.V(i), Asphalt);
+            for (int k = 0; k + 2 < p.t.Length; k += 3) Paved.Tri(b + p.t[k], b + p.t[k + 1], b + p.t[k + 2]);
+        }
         for (int i = 0; i + 3 < d.Bays.Length; i += 4)
         {
             float x = d.Bays[i], z = d.Bays[i + 1], heading = d.Bays[i + 2]; bool car = d.Bays[i + 3] > 0.5f;
             Vector3 face = new Vector3(Mathf.Cos(heading), 0, Mathf.Sin(heading)), side = new Vector3(-face.z, 0, face.x);
-            Vector3 c = new Vector3(x, d.Height(x, z), z);
+            Vector3 c = new Vector3(x, StandHeight(d, x, z), z);
             foreach (float s in new[] { -1.25f, 1.25f })                                              // the two side lines of the bay, 5 m long
             {
                 Vector3 a = c + side * s - face * 2.5f, b = c + side * s + face * 2.5f;
-                a.y = d.Height(a.x, a.z) + 0.04f; b.y = d.Height(b.x, b.z) + 0.04f;
+                a.y = StandHeight(d, a.x, a.z) + 0.03f; b.y = StandHeight(d, b.x, b.z) + 0.03f;
                 Vector3 w = side * 0.06f;
                 Marks.Quad(Marks.Vertex(a - w, BayPaint), Marks.Vertex(b - w, BayPaint), Marks.Vertex(b + w, BayPaint), Marks.Vertex(a + w, BayPaint));
             }

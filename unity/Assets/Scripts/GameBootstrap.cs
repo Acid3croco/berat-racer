@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -112,6 +113,13 @@ public class GameBootstrap : MonoBehaviour
 
     void SetupInput()
     {
+        if (Application.isBatchMode)
+        {   // automated headless runs drive themselves: a gamepad in use by a game being played on the same machine must not steer them
+            foreach (var d in InputSystem.devices.ToArray()) if (d is Gamepad || d is Joystick) InputSystem.DisableDevice(d);
+            InputSystem.onDeviceChange += (d, change) => { if (change == InputDeviceChange.Added && (d is Gamepad || d is Joystick)) InputSystem.DisableDevice(d); };
+            Log.I("input", "batch run: gamepads disabled");
+            return;
+        }
         try { InputSystem.settings.backgroundBehavior = InputSettings.BackgroundBehavior.IgnoreFocus; } catch (System.Exception e) { Log.I("input", "backgroundBehavior: " + e.Message); }
         foreach (var d in InputSystem.devices) Log.I("input", $"device present: '{d.displayName}' layout={d.layout} iface={d.description.interfaceName} product={d.description.product} vendor={d.description.manufacturer}");
         InputSystem.onDeviceChange += (d, change) =>

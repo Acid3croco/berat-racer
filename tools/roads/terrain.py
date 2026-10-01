@@ -125,26 +125,52 @@ def bench(h, x0, z0, cell, footprint, cloud, sink):
 
 def inner_reach(edge, out):
     """How far a ribbon may reach from each edge point before it folds over itself on the inside of a bend: FOLD_FRACTION of the
-    edge's radius where the ribbon's side is the inside, over the neighbouring points too; inf on straights and outsides."""
+    edge's radius where the ribbon's side is the inside (inf on straights and outsides). The bend is measured over KERB_CHORD either
+    side along the edge, as for the kerbs: neighbouring samples alone are too noisy, and read no bend at a piece's ends."""
     n = len(edge)
+    if n < 2:
+        return np.full(n, np.inf)
+    return kerb_reach(edge, [(i, i + 1) for i in range(n - 1)], out)
+
+
+def kerb_reach(points, segments, out):
+    """How far a ribbon may reach from each point of a kerb or road edge before it folds: `segments` [(a, b)] are its edges (vertex indices into `points`, in outline order).
+    The bend at a vertex is the circle through the kerb points KERB_CHORD before and after it along the kerb (its vertices are too
+    dense and uneven for neighbour angles). A roundabout island's kerb turns all the way round: its ribbon reaches at most
+    FOLD_FRACTION of the island's radius."""
+    n = len(points)
     reach = np.full(n, np.inf)
-    if n < 3:
-        return reach
-    d = np.diff(edge[:, :2], axis=0)
-    seg = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-6)
-    turn = np.arctan2(d[:-1, 0] * d[1:, 1] - d[:-1, 1] * d[1:, 0], (d[:-1] * d[1:]).sum(axis=1))
-    k = np.r_[0.0, turn / (0.5 * (seg[:-1] + seg[1:])), 0.0]                     # signed curvature, left turn positive
-    left = np.r_[d[:1], d][:, [1, 0]] * [-1.0, 1.0]                             # left normal of the edge's direction
-    inside = np.sign((left * out).sum(axis=1)) * k > 1e-4                       # the ribbon lies on the side the edge turns to
-    reach[inside] = config.FOLD_FRACTION / np.abs(k[inside])
-    from scipy.ndimage import minimum_filter1d
-    return minimum_filter1d(reach, 7, mode="nearest")
+    nxt, prv = np.full(n, -1), np.full(n, -1)
+    for a, b in segments:
+        nxt[a], prv[b] = b, a
+    def walk(i, step):                                                                           # near the kerb's end the chord may shorten, to 1 m
+        j, run = i, 0.0
+        while run < config.KERB_CHORD:
+            k = step[j]
+            if k < 0 or k == i:
+                break
+            run += np.hypot(*(points[k, :2] - points[j, :2])); j = k
+        return j if run >= 1.0 else None
+    for i in np.flatnonzero((nxt >= 0) | (prv >= 0)):
+        p, q = walk(i, prv), walk(i, nxt)
+        if p is None or q is None:
+            continue
+        d1, d2 = points[i, :2] - points[p, :2], points[q, :2] - points[i, :2]
+        cross = d1[0] * d2[1] - d1[1] * d2[0]
+        k = 2.0 * cross / max(np.hypot(*d1) * np.hypot(*d2) * np.hypot(*(d1 + d2)), 1e-9)          # signed curvature of the circle, left turn positive
+        left = np.array([-(d1 + d2)[1], (d1 + d2)[0]])
+        if np.sign(left @ out[i]) * k > 1e-4:                                                    # the ribbon lies on the side the kerb turns to
+            reach[i] = config.FOLD_FRACTION / abs(k)
+    for _ in range(3):                                                                           # over the neighbouring vertices too
+        reach = np.minimum(reach, np.where(prv >= 0, reach[np.maximum(prv, 0)], np.inf))
+        reach = np.minimum(reach, np.where(nxt >= 0, reach[np.maximum(nxt, 0)], np.inf))
+    return reach
 
 
-def ribbon_profile(edge, out, natural, footprint):
+def ribbon_profile(edge, out, natural, footprint, cap=None):
     """Embankment beside a road edge. `edge` (n, 3): x, north, height of the edge points; `out` (n, 2): unit outward directions;
     `natural(xy)`: LiDAR ground. Returns (n, 5): shoulder width, toe distance and height (where the slope meets the ground), outer
-    distance and height (the ribbon's end), all from the edge."""
+    distance and height (the ribbon's end), all from the edge. `cap`: per point, how far it may reach (default `inner_reach`)."""
     n = len(edge)
     if not n:
         return np.zeros((0, 5))
@@ -162,10 +188,17 @@ def ribbon_profile(edge, out, natural, footprint):
     rows = np.arange(n)
     toe = np.minimum(at, np.maximum(blocked, 0))
     toe_d, toe_y = d[toe], np.where(toe < at, line[rows, toe], g[rows, toe])
+    # where the slope meets the ground between two samples, put the toe on the crossing itself (0.5 m steps would jag the toe line)
+    prev = np.maximum(toe - 1, 0)
+    gap0, gap1 = line[rows, prev] - g[rows, prev], line[rows, toe] - g[rows, toe]
+    cross = (toe == at) & (toe > 0) & meets.any(axis=1) & (np.sign(gap0) != np.sign(gap1)) & (np.abs(gap0 - gap1) > 1e-6)
+    f = np.where(cross, gap0 / np.where(cross, gap0 - gap1, 1.0), 1.0)
+    toe_d = np.where(cross, d[prev] + f * (d[toe] - d[prev]), toe_d)
+    toe_y = np.where(cross, line[rows, prev] + f * (line[rows, toe] - line[rows, prev]), toe_y)
     outer = np.clip(np.maximum(toe, int(np.ceil((config.RIBBON_MIN - config.SHOULDER) / 0.5))), 0, np.maximum(np.minimum(blocked, last), toe))
     outer_d, outer_y = d[outer], np.where(outer == toe, toe_y, g[rows, outer])
     shoulder = np.minimum(config.SHOULDER, np.where(blocked < 0, 0.5, config.SHOULDER))
-    cap = inner_reach(edge, out)                                                 # no further than the bend allows: the ribbon would fold
+    cap = inner_reach(edge, out) if cap is None else cap                         # no further than the bend allows: the ribbon would fold
     shoulder = np.minimum(shoulder, cap)
     capped = toe_d > cap
     slope_at = top + np.where(fill, -1.0, 1.0) * config.EMBANKMENT_SLOPE * np.maximum(cap - config.SHOULDER, 0.0)
@@ -189,9 +222,9 @@ def ribbon_points(edge, out, profile, apron=False):
     return np.stack(points, axis=1)
 
 
-def apron_width(edge, out, profile):
-    """The apron's width at each point: APRON, less on the inside of a bend (it must not fold)."""
-    return np.clip(inner_reach(edge, out) - profile[:, 3], 0.0, config.APRON)
+def apron_width(edge, out, profile, reach=None):
+    """The apron's width at each point: APRON, less on the inside of a bend (it must not fold). `reach`: as `ribbon_profile`'s cap."""
+    return np.clip((inner_reach(edge, out) if reach is None else reach) - profile[:, 3], 0.0, config.APRON)
 
 
 def apron_points(edge, out, profile, width):

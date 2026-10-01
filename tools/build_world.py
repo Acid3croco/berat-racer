@@ -228,7 +228,8 @@ def road_ribbons(pieces, meshes, natural, footprint):
             if (v[i, 0], v[i, 1]) in normal_at: out[i] = normal_at[(v[i, 0], v[i, 1])]
         used = np.unique(kerb[:, :2])
         prof = np.zeros((len(v), 5))
-        prof[used] = road_terrain.ribbon_profile(v[used], out[used], natural, footprint)
+        reach = road_terrain.kerb_reach(v, kerb[:, :2], out)
+        prof[used] = road_terrain.ribbon_profile(v[used], out[used], natural, footprint, reach[used])
         out_list.append((j, -1, v, out, prof, [tuple(e) for e in kerb[:, :2]]))
     return out_list
 
@@ -244,7 +245,7 @@ def shape_under_ribbons(H, ribbons, x0, z0):
     tris = ribbon_tris(ribbons)
     out = road_terrain.drape(H, x0, z0, CELL, tris, road_config.RIBBON_SINK)
     for i, (owner, side, edge, o, prof, segs) in enumerate(ribbons):                # the apron: the terrain before the drape, a little above it
-        width = road_terrain.apron_width(edge, o, prof) if side >= 0 else np.full(len(edge), road_config.APRON)
+        width = road_terrain.apron_width(edge, o, prof, None if side >= 0 else road_terrain.kerb_reach(edge, segs, o))
         a = road_terrain.apron_points(edge, o, prof, width).reshape(-1, 2)
         rr, cc, ww = road_terrain._mesh_corners(H.shape[0], H.shape[1], x0, z0, CELL, a)
         ribbons[i] = (owner, side, edge, o, np.c_[prof, ((H[rr, cc] * ww).sum(axis=0) + road_config.APRON_LIFT).reshape(-1, 2), width], segs)
@@ -566,6 +567,15 @@ def process_sector(args):
     cloud = road_surface.cloud(pieces, meshes)
     corr = [g.buffer(0.35) for g in [q for q in (p.polygon() for p in pieces) if q is not None] + [j.polygon for j, _ in meshes]]
     corr_tree = shapely.STRtree(corr) if corr else None
+    # ---- ground areas (tools/ground.py); car parks are paved like the roads: the road-edge ribbons stop at them, the photo's colour skips them
+    to_local = lambda g: shapely.transform(shapely.force_2d(g), lambda c: c - np.array([CX, CY]))
+    wx0, wz0, wx1, wz1 = win.x0, win.z0, win.x0 + win.size, win.z0 + win.size
+    near_osm = [f for f in osm_ground(road_tag) if f["_bounds"][2] >= wx0 and f["_bounds"][0] <= wx1 and f["_bounds"][3] >= wz0 and f["_bounds"][1] <= wz1]
+    garea = [a for a in land.areas(lambda name: load_vectors(name, si, sj), near_osm, to_local, rpg_codes(), row_directions(road_tag))
+             if a[0].bounds[2] >= wx0 and a[0].bounds[0] <= wx1 and a[0].bounds[3] >= wz0 and a[0].bounds[1] <= wz1]
+    road_polys = road_surface.footprints(pieces, meshes)
+    parks = land.parking_surfaces(garea, shapely.union_all(road_polys) if road_polys else None)
+    paved = road_terrain.Footprint(road_polys + parks, win.x0, win.z0, win.size, win.size) if parks else footprint
 
     # ---- water lines (areas need the terrain grid, see below)
     areas, wlines = water_features(win, wbox, load_vectors("hydro_areas", si, sj), load_vectors("hydro_lines", si, sj))
@@ -616,9 +626,26 @@ def process_sector(args):
         h[m] = np.minimum(h[m], seg[ii, 2] - drop)
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
     # the terrain stays natural beside the roads: the embankment ribbons are drawn over it, and it is lowered under them
-    ribbons = road_ribbons(pieces, meshes, lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2), footprint)
+    h_dug = h.reshape(nv, nv).copy()
+    def ribbon_ground(xy):
+        """The LiDAR ground, except where the terrain is dug below it (water beds): there the terrain, so a ribbon going down a bank
+        meets the ground it will be drawn next to, not the bank top a 4 m cell further."""
+        lidar = win.sample(win.mnt, xy[:, 0], xy[:, 1], 2)
+        rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
+        grid = (h_dug[rr, cc] * ww).sum(axis=0)
+        dug = np.clip((lidar - grid - road_config.DUG_BELOW) / road_config.DUG_BLEND, 0.0, 1.0)      # a gradual hand-over: no step between the two
+        return lidar - dug * (lidar - grid)
+    ribbons = road_ribbons(pieces, meshes, ribbon_ground, paved)
     H = road_terrain.bench(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
+    H_benched = H
     H = shape_under_ribbons(H, ribbons, win.x0, win.z0)
+    # car parks: their own surface over the terrain, which is lowered under it like under a ribbon
+    def terrain_at(xy):
+        rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
+        return (H_benched[rr, cc] * ww).sum(axis=0)
+    park_meshes = [m for m in (land.parking_mesh(q, terrain_at) for q in parks) if len(m[1])]
+    if park_meshes:
+        H = road_terrain.drape(H, win.x0, win.z0, CELL, np.concatenate([v[t] for v, t in park_meshes]), road_config.RIBBON_SINK)
     # the 16 m terrain, drawn far away without ribbons, keeps the old embankments: blended to the road, then benched under it
     H_far = road_terrain.bench(road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
     ribbon_piece, ribbon_junction = {}, {}
@@ -636,7 +663,7 @@ def process_sector(args):
     rgb = np.stack([win.sample(band, gx.ravel(), gz.ravel(), 4) for band in ortho], axis=1).reshape(nv, nv, 3)
     cov = maximum_filter(win.mnh, 3) > 1.3
     covered = win.sample(cov.astype(np.float32), gx.ravel(), gz.ravel(), 2).reshape(nv, nv) > 0.4
-    covered |= footprint.distance(gx, gz) < road_config.ORTHO_ROAD_MASK                  # asphalt in the photo is not the ground's colour either
+    covered |= paved.distance(gx, gz) < road_config.ORTHO_ROAD_MASK                  # asphalt in the photo is not the ground's colour either
     C = ground_colour(rgb, covered)
     far_raw = soften(grade(gaussian_filter(rgb, sigma=(2, 2, 0))))                  # far view keeps forests and villages (no cover removal)
     low_col = uniform_filter(far_raw, size=(4, 4, 1), mode="nearest")               # 16 m LOD colours
@@ -814,11 +841,6 @@ def process_sector(args):
     shrubs = np.c_[sx_[sk], win.sample(win.mnt, sx_[sk], sz_[sk], 2), sz_[sk], sm[lr, lc][sk]].astype("<f4")
 
     # ---- ground classes and their dressing (tools/ground.py)
-    to_local = lambda g: shapely.transform(shapely.force_2d(g), lambda c: c - np.array([CX, CY]))
-    wx0, wz0, wx1, wz1 = win.x0, win.z0, win.x0 + win.size, win.z0 + win.size
-    near_osm = [f for f in osm_ground(road_tag) if f["_bounds"][2] >= wx0 and f["_bounds"][0] <= wx1 and f["_bounds"][3] >= wz0 and f["_bounds"][1] <= wz1]
-    garea = [a for a in land.areas(lambda name: load_vectors(name, si, sj), near_osm, to_local, rpg_codes(), row_directions(road_tag))
-             if a[0].bounds[2] >= wx0 and a[0].bounds[0] <= wx1 and a[0].bounds[3] >= wz0 and a[0].bounds[1] <= wz1]
     G, A = land.rasterize(garea, win.x0, win.z0, nv, CELL)
     solid = corr + [q.buffer(0.5) for q in bpolys]
     solid_tree = STRtree(solid) if solid else None
@@ -840,7 +862,8 @@ def process_sector(args):
     ground_stats = dict(cells={land.NAMES[k]: int(v) for k, v in enumerate(counts) if v}, rows_measured=sum(1 for a in garea if a[5]),
                         rows_long_axis=sum(1 for a in garea if a[1] in land.ROWED and not a[5]), vine_rows_km=round(float(np.hypot(vines[:, 2] - vines[:, 0], vines[:, 3] - vines[:, 1]).sum()) / 1000, 2),
                         bays=len(bays), parked=int(bays[:, 3].sum()) if len(bays) else 0, hedges_km=round(sum(LineString(xy).length for _, xy in hedge_list) / 1000, 2),
-                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist())
+                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist(), car_parks=len(park_meshes),
+                        car_park_m2=round(sum(land.plan_area(v[t]) for v, t in park_meshes)))
 
     # ---- bucket everything by chunk and write
     def bucket_xy(arr, xcol=0, zcol=2):
@@ -852,6 +875,7 @@ def process_sector(args):
     tree_b, shrub_b = bucket_xy(trees), bucket_xy(shrubs)
     vine_b, bay_b = bucket_xy((vines[:, :2] + vines[:, 2:]) / 2, 0, 1), bucket_xy(bays, 0, 1)
     hedge_b = bucket_xy(np.array([xy[len(xy) // 2] for _, xy in hedge_pieces]).reshape(-1, 2), 0, 1)
+    park_b = bucket_xy(np.array([v[:, :2].mean(axis=0) for v, _ in park_meshes]).reshape(-1, 2), 0, 1)
     bld_b = collections.defaultdict(list)
     for k, b in enumerate(buildings):
         cx_, cz_ = np.mean(b["p"][0::2]), np.mean(b["p"][1::2])
@@ -945,6 +969,10 @@ def process_sector(args):
             wi(nb, len(hi))
             for k in hi:
                 h, xy = hedge_pieces[k]; wf(nb, h); wi(nb, len(xy)); wfa(nb, xy.ravel())
+            pi = park_b.get(key, [])
+            wi(nb, len(pi))                                                              # car-park surfaces: vertices (x, y, z), triangles
+            for k in pi:
+                v, t = park_meshes[k]; wi(nb, len(v)); wfa(nb, v[:, [0, 2, 1]].ravel()); wi(nb, len(t)); nb += t.astype("<i4").tobytes()
             write_gz(out_dir / f"n_{ci - ci0}_{cj - cj0}.bin.gz", nb)
             n_chunks += 1
 

@@ -116,6 +116,26 @@ public class BuildingData
 
 public class Hedge { public float height; public float[] xz; }
 
+/// <summary>A paved area that is not a road (a car park): vertices (x, y, z), triangles wound clockwise seen from above.</summary>
+public class PavedArea
+{
+    public float[] v; public int[] t;
+    public Vector3 V(int i) => new Vector3(v[i * 3], v[i * 3 + 1], v[i * 3 + 2]);
+
+    /// <summary>Height of the surface at (x, z), NaN off it.</summary>
+    public float Height(float x, float z)
+    {
+        for (int k = 0; k + 2 < t.Length; k += 3)
+        {
+            Vector3 a = V(t[k]), b = V(t[k + 1]), c = V(t[k + 2]);
+            float area = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x); if (Mathf.Abs(area) < 1e-6f) continue;
+            float wb = ((x - a.x) * (c.z - a.z) - (z - a.z) * (c.x - a.x)) / area, wc = ((b.x - a.x) * (z - a.z) - (b.z - a.z) * (x - a.x)) / area;
+            if (wb >= -1e-4f && wc >= -1e-4f && wb + wc <= 1f + 1e-4f) return a.y + wb * (b.y - a.y) + wc * (c.y - a.y);
+        }
+        return float.NaN;
+    }
+}
+
 /// <summary>A wall of a building: `count` outline edges from point `first` (nearly collinear), its flags, the ground at both ends, its openings.</summary>
 public class FacadeWall
 {
@@ -157,6 +177,7 @@ public class ChunkData
     public byte[] TreeKind, GroundClass, RowDir;
     public float[] Vines = new float[0], Bays = new float[0];
     public Hedge[] Hedges = new Hedge[0];
+    public PavedArea[] Parks = new PavedArea[0];        // car-park surfaces: drawn and driven like the roads
     public bool HasNear;
     public const int CV = WorldData.CV, LV = 26;
 
@@ -338,6 +359,8 @@ public class ChunkData
                 Vines = Floats(br, br.ReadInt32() * 4); Bays = Floats(br, br.ReadInt32() * 4);
                 Hedges = new Hedge[br.ReadInt32()];
                 for (int i = 0; i < Hedges.Length; i++) { var h = new Hedge { height = br.ReadSingle() }; h.xz = Floats(br, br.ReadInt32() * 2); Hedges[i] = h; }
+                Parks = new PavedArea[br.ReadInt32()];
+                for (int i = 0; i < Parks.Length; i++) { var p = new PavedArea { v = Floats(br, br.ReadInt32() * 3) }; p.t = Ints(br, br.ReadInt32() * 3); Parks[i] = p; }
             }
         }
         HasNear = true;

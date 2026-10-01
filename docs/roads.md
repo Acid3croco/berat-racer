@@ -196,7 +196,7 @@ load with their old look.
 
 Near files (`n_*.bin.gz`) are BN02: after the trees and shrubs (BN01), the kind of every tree (unknown, broadleaf, conifer,
 poplar, fruit), the ground class and row direction of every 4 m vertex (`tools/ground.py`), the vine rows (x0, z0, x1, z1), the
-parking bays (x, z, heading, parked car) and the hedges (height, then the points). The terrain mesh carries class and direction in
+parking bays (x, z, heading, parked car), the hedges (height, then the points) and the car-park surfaces (vertices x, y, z, triangles: drawn with the road material and driven as asphalt). The terrain mesh carries class and direction in
 its second vertex channel, flat over each triangle, for the shader's ground materials; the embankment ribbons take them from
 their toe outward. BN01 near files still load (no ground classes).
 

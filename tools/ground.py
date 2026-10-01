@@ -9,6 +9,8 @@
               axis 7 / 7, orchards 12 / 14, cereals 9 / 11, but row crops only 8 / 14 (4 run across), hence the measurement
   vines       rows 2.2 m apart along the row direction, clipped 1 m inside the parcel and clear of roads; the LiDAR shrubs in a
               vineyard (the vines themselves) give way to the rows
+  car parks   paved like the roads: their own surface (PARK_STEP triangles inside the outline, cut back to the road edges), laid
+              PARK_LIFT over the terrain and smoothed, the terrain lowered under it; the road-edge ribbons stop at it
   parking     bays of 2.5 x 5 m in double rows along the car park's long axis, 6 m aisles; a car on some of them (a stable hash:
               occupancy is not in any data, PARKED_SHARE is a look choice)
   hedges      BD Haie lines where the LiDAR still sees vegetation; their height from it (HEDGE_HEIGHT), shrubs on them dropped
@@ -57,6 +59,10 @@ VINE_CLEARANCE = 1.5         # m from a road corridor or a building
 BAY_WIDTH, BAY_DEPTH, AISLE = 2.5, 5.0, 6.0
 PARKED_SHARE = 0.45
 HEDGE_MIN, HEDGE_HEIGHT = 0.6, (1.0, 3.0)
+PARK_MIN_AREA = 40.0          # m²: smaller car-park pieces (slivers left between roads) are not paved
+PARK_STEP = 3.0               # m between the vertices of a car park's surface
+PARK_LIFT = 0.06              # m over the terrain it covers
+PARK_SMOOTH = 4               # rounds of neighbour averaging of its heights
 HEDGE_STEP = 4.0
 WMS = "https://data.geopf.fr/wms-r/wms"
 BROADLEAF, CONIFER, POPLAR, FRUIT = 1, 2, 3, 4
@@ -181,6 +187,7 @@ def rasterize(area_list, x0, z0, nv, cell):
     """Class and row direction (byte: 1 + 254 * angle / pi, 0 none) per vertex of an nv x nv grid from (x0, z0), row = z (south first)."""
     transform = from_origin(x0 - cell / 2, z0 + (nv - 0.5) * cell, cell, cell)             # one pixel centred on each vertex, north first
     order = sorted(area_list, key=lambda a: (a[2], -a[0].area))                         # higher rank last; smaller areas over larger ones
+    order = [a for a in order if a[1] != PARKING]                                       # car parks are paved surfaces of their own (parking_mesh)
     cls = features.rasterize([(a[0], a[1]) for a in order], out_shape=(nv, nv), transform=transform, dtype=np.uint8, fill=NONE) if order else np.zeros((nv, nv), np.uint8)
     rows = [(a[0], 0 if a[3] is None else 1 + int(round(254 * a[3] / np.pi))) for a in order]
     ang = features.rasterize(rows, out_shape=(nv, nv), transform=transform, dtype=np.uint8, fill=0) if order else np.zeros((nv, nv), np.uint8)
@@ -267,3 +274,59 @@ def tree_kinds(xz, vegetation, area_list):
         inside = shapely.contains_xy(q, xz[:, 0], xz[:, 1])
         kinds[inside] = kind
     return kinds
+
+
+def parking_surfaces(area_list, roads):
+    """The car parks to pave: union of the PARKING areas of every source, less the road surface (`roads`: shapely), in pieces of
+    PARK_MIN_AREA or more."""
+    parks = [a[0] for a in area_list if a[1] == PARKING]
+    if not parks:
+        return []
+    merged = shapely.union_all(parks).buffer(0)
+    if roads is not None and not roads.is_empty:
+        merged = merged.difference(roads)
+    pieces = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "Polygon" and g.area >= PARK_MIN_AREA]
+    return [g.simplify(0.2) for g in pieces]
+
+
+def parking_mesh(poly, height):
+    """Surface of a car park: vertices (n, 3) (x, north, height) every PARK_STEP on its outline and inside, triangles (t, 3) wound
+    clockwise seen from above. `height(xy)`: the terrain it is laid over."""
+    from scipy.spatial import Delaunay
+    rings = [np.array(poly.exterior.coords)] + [np.array(h.coords) for h in poly.interiors]
+    edge = []
+    for r in rings:
+        for a, b in zip(r[:-1], r[1:]):
+            n = max(int(np.ceil(np.hypot(*(b - a)) / PARK_STEP)), 1)
+            edge.append(a + (b - a) * (np.arange(n) / n)[:, None])
+    edge = np.vstack(edge)
+    x0, z0, x1, z1 = poly.bounds
+    gx, gz = np.meshgrid(np.arange(x0 + PARK_STEP / 2, x1, PARK_STEP), np.arange(z0 + PARK_STEP / 2, z1, PARK_STEP))
+    inner = np.c_[gx.ravel(), gz.ravel()]
+    inner = inner[shapely.contains_xy(poly.buffer(-PARK_STEP * 0.4), inner[:, 0], inner[:, 1])] if len(inner) else inner
+    xy = np.vstack([edge, inner])
+    if len(xy) < 3:
+        return np.zeros((0, 3)), np.zeros((0, 3), int)
+    tri = Delaunay(xy).simplices
+    mid = xy[tri].mean(axis=1)
+    keep = shapely.contains_xy(poly.buffer(0.05), mid[:, 0], mid[:, 1])
+    for k in range(3):                                                          # an edge midpoint outside: the triangle spans a notch
+        m = 0.5 * (xy[tri[:, k]] + xy[tri[:, (k + 1) % 3]])
+        keep &= shapely.contains_xy(poly.buffer(0.05), m[:, 0], m[:, 1])
+    tri = tri[keep]
+    y = height(xy) + PARK_LIFT
+    nbr = [[] for _ in range(len(xy))]
+    for a, b, c in tri:
+        nbr[a] += [b, c]; nbr[b] += [a, c]; nbr[c] += [a, b]
+    for _ in range(PARK_SMOOTH):                                                # a paved surface is smooth; it never sinks under the ground
+        y = np.maximum(np.array([y[i] if not n else 0.5 * y[i] + 0.5 * y[n].mean() for i, n in enumerate(nbr)]), height(xy) + PARK_LIFT * 0.5)
+    a, b, c = xy[tri[:, 0]], xy[tri[:, 1]], xy[tri[:, 2]]
+    ccw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
+    tri[ccw] = tri[ccw][:, [0, 2, 1]]
+    return np.c_[xy, y], tri
+
+
+def plan_area(tris):
+    """Plan area of triangles (t, 3, >= 2): x and north first."""
+    a, b, c = tris[:, 0, :2], tris[:, 1, :2], tris[:, 2, :2]
+    return float(np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])).sum()) / 2

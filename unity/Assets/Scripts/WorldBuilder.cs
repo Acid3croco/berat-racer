@@ -31,7 +31,7 @@ public class WorldBuilder : MonoBehaviour
         public int key, ci, cj; public Vector2 center; public State state;
         public ChunkData data; public ChunkMeshes mid; public Task<ChunkMeshes> task; public ChunkData pendingData;
         public Transform root;
-        public GameObject terrainLow, roads, buildings, water, terrain, marks, facades, trees, street;
+        public GameObject terrainLow, roads, buildings, water, terrain, marks, facades, trees, street, paved;
         public List<long> obstacleCells = new List<long>();
         public bool cancelled;
     }
@@ -281,6 +281,8 @@ public class WorldBuilder : MonoBehaviour
         c.state = State.Near;
         c.terrain = MakeObject("terrain", c.root, m.Terrain.ToMesh("terrain"), terrainMat, false, true);
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-noribbonphysics") < 0) Roads.AddRibbons(c.key, c.data.Roads, c.data.Junctions);
+        if (!m.Paved.Empty) c.paved = MakeObject("paved", c.root, m.Paved.ToMesh("paved"), roadMat, false, true);      // car parks: road material, driven as asphalt
+        Roads.AddPaved(PavedOwner(c.key), c.data.Parks);
         if (!m.Marks.Empty) c.marks = MakeObject("marks", (c.roads != null ? c.roads : c.terrain).transform, m.Marks.ToMesh("marks"), markMat);
         if (c.buildings != null && !m.Facades.Empty) c.facades = MakeObject("facades", c.buildings.transform, m.Facades.ToMesh("facades"), markMat, false, true);
         if (c.buildings != null && !m.Collision.Empty && System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-nobcol") < 0)
@@ -302,12 +304,15 @@ public class WorldBuilder : MonoBehaviour
         Data.Changed();
     }
 
+    static int PavedOwner(int key) => key + (1 << 28);                                   // the near tier's paved areas, apart from the chunk's roads
+
     void DropNear(Chunk c)
     {
-        foreach (var go in new[] { c.terrain, c.marks, c.facades, c.trees, c.street }) DestroyObject(go);
+        foreach (var go in new[] { c.terrain, c.marks, c.facades, c.trees, c.street, c.paved }) DestroyObject(go);
+        Roads.Remove(PavedOwner(c.key));
         var mc = c.buildings != null ? c.buildings.GetComponent<MeshCollider>() : null;
         if (mc != null) { if (mc.sharedMesh != null) Destroy(mc.sharedMesh); Destroy(mc); }
-        c.terrain = c.marks = c.facades = c.trees = c.street = null;
+        c.terrain = c.marks = c.facades = c.trees = c.street = c.paved = null;
         RemoveObstacles(c); c.state = State.Mid; Roads.RemoveRibbons(c.key);
         c.data.Trees = c.data.Shrubs = null; c.data.HasNear = false;
     }
@@ -315,7 +320,7 @@ public class WorldBuilder : MonoBehaviour
     void Unload(Chunk c)
     {
         RemoveObstacles(c);
-        Roads.Remove(c.key);
+        Roads.Remove(c.key); Roads.Remove(PavedOwner(c.key));
         if (c.root != null) { foreach (var mf in c.root.GetComponentsInChildren<MeshFilter>(true)) if (mf.sharedMesh != null) Destroy(mf.sharedMesh); var mc = c.buildings != null ? c.buildings.GetComponent<MeshCollider>() : null; if (mc != null && mc.sharedMesh != null) Destroy(mc.sharedMesh); Destroy(c.root.gameObject); }
         if (c.state >= State.Mid) { Data.Chunks.Remove(c.key); Data.Changed(); UpdateFarCoverage(c, -1); }
         chunks.Remove(c.key);

@@ -8,13 +8,14 @@ from check_hg import R
 from check_roads import parse_mid
 
 def parse_near(raw):
-    """BN01: trees, shrubs; BN02 adds the tree kinds, the ground class and row direction per vertex, vine rows, bays and hedges."""
+    """BN01: trees, shrubs; BN02 adds the tree kinds, the ground class and row direction per vertex, vine rows, bays, hedges and car-park surfaces."""
     r = R(raw); magic = r.take(4); assert magic in (b"BN01", b"BN02")
     nt = r.i(); r.fl(4 * nt); ns = r.i(); r.fl(4 * ns)
     if magic == b"BN02":
         cv = 101
         r.take(nt); r.take(2 * cv * cv); r.fl(4 * r.i()); r.fl(4 * r.i())
         for _ in range(r.i()): r.fl(1); r.fl(2 * r.i())
+        for _ in range(r.i()): r.fl(3 * r.i()); r.take(12 * r.i())                    # car-park surfaces
     assert r.o == len(raw)
     return nt, ns
 
