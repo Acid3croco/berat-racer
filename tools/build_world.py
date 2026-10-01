@@ -501,9 +501,24 @@ def key_file(out_dir, si, sj):
 def chunk_files(out_dir, si, sj, ci0, cj0):
     return [Path(out_dir) / f"{kind}_{ci - ci0}_{cj - cj0}.bin.gz" for cj in range(sj * CPS, (sj + 1) * CPS) for ci in range(si * CPS, (si + 1) * CPS) for kind in "mn"]
 
+class Laps:
+    """Wall time of each part of a sector build (the profile of tools/profile_build.py)."""
+    def __init__(self):
+        self.t, self.parts, self.cpu0 = time.perf_counter(), {}, time.process_time()
+
+    def __call__(self, name):
+        now = time.perf_counter()
+        self.parts[name] = round(self.parts.get(name, 0.0) + now - self.t, 3); self.t = now
+
+    def stats(self):
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (2**20 if sys.platform == "darwin" else 2**10)
+        return dict(parts=self.parts, cpu=round(time.process_time() - self.cpu0, 1), rss_mb=round(peak))
+
 def process_sector(args):
     si, sj, out_dir, ci0, cj0, far_cell, road_tag, reuse = args                                # (ci0, cj0): chunk index of the world origin
     t0 = time.time()
+    lap = Laps()
     out_dir = Path(out_dir)
     ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
 
@@ -513,7 +528,9 @@ def process_sector(args):
     if reuse and stamp.exists() and stamp.read_text() == made_from and all(f.exists() for f in chunk_files(out_dir, si, sj, ci0, cj0)):
         return si, sj, None, None, dict(sector=(si, sj), unchanged=True, secs=round(time.time() - t0, 1))
     stamp.unlink(missing_ok=True)                                                    # from here on the chunks on disk are not what that key described
+    lap("roads")
     win = Window(si, sj)
+    lap("rasters")
     wbox = box(win.x0 + 10, win.z0 + 10, win.x0 + win.size - 10, win.z0 + win.size - 10)
     road_pts = np.vstack([np.c_[p.xy, p.z, p.hw] for p in pieces if not p.bridge] or [np.zeros((0, 4))])       # centreline samples on the ground: x, north, height, half width
     footprint = road_terrain.Footprint(road_surface.footprints(pieces, meshes), win.x0, win.z0, win.size, win.size)
@@ -531,6 +548,7 @@ def process_sector(args):
     parks = land.parking_surfaces(garea, road_polys, park_stats)
     paved = road_terrain.Footprint(road_polys + parks, win.x0, win.z0, win.size, win.size) if parks else footprint
 
+    lap("ground_areas")
     # ---- water lines (areas need the terrain grid, see below)
     areas, wlines = water_features(win, wbox, load_vectors("hydro_areas", si, sj), load_vectors("hydro_lines", si, sj))
     # keep streams off the roads: cut a line wherever it enters a road corridor (bridges / culverts carry the road over it)
@@ -583,6 +601,7 @@ def process_sector(args):
     # the terrain keeps its own heights. Around the paved surfaces (carriageways, junctions, car parks) the ground is one smooth field
     # from their edges to the terrain; the 4 m cells it reaches are cut out of the grid and filled from it (stitch.py)
     H = h.reshape(nv, nv).copy()
+    lap("terrain")
     def terrain_at(xy):
         rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
         return (H[rr, cc] * ww).sum(axis=0)
@@ -597,6 +616,7 @@ def process_sector(args):
     park_drawn = [shapely.union_all(shapely.polygons(v[t][:, :, :2])) for v, t in park_meshes]   # what each car park's mesh covers, with all its outline points
     surfaces = shapely.union_all(road_surface.footprints(pieces, meshes) + park_drawn) if (pieces or park_drawn) else Polygon()
     band_cut = stitch.cut_cells(surfaces, field, win.x0, win.z0, CELL, nv, nv)
+    lap("field")
     paved_height = stitch.PavedHeight(stitch.paved_triangles(pieces, meshes, park_meshes, road_surface.junction_triangles))
     # the 16 m terrain, drawn far away without ribbons, keeps the old embankments: blended to the road, then benched under it
     H_far = road_terrain.bench(road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
@@ -606,6 +626,7 @@ def process_sector(args):
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
     LOW = correlate(H_far, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
     LOW = road_terrain.bench(LOW, win.x0, win.z0, LOD_CELL, footprint, road_surface.thin(cloud, 4), road_config.LOD_SINK)
+    lap("far_mesh")
 
     # ---- ground colour
     ortho = [win.ortho[..., k].astype(np.float32) for k in range(3)]
@@ -616,6 +637,7 @@ def process_sector(args):
     C = ground_colour(rgb, covered)
     far_raw = soften(grade(gaussian_filter(rgb, sigma=(2, 2, 0))))                  # far view keeps forests and villages (no cover removal)
     low_col = uniform_filter(far_raw, size=(4, 4, 1), mode="nearest")               # 16 m LOD colours
+    lap("colour")
 
     # ---- buildings
     road_tree = cKDTree(road_pts[:, :2]) if len(road_pts) else None
@@ -723,6 +745,7 @@ def process_sector(args):
                               facade_in=facade_in))
         bpolys.append(poly)
 
+    lap("buildings")
     # ---- collision rings proper (a building crossing a road keeps the road corridor free, computed against the uncut original in export_world; here the visual is already cut)
     # ---- POIs -> kind + name
     if bpolys:
@@ -745,6 +768,7 @@ def process_sector(args):
                 if j != i and buildings[j]["tw"] and h_j < h_i and np.hypot(buildings[i]["tw"][0] - buildings[j]["tw"][0], buildings[i]["tw"][1] - buildings[j]["tw"][1]) < 15:
                     buildings[j]["tw"] = []
 
+    lap("pois")
     # ---- facades: walls, shared walls, floors, openings (tools/facades.py)
     ground_at = lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2)
     for b in buildings:
@@ -766,6 +790,7 @@ def process_sector(args):
             facade_stats[key] += v
         b.update(fs=seed, ff=floors, fh=floor_h, fa=era, fm=wall_mat, fw=fw)
 
+    lap("facades")
     # ---- trees and shrubs (LiDAR canopy height maxima, 2 m raster)
     tr_ = from_origin(win.x0, win.z1, 2.0, 2.0)
     bmask = features.rasterize([(q.buffer(2.0), 1) for q in bpolys], out_shape=win.mnh.shape, transform=tr_, dtype=np.uint8).astype(bool) if bpolys else np.zeros(win.mnh.shape, bool)
@@ -789,6 +814,7 @@ def process_sector(args):
     sk &= rs.random(len(sx_)) < min(1.0, 17000 / max(int(sk.sum()), 1))
     shrubs = np.c_[sx_[sk], win.sample(win.mnt, sx_[sk], sz_[sk], 2), sz_[sk], sm[lr, lc][sk]].astype("<f4")
 
+    lap("trees")
     # ---- ground classes and their dressing (tools/ground.py)
     G, A = land.rasterize(garea, win.x0, win.z0, nv, CELL)
     solid = corr + [q.buffer(0.5) for q in bpolys]
@@ -814,6 +840,7 @@ def process_sector(args):
                         trees_by_kind=np.bincount(tree_kind, minlength=5).tolist(), car_parks=len(park_meshes), car_park_entrances=park_stats.get("entrances", 0), entrance_m=park_stats.get("entrance_m", []), car_parks_unreached=park_stats.get("unreached", 0),
                         car_park_m2=round(sum(land.plan_area(v[t]) for v, t in park_meshes)))
 
+    lap("ground")
     # ---- bucket everything by chunk and write
     def bucket_xy(arr, xcol=0, zcol=2):
         d = collections.defaultdict(list)
@@ -877,6 +904,7 @@ def process_sector(args):
             wline_b[key].append((w["hw"], a[lo:hi], s0 - lo, hi - e0))
 
     n_chunks = 0
+    lap("bucket")
     for cj in range(sj * CPS, (sj + 1) * CPS):
         for ci in range(si * CPS, (si + 1) * CPS):
             key = (ci, cj)
@@ -899,7 +927,9 @@ def process_sector(args):
             put_lanes(buf, lane_b.get(key, []))                                         # BM07: the lane graph traffic drives on
             hole = np.flatnonzero(holes[r0:r0 + CV - 1, c0:c0 + CV - 1].ravel())         # BM07: terrain cells cut away (tunnel portals), row-major from the south-west
             wi(buf, len(hole)); buf += hole.astype("<u2").tobytes()
+            lap("write")
             seam, seam_f = stitch.fill(surfaces, band_cut, H, win.x0, win.z0, CELL, (win.x0 + c0 * CELL, win.z0 + r0 * CELL, win.x0 + c0 * CELL + CHUNK, win.z0 + r0 * CELL + CHUNK), field, paved_height)
+            lap("stitch_fill")
             wi(buf, len(seam)); wfa(buf, seam[:, :, [0, 2, 1]].ravel()); wfa(buf, seam_f.ravel())   # BM07: the ground around the paved surfaces (x, y, z), its field weight per vertex
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
@@ -934,9 +964,10 @@ def process_sector(args):
     fh = win.sample(coarse, fgx.ravel(), fgz.ravel(), 2).reshape(fgx.shape)
     if far_cell > FAR_CELL: far_raw = uniform_filter(far_raw, size=(far_cell // 16, far_cell // 16, 1), mode="nearest")     # coarser far grid: average the colour instead of aliasing it
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
+    lap("write")
     stamp.parent.mkdir(exist_ok=True)
     stamp.write_text(made_from)
-    stats = dict(sector=(si, sj), roofs=roof_stats, facades=facade_stats, ground=ground_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
+    stats = dict(**lap.stats(), sector=(si, sj), roofs=roof_stats, facades=facade_stats, ground=ground_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
 
 # ------------------------------------------------------------------ assemble
