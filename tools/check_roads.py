@@ -98,6 +98,7 @@ def parse_mid(raw):
     d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if version >= 6 else []     # water carried by a structure
     d["lane_list"] = read_lanes(r) if version >= 7 else []
     d["holes"] = np.frombuffer(r.take(2 * r.i()), "<u2").astype(int) if version >= 7 else np.zeros(0, int)
+    d["seam"] = r.fl(9 * r.i()).reshape(-1, 3, 3) if version >= 7 else np.zeros((0, 3, 3))      # x, y, z: between the road band and the kept cells
     d["bld"] = r.i()
     d["bld_list"] = []
     for _ in range(d["bld"]):
@@ -207,6 +208,8 @@ def check(world_dir):
         inside = (lx >= 0) & (lx <= CHUNK) & (lz >= 0) & (lz <= CHUNK)            # a road may run a segment past its chunk: the neighbour's terrain is checked with the neighbour
         lx, lz, road = lx[inside], lz[inside], p[inside, 1] + ROAD_LIFT
         over4, over16 = mesh_height(d["H"], CELL, lx, lz) - road, mesh_height(d["LOW"], LOD_CELL, lx, lz) - road
+        cell = np.minimum(lz // CELL, 99).astype(int) * 100 + np.minimum(lx // CELL, 99).astype(int)
+        over4 = np.where(np.isin(cell, d["holes"]), -np.inf, over4)                     # a cut cell is not drawn: the band and its seam are
         totals["points"] += len(road)
         totals["above4"] += int((over4 > 0).sum()); totals["above16"] += int((over16 > 0).sum())
         if over4.max() > totals["worst4"]:
@@ -215,7 +218,9 @@ def check(world_dir):
             totals["worst16"] = float(over16.max()); where.append((round(float(over16.max()), 3), "16 m", round(float(x0 + lx[over16.argmax()]), 1), round(float(z0 + lz[over16.argmax()]), 1)))
         gaps.append(-over4)
     gaps = np.concatenate(gaps) if gaps else np.zeros(1)
-    totals["gap_below_road_m"] = dict(median=round(float(np.median(gaps)), 3), p99=round(float(np.percentile(gaps, 99)), 3), max=round(float(gaps.max()), 3))
+    drawn = gaps[np.isfinite(gaps)] if len(gaps) else gaps
+    totals["gap_below_road_m"] = dict(median=round(float(np.median(drawn)), 3), p99=round(float(np.percentile(drawn, 99)), 3), max=round(float(drawn.max()), 3)) if len(drawn) else None
+    totals["road_points_in_cut_cells"] = round(1 - len(drawn) / max(totals["points"], 1), 4)                # the band and its seam are drawn there
     totals["worst_spots"] = sorted(where, reverse=True)[:6]
     if lanes:
         x1, z1 = w["x0"] + w["ncx"] * CHUNK, w["z0"] + w["ncz"] * CHUNK

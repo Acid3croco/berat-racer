@@ -48,6 +48,7 @@ import rasters
 import facades
 import ground as land
 import roofs
+import stitch
 import vec_io
 from fetch import CX, CY
 from rasters import BIG, HALF, SECTOR, Mosaic
@@ -237,19 +238,6 @@ def ribbon_tris(ribbons):
     """The ribbons' triangles without their aprons: what the terrain is lowered under."""
     tris = [road_terrain.ribbon_triangles(road_terrain.ribbon_points(edge, o, prof[:, :5]), segs) for _, _, edge, o, prof, segs in ribbons if segs]
     return np.concatenate(tris) if tris else np.zeros((0, 3, 3))
-
-def shape_under_ribbons(H, ribbons, x0, z0):
-    """The terrain under the ribbons: lowered under them (drape). A lowered corner tilts its 4 m triangles up to a cell diagonal past the
-    ribbon: the apron redraws the terrain as it was (H before the drape) over that band. Where a triangle straddling the ribbon's
-    outer part still rises through it, it is the ground itself showing (measured: median 1.5 cm, p90 7 cm)."""
-    tris = ribbon_tris(ribbons)
-    out = road_terrain.drape(H, x0, z0, CELL, tris, road_config.RIBBON_SINK)
-    for i, (owner, side, edge, o, prof, segs) in enumerate(ribbons):                # the apron: the terrain before the drape, a little above it
-        width = road_terrain.apron_width(edge, o, prof, None if side >= 0 else road_terrain.kerb_reach(edge, segs, o))
-        a = road_terrain.apron_points(edge, o, prof, width).reshape(-1, 2)
-        rr, cc, ww = road_terrain._mesh_corners(H.shape[0], H.shape[1], x0, z0, CELL, a)
-        ribbons[i] = (owner, side, edge, o, np.c_[prof, ((H[rr, cc] * ww).sum(axis=0) + road_config.APRON_LIFT).reshape(-1, 2), width], segs)
-    return out
 
 def tunnel_holes(H, pieces, x0, z0):
     """4 m cells cut out of the terrain over a tunnel road wherever the ground there is less than TUNNEL_CLEARANCE above the road
@@ -531,7 +519,7 @@ def put_junctions(buf, items, ribbons):
 @functools.lru_cache(maxsize=1)
 def code_key():
     """What this process builds sectors with: the code, its tuning, the libraries and the points of interest."""
-    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs, facades, land]
+    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs, facades, land, stitch]
     return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
 
 def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes):
@@ -575,7 +563,7 @@ def process_sector(args):
              if a[0].bounds[2] >= wx0 and a[0].bounds[0] <= wx1 and a[0].bounds[3] >= wz0 and a[0].bounds[1] <= wz1]
     road_polys = road_surface.footprints(pieces, meshes)
     park_stats = {}
-    parks = land.parking_surfaces(garea, shapely.union_all(road_polys) if road_polys else None, park_stats)
+    parks = land.parking_surfaces(garea, road_polys, park_stats)
     paved = road_terrain.Footprint(road_polys + parks, win.x0, win.z0, win.size, win.size) if parks else footprint
 
     # ---- water lines (areas need the terrain grid, see below)
@@ -628,32 +616,35 @@ def process_sector(args):
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
     # the terrain stays natural beside the roads: the embankment ribbons are drawn over it, and it is lowered under them
     h_dug = h.reshape(nv, nv).copy()
+    mnt_ribbon = gaussian_filter(win.mnt, road_config.RIBBON_GROUND_SIGMA / 2.0)       # the ground the ribbons follow: LiDAR (2 m) smoothed over a few metres
     def ribbon_ground(xy):
         """The LiDAR ground, except where the terrain is dug below it (water beds): there the terrain, so a ribbon going down a bank
         meets the ground it will be drawn next to, not the bank top a 4 m cell further."""
-        lidar = win.sample(win.mnt, xy[:, 0], xy[:, 1], 2)
+        lidar = win.sample(mnt_ribbon, xy[:, 0], xy[:, 1], 2)
         rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
         grid = (h_dug[rr, cc] * ww).sum(axis=0)
         dug = np.clip((lidar - grid - road_config.DUG_BELOW) / road_config.DUG_BLEND, 0.0, 1.0)      # a gradual hand-over: no step between the two
         return lidar - dug * (lidar - grid)
     ribbons = road_ribbons(pieces, meshes, ribbon_ground, paved)
-    H = road_terrain.bench(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
-    H_benched = H
-    H = shape_under_ribbons(H, ribbons, win.x0, win.z0)
-    # car parks: their own surface over the terrain, which is lowered under it like under a ribbon
+    # the terrain keeps its own heights: the band along the roads (carriageways, junctions, car parks, ribbons) is cut out of the 4 m
+    # grid and the gap between the band and the kept cells is filled with triangles sharing both sides' vertices (stitch.py)
+    H = h.reshape(nv, nv).copy()
     def terrain_at(xy):
         rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
-        return (H_benched[rr, cc] * ww).sum(axis=0)
+        return (H[rr, cc] * ww).sum(axis=0)
     park_meshes = [m for m in (land.parking_mesh(q, terrain_at) for q in parks) if len(m[1])]
-    if park_meshes:
-        H = road_terrain.drape(H, win.x0, win.z0, CELL, np.concatenate([v[t] for v, t in park_meshes]), road_config.RIBBON_SINK)
+    for i, (owner, side, edge, o, prof, segs) in enumerate(ribbons):                  # no apron: the fill meets the ribbon's outer end
+        ribbons[i] = (owner, side, edge, o, np.c_[prof, prof[:, 4], prof[:, 4], np.zeros(len(prof))], segs)
+    band = stitch.band_polygons(road_surface.footprints(pieces, meshes), ribbons, parks)
+    band_cut = stitch.cut_cells(band, win.x0, win.z0, CELL, nv, nv)
+    band_height = stitch.BandHeight(stitch.band_surface(pieces, meshes, ribbons, park_meshes, [ribbon_tris([r]) for r in ribbons if r[5]], road_surface.junction_triangles))
     # the 16 m terrain, drawn far away without ribbons, keeps the old embankments: blended to the road, then benched under it
     H_far = road_terrain.bench(road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
     ribbon_piece, ribbon_junction = {}, {}
     for owner, side, _, o, prof, _ in ribbons:
         if side < 0: ribbon_junction[id(owner)] = (o, prof)
         else: ribbon_piece.setdefault(id(owner), [None, None])[side] = prof
-    holes = tunnel_holes(H, pieces, win.x0, win.z0)
+    holes = tunnel_holes(H, pieces, win.x0, win.z0) | band_cut
     troughs = carried_water(areas, H, wmask, wlevel, pieces, win.x0, win.z0, nv)
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
     LOW = correlate(H_far, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
@@ -863,7 +854,7 @@ def process_sector(args):
     ground_stats = dict(cells={land.NAMES[k]: int(v) for k, v in enumerate(counts) if v}, rows_measured=sum(1 for a in garea if a[5]),
                         rows_long_axis=sum(1 for a in garea if a[1] in land.ROWED and not a[5]), vine_rows_km=round(float(np.hypot(vines[:, 2] - vines[:, 0], vines[:, 3] - vines[:, 1]).sum()) / 1000, 2),
                         bays=len(bays), parked=int(bays[:, 3].sum()) if len(bays) else 0, hedges_km=round(sum(LineString(xy).length for _, xy in hedge_list) / 1000, 2),
-                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist(), car_parks=len(park_meshes), car_park_entrances=park_stats.get("entrances", 0), car_parks_unreached=park_stats.get("unreached", 0),
+                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist(), car_parks=len(park_meshes), car_park_entrances=park_stats.get("entrances", 0), entrance_m=park_stats.get("entrance_m", []), car_parks_unreached=park_stats.get("unreached", 0),
                         car_park_m2=round(sum(land.plan_area(v[t]) for v, t in park_meshes)))
 
     # ---- bucket everything by chunk and write
@@ -951,6 +942,8 @@ def process_sector(args):
             put_lanes(buf, lane_b.get(key, []))                                         # BM07: the lane graph traffic drives on
             hole = np.flatnonzero(holes[r0:r0 + CV - 1, c0:c0 + CV - 1].ravel())         # BM07: terrain cells cut away (tunnel portals), row-major from the south-west
             wi(buf, len(hole)); buf += hole.astype("<u2").tobytes()
+            seam = stitch.fill(band, band_cut, H, win.x0, win.z0, CELL, (win.x0 + c0 * CELL, win.z0 + r0 * CELL, win.x0 + c0 * CELL + CHUNK, win.z0 + r0 * CELL + CHUNK), band_height)
+            wi(buf, len(seam)); wfa(buf, seam[:, :, [0, 2, 1]].ravel())                  # BM07: the triangles between the road band and the kept cells (x, y, z)
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
                 b = buildings[k]

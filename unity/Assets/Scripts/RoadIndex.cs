@@ -59,10 +59,10 @@ public class RoadIndex
     readonly Dictionary<int, List<long>> ribbonCells = new Dictionary<int, List<long>>();
 
     /// <summary>The embankment ribbons of these roads and junctions as ground for the car (BM07; only where the car can be: the near chunks).</summary>
-    public void AddRibbons(int owner, RoadData[] roads, JunctionData[] junctions)
+    public void AddRibbons(int owner, RoadData[] roads, JunctionData[] junctions, float[] seam = null)
     {
         if (!ribbonCells.TryGetValue(owner, out var cells)) ribbonCells[owner] = cells = new List<long>();
-        Ribbons.Triangles(roads, junctions, (a, b, c) =>
+        void Add(Vector3 a, Vector3 b, Vector3 c)
         {
             var t = new RTri { a = new Vector2(a.x, a.z), b = new Vector2(b.x, b.z), c = new Vector2(c.x, c.z), ya = a.y, yb = b.y, yc = c.y, owner = owner,
                                x0 = Mathf.Min(a.x, Mathf.Min(b.x, c.x)), x1 = Mathf.Max(a.x, Mathf.Max(b.x, c.x)), z0 = Mathf.Min(a.z, Mathf.Min(b.z, c.z)), z1 = Mathf.Max(a.z, Mathf.Max(b.z, c.z)) };
@@ -73,7 +73,11 @@ public class RoadIndex
                     if (!ribbons.TryGetValue(key, out var list)) ribbons[key] = list = new List<RTri>();
                     list.Add(t); cells.Add(key);
                 }
-        });
+        }
+        Ribbons.Triangles(roads, junctions, Add);
+        if (seam != null)                                                                // BM07: the seam to the kept terrain cells is ground too
+            for (int k = 0; k + 8 < seam.Length; k += 9)
+                Add(new Vector3(seam[k], seam[k + 1], seam[k + 2]), new Vector3(seam[k + 3], seam[k + 4], seam[k + 5]), new Vector3(seam[k + 6], seam[k + 7], seam[k + 8]));
     }
 
     public void RemoveRibbons(int owner)

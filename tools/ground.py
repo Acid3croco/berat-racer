@@ -63,6 +63,7 @@ HEDGE_MIN, HEDGE_HEIGHT = 0.6, (1.0, 3.0)
 ACCESS_TOUCH = 3.0            # m of outline along a road under which a car park gets an entrance
 ACCESS_WIDTH = 5.0            # m, the entrance's width
 ACCESS_MAX = 30.0             # m: a car park further from any road is left as it is (counted)
+ACCESS_OTHER = 1.0            # m: a road piece this close to another car park is its aisle, not a road to connect to
 PARK_MIN_AREA = 40.0          # m²: smaller car-park pieces (slivers left between roads) are not paved
 PARK_STEP = 3.0               # m between the vertices of a car park's surface
 PARK_LIFT = 0.06              # m over the terrain it covers
@@ -280,26 +281,36 @@ def tree_kinds(xz, vegetation, area_list):
     return kinds
 
 
-def parking_surfaces(area_list, roads, stats=None):
+def parking_surfaces(area_list, road_polygons, stats=None):
     """The car parks to pave: union of the PARKING areas of every source, less the road surface (`roads`: shapely), in pieces of
     PARK_MIN_AREA or more. A car park that meets a road over less than ACCESS_TOUCH gets an entrance: a strip ACCESS_WIDTH wide along
-    the shortest line to the road (up to ACCESS_MAX away; the outlines rarely draw the way in). `stats`: dict counting them."""
+    the shortest line to a road that is not another car park's aisle (up to ACCESS_MAX away; the outlines rarely draw the way in).
+    `stats`: dict counting them."""
     from shapely.geometry import LineString
     from shapely.ops import nearest_points
     parks = [a[0] for a in area_list if a[1] == PARKING]
     if not parks:
         return []
     merged = shapely.union_all(parks).buffer(0)
+    roads = shapely.union_all(road_polygons) if road_polygons else None
     has_roads = roads is not None and not roads.is_empty
+    road_tree = shapely.STRtree(road_polygons) if road_polygons else None
     if has_roads:
         merged = merged.difference(roads)
     pieces = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "Polygon" and g.area >= PARK_MIN_AREA]
     out = []
-    for q in pieces:
+    for i, q in enumerate(pieces):
         if has_roads and q.exterior.intersection(roads.buffer(0.5)).length < ACCESS_TOUCH:
-            gap = q.distance(roads)
+            others = shapely.union_all([p for j, p in enumerate(pieces) if j != i]).buffer(ACCESS_OTHER)      # a road piece touching another
+            aisles = set(road_tree.query(others, predicate="intersects").tolist()) if not others.is_empty else set()   # car park is its aisle
+            public = shapely.union_all([p for k, p in enumerate(road_polygons) if k not in aisles])
+            gap = q.distance(public) if not public.is_empty else np.inf
+            if gap > ACCESS_MAX:                                                       # only aisles nearby: a shared aisle is the way in
+                public, gap = roads, q.distance(roads)
             if gap <= ACCESS_MAX:
-                a, b = nearest_points(q, roads)
+                a, b = nearest_points(q, public)
+                if stats is not None:
+                    stats.setdefault("entrance_m", []).append(round(float(gap), 1))
                 d = np.array(b.coords[0]) - a.coords[0]
                 d = d / max(np.hypot(*d), 1e-9)
                 way = LineString([np.array(a.coords[0]) - d * 2.0, np.array(b.coords[0]) + d * 1.0]).buffer(ACCESS_WIDTH / 2, cap_style="flat")

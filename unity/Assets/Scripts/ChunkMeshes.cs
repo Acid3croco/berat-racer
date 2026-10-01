@@ -361,6 +361,14 @@ public class ChunkMeshes
                 int a = z * CV + x, b = a + CV, c = a + 1, e = b + 1;
                 if (((x + z) & 1) == 0) { mb.Tri(a, b, e); mb.Tri(a, e, c); } else { mb.Tri(a, b, c); mb.Tri(c, b, e); }
             }
+        for (int k = 0; k + 8 < d.Seam.Length; k += 9)                                   // the seam between the road band and the kept cells: shares both sides' vertices
+        {
+            int a = mb.Vertex(new Vector3(d.Seam[k], d.Seam[k + 1], d.Seam[k + 2]), GroundColour(d, d.Seam[k], d.Seam[k + 2]));
+            int b = mb.Vertex(new Vector3(d.Seam[k + 3], d.Seam[k + 4], d.Seam[k + 5]), GroundColour(d, d.Seam[k + 3], d.Seam[k + 5]));
+            int e = mb.Vertex(new Vector3(d.Seam[k + 6], d.Seam[k + 7], d.Seam[k + 8]), GroundColour(d, d.Seam[k + 6], d.Seam[k + 8]));
+            GroundUv(d, mb, a); GroundUv(d, mb, b); GroundUv(d, mb, e);
+            mb.Tri(a, b, e);
+        }
         void Skirt(int i0, int i1)                                                       // hides the cracks against a neighbour drawn with the 16 m mesh
         {
             int s0 = mb.Vertex(mb.V[i0] + Vector3.down * 2f, mb.C[i0]), s1 = mb.Vertex(mb.V[i1] + Vector3.down * 2f, mb.C[i1]);
@@ -424,6 +432,7 @@ public class ChunkMeshes
         {
             if (!Inside(mb.V[a[Ribbons.Points - 1]]) || !Inside(mb.V[b[Ribbons.Points - 1]])) return;
             for (int q = 0; q + 1 < Ribbons.Points; q++) Ribbons.Quad(a[q], b[q], b[q + 1], a[q + 1], left, (x, y, z) => { if (Ribbons.Upright(mb.V[x], mb.V[y], mb.V[z])) mb.Tri(x, y, z); });
+            if (d.Seam.Length > 0) return;                                          // the seam meets the ribbon's end: no lip
             int e = Ribbons.Points - 1, f = Ribbons.Points;                          // the lip, seen from either side
             mb.Tri(a[e], b[e], b[f]); mb.Tri(a[e], b[f], a[f]); mb.Tri(a[e], b[f], b[e]); mb.Tri(a[e], a[f], b[f]);
         }

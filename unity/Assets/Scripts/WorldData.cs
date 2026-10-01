@@ -168,7 +168,8 @@ public class ChunkData
     public WaterArea[] Areas; public WaterLine[] Lines;
     public WaterArea[] Troughs = new WaterArea[0];       // BM06: water carried by a structure (a canal on an aqueduct over a road): drawn with its channel, dry below
     public LaneElem[] Lanes = new LaneElem[0];           // BM07: the lane graph elements passing through this chunk (an element crossing chunks is in each)
-    public bool[] Holes;                                 // BM07: per 4 m cell (row-major from the south-west), cut out of the terrain (tunnel portals); null when none
+    public bool[] Holes;                                 // BM07: per 4 m cell (row-major from the south-west), cut out of the terrain (tunnel portals, the road band); null when none
+    public float[] Seam = new float[0];                  // BM07: triangles (x, y, z) x 3 joining the road band to the kept cells (tools/stitch.py)
     public BuildingData[] Buildings;
     public float[] Trees, Shrubs;
     // BN02 (tools/ground.py): per tree its kind (0 unknown, 1 broadleaf, 2 conifer, 3 poplar, 4 fruit); per terrain vertex the ground
@@ -253,6 +254,7 @@ public class ChunkData
                 d.Lanes = ReadLanes(br);
                 int nh = br.ReadInt32();
                 if (nh > 0) { d.Holes = new bool[(CV - 1) * (CV - 1)]; var hb = br.ReadBytes(nh * 2); for (int k = 0; k < nh; k++) d.Holes[hb[k * 2] | hb[k * 2 + 1] << 8] = true; }
+                d.Seam = Floats(br, br.ReadInt32() * 9);
             }
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)

@@ -280,7 +280,7 @@ public class WorldBuilder : MonoBehaviour
     {
         c.state = State.Near;
         c.terrain = MakeObject("terrain", c.root, m.Terrain.ToMesh("terrain"), terrainMat, false, true);
-        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-noribbonphysics") < 0) Roads.AddRibbons(c.key, c.data.Roads, c.data.Junctions);
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-noribbonphysics") < 0) Roads.AddRibbons(c.key, c.data.Roads, c.data.Junctions, c.data.Seam);
         if (!m.Paved.Empty) c.paved = MakeObject("paved", c.root, m.Paved.ToMesh("paved"), roadMat, false, true);      // car parks: road material, driven as asphalt
         Roads.AddPaved(PavedOwner(c.key), c.data.Parks);
         if (!m.Marks.Empty) c.marks = MakeObject("marks", (c.roads != null ? c.roads : c.terrain).transform, m.Marks.ToMesh("marks"), markMat);
