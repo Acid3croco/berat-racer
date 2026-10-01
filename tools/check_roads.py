@@ -1,4 +1,4 @@
-"""Verify the roads of a built world (BM05 / BM06 chunks) against its terrain, the way the game sees them:
+"""Verify the roads of a built world (BM05 - BM07 chunks) against its terrain, the way the game sees them:
 
   - the 4 m terrain mesh and the 16 m one never stand above a road surface (sampled on every road quad and junction triangle)
   - the 4 m terrain mesh never stands above a bridge deck either (the ground falls away under it)
@@ -21,7 +21,7 @@ LV, CELL, LOD_CELL, CHUNK = 26, 4.0, 16.0, 400.0
 ROAD_LIFT = 0.012                     # ChunkMeshes.RoadLift: the drawn road sits this far above its data height
 
 
-def read_roads(r):
+def read_roads(r, version):
     roads = []
     for _ in range(r.i()):
         flags = r.take(8)
@@ -30,7 +30,10 @@ def read_roads(r):
         centre, left, right = (r.fl(3 * n).reshape(n, 3) for _ in range(3))
         drawn = np.frombuffer(r.take(n - 1), np.uint8).astype(bool)
         give_way = [struct.unpack("<HB", r.take(3)) for _ in range(r.u8())]
-        roads.append(dict(bridge=bool(flags[0] & 2), dirt=bool(flags[0] & 1), centre=centre, left=left, right=right, drawn=drawn, give_way=give_way))
+        road = dict(bridge=bool(flags[0] & 2), dirt=bool(flags[0] & 1), limit=flags[2], oneway=flags[4], centre=centre, left=left, right=right, drawn=drawn, give_way=give_way)
+        if version >= 7:
+            road.update(surface=r.st(), limit_back=r.u8())
+        roads.append(road)
     return roads
 
 
@@ -50,22 +53,23 @@ def parse_mid(raw):
     """One m_ chunk: terrain grids, roads, junctions, and the counts of everything else (parsed to the last byte)."""
     r = R(raw)
     magic = r.take(4)
-    assert magic in (b"BM05", b"BM06"), "not a BM05 / BM06 chunk: rebuild the world with tools/build_world.py"
-    d = dict(ci=r.i(), cj=r.i())
+    assert magic in (b"BM05", b"BM06", b"BM07"), "not a BM05 - BM07 chunk: rebuild the world with tools/build_world.py"
+    version = int(magic[2:])
+    d = dict(ci=r.i(), cj=r.i(), version=version)
     assert r.i() == CV
     base, step = r.f(), r.f()
     d["H"] = base + np.frombuffer(r.take(CV * CV * 2), "<u2").reshape(CV, CV).astype(np.float64) * np.float32(step)
     d["step"] = step
     r.take(CV * CV * 3); r.take(LV * LV * 3)
     d["LOW"] = r.fl(LV * LV).reshape(LV, LV).astype(np.float64)
-    d["road_list"], d["ctx_list"] = read_roads(r), read_roads(r)
+    d["road_list"], d["ctx_list"] = read_roads(r, version), read_roads(r, version)
     d["junction_list"], d["ctx_junction_list"] = read_junctions(r), read_junctions(r)
     d["roads"], d["ctx"], d["junctions"] = len(d["road_list"]), len(d["ctx_list"]), len(d["junction_list"])
     d["areas"] = r.i()
     for _ in range(d["areas"]): r.fl(3 * r.i())
     d["lines"] = r.i()
     for _ in range(d["lines"]): r.f(); r.u8(); r.u8(); r.fl(3 * r.i())
-    d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if magic == b"BM06" else []     # water carried by a structure
+    d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if version >= 6 else []     # water carried by a structure
     d["bld"] = r.i()
     for _ in range(d["bld"]):
         r.fl(2 * r.i()); r.fl(3); r.fl(r.i()); r.take(6); r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)

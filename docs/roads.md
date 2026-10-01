@@ -43,11 +43,19 @@ the keys. `compare_roads.py A B` and `compare_worlds.py DIR_A DIR_B` compare two
 |---|---|---|
 | Centrelines, connectivity | BD TOPO `troncon_de_route` | geometry (planimetric accuracy 2.5 m) |
 | Carriageway width, lanes, one-way, class, urban flag, bridge / tunnel level | BD TOPO | width, markings, traffic, decks |
-| Posted speed limit, surface / track grade, lit, missing names, lanes, width | OpenStreetMap (`planet_osm_line` of the massif-extractor database) | matched onto each BD TOPO section by position and direction |
+| Posted speed limit (per direction, French zone codes), one-way, surface / track grade, lit, missing names, lanes, width, levels (bridge / tunnel / layer / cutting / covered) | OpenStreetMap (`planet_osm_line` of the massif-extractor database) | matched onto each BD TOPO section by position and direction |
 | Ground and surface heights | IGN LiDAR HD (2 m) | height profile, bridge decks |
 
 In the 10 x 10 km around Bérat BD TOPO is the richer source (surveyed widths on 72 % of the sections, lane counts, full connectivity);
 OSM adds 138 posted limits, 10 surface corrections, 99 names. OSM widths exist on 7 ways only. Both stay in the pipeline: the merge is per attribute.
+
+One-way: an explicit OSM `oneway` (`yes`, `-1`, `no`) wins over BD TOPO. On the small map the two disagree on 24 sections, all single-lane
+village streets where the OSM way is coherent along the street and BD TOPO is not (Rue du Château: one section of the loop
+one-way, three two-way); 20 become one-way, 4 change direction. Rings (roundabouts) keep BD TOPO's sense: it is counter-clockwise on all
+61 sections where the shape shows it, and the direction of a closed OSM way is ambiguous where it is projected.
+Speed limits: a numeric `maxspeed`, else a French code in `maxspeed`, `zone:maxspeed`, `maxspeed:type` or `source:maxspeed`
+(`FR:urban` 50, `FR:rural` 80, `FR:30` / `FR:zone30` 30, `FR:living_street` 20, ...); `maxspeed:forward` / `:backward` give a limit
+per direction (none on the small map; ~30 ways over berat70). The surface string (asphalt, concrete, gravel, sett, ...) is exported.
 
 Drawn width = surveyed width x 1.27 (the 1.15 the game had, plus 10 %), at least 5.0 m for a paved two-way road (two cars must
 pass), 3.6 m for a paved one-way road, 3.2 m for a track. Where BD TOPO has no surveyed width (28 % of the sections, mostly tracks
@@ -72,8 +80,10 @@ two-way / one-way and the direction of a one-way road.
    their junctions merge (tiny roundabouts, slip-road triangles; islands of 12 m2 or more stay as holes).
    Junctions do not depend on each other: each pass of the merge loop, and the outlines, run across `--jobs` forked workers.
    Roads end exactly on the junction outline and share those vertices: nothing overlaps, nothing flickers.
-5. **crossing**: where two drawn links cross without a junction, one passes over the other. BD TOPO's bridge flag says which and
-   is nearly always right; the LiDAR overrules it where the survey is wrong. The road passing over is the one whose ground climbs
+5. **crossing**: where two drawn links cross without a junction, one passes over the other. The LiDAR decides where it can (below),
+   then the OSM levels (`layer`, else `bridge` 1, `tunnel` / `covered` -1, a `cutting` half a level lower; the span is the OSM bridge),
+   then BD TOPO's bridge flag, which is nearly always right. In the Herbettes sector of berat70 (53 crossings) the LiDAR decides 39,
+   OSM 9 (all agreeing with the survey), the survey 3; 2 are tunnels. The road passing over is the one whose ground climbs
    3 m above the crossing on both sides, steeply (within 15 m: a trench wall or an abutment, not a valley side), within 60 m of it,
    while the other road's ground stays down. Its span becomes a bridge, bank top to bank top; a surveyed bridge of the road below
    within 15 m of the crossing, lying flat on the floor, is dropped. Bridge and tunnel flags are therefore per link segment, and a
@@ -101,7 +111,7 @@ two-way / one-way and the direction of a one-way road.
 
 Buildings are cut out of the real surface polygons and plants keep clear of them (a 1 m raster of the surface).
 
-## Chunk format (BM06)
+## Chunk format (BM07)
 
 After the terrain grids a chunk now carries the 16 m heights (26 x 26 floats), then per road piece: flags, class data, surveyed width,
 mean half width, distance along its link, name, per point the centre and both edges (x, y, z), a drawn flag per segment and the
@@ -111,7 +121,8 @@ outlines of the water carried by a structure: a canal on an aqueduct over a road
 `build_world.py`: water standing 1.5 m or more above the ground, with a road on the ground passing under it, carried on until the
 ground under the water is back at the depth of a bed, so the ends rest on the banks); the game draws their
 concrete channel (walls where the water stops, a floor 1.8 m under the surface) and keeps the ground under them dry. A BM05 chunk
-is a BM06 chunk without that list; `WorldData.cs` reads both, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+is a BM06 chunk without that list; a BM07 road record adds, after the give-way lines, the OSM surface string and the limit against the
+piece's direction (the header byte is the limit along it). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
 
 The physics surface is the drawn one: `RoadIndex` hashes the very triangles that are rendered.

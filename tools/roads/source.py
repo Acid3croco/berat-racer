@@ -1,7 +1,7 @@
 """Stage 1: read the surveyed roads (BD TOPO `troncon_de_route`) of an area and turn each one into an `Edge` with normalised attributes.
 
 BD TOPO is the authority for geometry, width, lanes, class and bridges. OpenStreetMap (see `osm.py`) fills in what it knows better:
-surface, posted speed limits, street lighting. `overrides.toml` has the last word, per road.
+surface, posted speed limits, explicit one-way tags, street lighting. `overrides.toml` has the last word, per road.
 """
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -45,6 +45,7 @@ class Edge:
     bridge: bool
     tunnel: bool
     lit: bool = False
+    limit_back: int = 0           # km/h against the digitised direction where it differs (OSM maxspeed:backward), 0 = same as `limit`
     name: str = ""
     number: str = ""
     osm_id: int = 0

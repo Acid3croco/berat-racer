@@ -1,4 +1,4 @@
-"""Verify a region build (BM05 / BM06 chunks; roads against terrain: check_roads.py): every m_ chunk parses to the last byte, n_ chunks parse, world.json / far.bin agree, steepest 4 m height step,
+"""Verify a region build (BM05 - BM07 chunks; roads against terrain: check_roads.py): every m_ chunk parses to the last byte, n_ chunks parse, world.json / far.bin agree, steepest 4 m height step,
 seam mismatches between neighbouring chunks. Usage: uv run python check_region.py DIR [--jobs 4]"""
 import gzip, json, struct, sys
 from concurrent.futures import ProcessPoolExecutor

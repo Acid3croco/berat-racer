@@ -61,6 +61,8 @@ class Link:
     tilt: np.ndarray = None               # cross slope: the left edge is tilt * hw above the centre
     bridge: np.ndarray = None             # per segment: carried over what lies below (see crossing.py)
     tunnel: np.ndarray = None             # per segment
+    level: np.ndarray = None              # per segment: level after the OSM tags (osm.level), nan where no OSM way matched
+    osm_bridge: np.ndarray = None         # per segment: the matched OSM way is a bridge
 
     @property
     def length(self):

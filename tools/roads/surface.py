@@ -22,6 +22,7 @@ class Piece:
     link: int
     edge: object                  # source.Edge
     oneway: int                   # relative to the piece's own direction
+    limits: tuple                 # (along, against) the piece's own direction, km/h
     s: np.ndarray                 # (n,) distance along the link
     xy: np.ndarray                # (n, 2) centreline
     z: np.ndarray                 # (n,)
@@ -72,12 +73,14 @@ def pieces(network):
             if not len(seg):
                 continue
             edge = network.edges[e]
+            limits = (edge.limit, edge.limit_back or edge.limit)
             for run in np.split(seg, np.flatnonzero(np.diff(link.bridge[seg])) + 1):          # one piece per section, split where a bridge starts or ends
                 first, last = run[0], run[-1] + 1                  # first and last sample of the piece
                 span = slice(first, last + 1)
                 # a line belongs to the piece that holds the drawn segment next to it
                 give_way = [(i - first, after) for i, after in lines if (first <= i < last if after else first < i <= last)]
                 out.append(Piece(link=k, edge=edge, oneway={1: 2, 2: 1}.get(edge.oneway, 0) if rev else edge.oneway,
+                                 limits=limits[::-1] if rev else limits,
                                  s=link.s[span], xy=link.xy[span], z=link.z[span], tan=link.tan[span], hw=link.hw[span], tilt=link.tilt[span],
                                  left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way, bridge=bool(link.bridge[first])))
     return out

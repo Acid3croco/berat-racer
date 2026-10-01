@@ -238,7 +238,7 @@ public class Traffic : MonoBehaviour
         var f = a.f; f.EnsurePlanned();
 
         // target speed: legal limit x this driver's habit, then bends, junctions, the car in front
-        float lim = LimitKmh(f.road);
+        float lim = RoadFollower.LimitKmh(f.road, f.fwd);
         if (a.type == VehicleType.Truck || a.type == VehicleType.Semi) lim = Mathf.Min(lim, 90f);                    // heavy goods vehicles: 90 km/h at most
         float vt = lim / 3.6f * a.speedFactor;
         vt = Mathf.Min(vt, f.CurveSpeed() * (a.type == VehicleType.Car ? 1f : 0.8f), f.JunctionSpeed(vt));

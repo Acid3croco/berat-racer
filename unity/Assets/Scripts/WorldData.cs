@@ -9,6 +9,8 @@ public class RoadData
     public float hw, realWidth, s0;      // hw: mean drawn half width; realWidth: surveyed carriageway width; s0: distance of the first point along its whole road link (keeps dashed lines in step)
     public bool dirt, bridge, lit; public int fid, limit, avg, oneway, lanes, kind, rank;      // limit: legal speed km/h, avg: BD TOPO average km/h, oneway: 0 both ways, 1 along the line, 2 against it; fid: source feature
     public string name = ""; public string imp = "0";
+    public int limitBack;                // BM07: legal speed against the line, km/h (OSM maxspeed:backward); 0 = same as limit
+    public string surface = "";          // BM07: OSM surface (asphalt, gravel, sett, ...), else asphalt / dirt from the survey
     public float[] pts, left, right;     // centreline and the two edges of the carriageway, x y z per point. The edges carry the cross slope.
     public int[] giveWayAt = new int[0]; public bool[] giveWayAfter = new bool[0];      // points where this road meets a junction as the minor road (a give-way line is painted); After: the drawn road lies after the point
     public bool[] drawn;                 // per segment: is it rendered and driven on? Not inside a junction: the junction surface covers it, the centreline stays for the traffic.
@@ -132,10 +134,11 @@ public class ChunkData
             d.H = new float[CV * CV]; var q = br.ReadBytes(CV * CV * 2);
             for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * step;
             d.Col = br.ReadBytes(CV * CV * 3); d.LowCol = br.ReadBytes(LV * LV * 3);
-            if (magic == "BM05" || magic == "BM06")
+            int version = magic.StartsWith("BM") && int.TryParse(magic.Substring(2), out int v) ? v : 0;
+            if (version >= 5 && version <= 7)
             {
                 d.LowH = Floats(br, LV * LV);
-                d.Roads = ReadRoads(br); d.Ctx = ReadRoads(br);
+                d.Roads = ReadRoads(br, version); d.Ctx = ReadRoads(br, version);
                 d.Junctions = ReadJunctions(br); d.CtxJunctions = ReadJunctions(br);
             }
             else if (magic == "BM02" || magic == "BM03" || magic == "BM04") LegacyChunk.ReadRoads(br, magic, d);      // worlds built before the road pipeline
@@ -143,7 +146,7 @@ public class ChunkData
             d.Areas = ReadWater(br);
             int nl = br.ReadInt32(); d.Lines = new WaterLine[nl];
             for (int i = 0; i < nl; i++) { var l = new WaterLine { hw = br.ReadSingle(), lead = br.ReadByte(), trail = br.ReadByte() }; int n = br.ReadInt32(); l.pts = Floats(br, n * 3); d.Lines[i] = l; }
-            if (magic == "BM06") d.Troughs = ReadWater(br);
+            if (version >= 6) d.Troughs = ReadWater(br);
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)
             {
@@ -159,7 +162,7 @@ public class ChunkData
         }
     }
 
-    static RoadData[] ReadRoads(BinaryReader br)
+    static RoadData[] ReadRoads(BinaryReader br, int version)
     {
         int count = br.ReadInt32(); var a = new RoadData[count];
         for (int i = 0; i < count; i++)
@@ -172,6 +175,8 @@ public class ChunkData
             var flags = br.ReadBytes(n - 1); r.drawn = new bool[n - 1]; for (int k = 0; k < n - 1; k++) r.drawn[k] = flags[k] != 0;
             int lines = br.ReadByte(); r.giveWayAt = new int[lines]; r.giveWayAfter = new bool[lines];
             for (int k = 0; k < lines; k++) { r.giveWayAt[k] = br.ReadUInt16(); r.giveWayAfter[k] = br.ReadByte() != 0; }
+            if (version >= 7) { r.surface = Str(br); r.limitBack = br.ReadByte(); }
+            else r.surface = r.dirt ? "dirt" : "asphalt";
             a[i] = r;
         }
         return a;

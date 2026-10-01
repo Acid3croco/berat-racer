@@ -1,7 +1,8 @@
 """Stage 5: crossings without a junction: which road passes over, and over what length.
 
-Two drawn roads that cross without meeting at a node are grade separated. BD TOPO says which of them is on a bridge and is nearly
-always right. Where it is not (the towpath of the Canal du Midi on the Herbettes aqueduct is surveyed as lying on the ground, and the
+Two drawn roads that cross without meeting at a node are grade separated. The LiDAR decides where it can; where it cannot, the OSM
+levels (`bridge`, `tunnel`, `covered`, `layer`, `cutting`) are the next hint, then BD TOPO's bridge flag, which is nearly always right.
+Where it is not (the towpath of the Canal du Midi on the Herbettes aqueduct is surveyed as lying on the ground, and the
 ring road in the trench under it as the bridge), the LiDAR ground decides: the road passing over is the one whose ground climbs well
 above the crossing on both sides within a short distance, while the other road's ground stays down. Its span becomes a bridge, from
 the top of the bank on one side to the top of the bank on the other; a surveyed bridge of the road below, lying on the ground there,
@@ -16,16 +17,28 @@ from shapely.geometry import LineString
 
 from rasters import Mosaic
 
-from . import config
+from . import config, osm
 from .profile import ACROSS
 
 
 def flags(links, edges):
-    """Per segment bridge / tunnel flags of every link, as surveyed."""
+    """Per segment bridge / tunnel flags of every link, as surveyed, and the OSM level and bridge tag of the way matched there."""
     for link in links:
         chain = [edges[e] for e, _ in link.chain]
         link.bridge = np.array([chain[p].bridge for p in link.part], bool)
         link.tunnel = np.array([chain[p].tunnel for p in link.part], bool)
+        level = [osm.level(edge.tags) for edge in chain]
+        link.level = np.array([np.nan if level[p] is None else level[p] for p in link.part], float)
+        link.osm_bridge = np.array([chain[p].tags.get("bridge", "no") != "no" for p in link.part], bool)
+
+
+def osm_upper(a, sa, b, sb):
+    """(upper link, segment, lower link, segment) after the OSM levels at a crossing; None when OSM does not tell (a way missing,
+    the same level)."""
+    la, lb = a.level[sa], b.level[sb]
+    if not (np.isfinite(la) and np.isfinite(lb)) or la == lb:
+        return None
+    return (a, sa, b, sb) if la > lb else (b, sb, a, sa)
 
 
 def crossings(links):
@@ -99,9 +112,9 @@ def _run(flags_, seg):
 
 
 def separate(links):
-    """Decide every crossing without a junction from the LiDAR ground where the survey gets it wrong. Returns counts for the report."""
+    """Decide every crossing without a junction: the LiDAR ground where it tells, else the OSM levels, else the survey. Returns counts for the report."""
     found = crossings(links)
-    stats = dict(crossings=len(found), bridges_added=0, bridges_dropped=0)
+    stats = dict(crossings=len(found), bridges_added=0, bridges_dropped=0, by_lidar=0, by_osm=0, osm_without_span=0, by_survey=0)
     reach = config.CROSSING_REACH + config.CROSSING_BANK + 16.0
     for ka, sa, kb, sb, (x, z) in found:
         a, b = links[ka], links[kb]
@@ -112,9 +125,19 @@ def separate(links):
         low = float(terrain.sample(terrain.mnt, [x], [z], 2)[0])
         ground = {ka: _ground(a, terrain), kb: _ground(b, terrain)}
         over = {k: span_over(links[k], seg, low, ground[k]) for k, seg in ((ka, sa), (kb, sb))}
-        if (over[ka] is None) == (over[kb] is None):
-            continue                                            # the ground does not tell: keep what the survey says
-        (upper, us, span), (lower, ls, floor) = ((a, sa, over[ka]), (b, sb, ground[kb])) if over[ka] is not None else ((b, sb, over[kb]), (a, sa, ground[ka]))
+        if (over[ka] is None) != (over[kb] is None):
+            (upper, us, span), (lower, ls, floor) = ((a, sa, over[ka]), (b, sb, ground[kb])) if over[ka] is not None else ((b, sb, over[kb]), (a, sa, ground[ka]))
+            stats["by_lidar"] += 1
+        elif (hint := osm_upper(a, sa, b, sb)) is not None:     # the ground does not tell: OSM's levels are the next hint
+            upper, us, lower, ls = hint
+            if not upper.osm_bridge[us]:
+                stats["osm_without_span"] += 1                  # e.g. the lower road in a cutting under a way not tagged as a bridge
+                continue
+            span, floor = _run(upper.osm_bridge, us), ground[ka if lower is a else kb]
+            stats["by_osm"] += 1
+        else:
+            stats["by_survey"] += 1                             # neither tells: keep what the survey says
+            continue
         if not upper.bridge[us]:
             upper.bridge[span[0]:span[1]] = True
             stats["bridges_added"] += 1

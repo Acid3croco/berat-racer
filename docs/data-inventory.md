@@ -11,6 +11,16 @@ The source split (BD TOPO for position and size, OSM for meaning and rules, LiDA
 [data-sources.md](data-sources.md). This page adds what each subsystem reads today, what it ignores, the data
 that exists but is not fetched, and the bugs found in the code (file:line, as of `6cb8cd9b`).
 
+## Progress
+
+Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each step verified before the next: road build report,
+`check_roads.py`, a player built into its own `Build/` folder, `tools/playtest.sh` (`-roadtest`, `-autotest`), and before / after shots
+(`tools/shot_compare.py`, in [shots/datainv](shots/datainv)). Baseline = master `136bc6a9`.
+
+| # | Step | Status | Measured (small map) |
+|---|---|---|---|
+| 1 | OSM tags already cached: oneway, levels in `crossing.py`, French / directional limits, surface string | done | 24 one-way conflicts settled by OSM (20 to one-way, 4 reversed), rings kept on BD TOPO (61 / 61 counter-clockwise); 0 crossings on the small map, Herbettes sector: LiDAR 39, OSM 9, survey 3, same spans as master; overlap 0 m², terrain above road 0, LiDAR fit unchanged; roadtest 9.9 m/s² (9.8 - 9.9 before) |
+
 Legend for the *Status* column: **used**: read and has an effect · **dropped**: fetched or present, then ignored ·
 **absent**: not fetched at all.
 
@@ -41,10 +51,10 @@ Everything else (land use, parcels, vegetation zones, parkings, walls, lanes, si
 | Centreline | BD TOPO, smoothed (3rd-difference least squares, within 0.8 - 2 m) | Same, then **snapped to the real carriageway** | LiDAR `mnt` flat strip; LiDAR **intensity** (asphalt is dark, paint is bright); BD ORTHO 20 cm |
 | Width | BD TOPO x 1.27; 28 % estimated from nature / lanes / class | Measured everywhere | LiDAR flat strip + intensity edges; OSM `width`; PCRS kerbs where a city publishes one (Toulouse Métropole) |
 | Lane count | BD TOPO `nombre_de_voies` (capped by width), OSM `lanes` only when BD TOPO says 0 | **Per direction, per sample**, with explicit change points | OSM `lanes:forward/backward`, `turn:lanes`, `change:lanes`, `placement`; painted dividers counted in LiDAR intensity |
-| One-way | BD TOPO `sens_de_circulation` | Same, cross-checked | OSM `oneway` (**dropped** today, `osm.py`) |
-| Speed limit | OSM numeric `maxspeed`, else legal default | Same + zone tags | OSM `maxspeed=FR:urban/rural/zone30`, `maxspeed:forward/backward`, `zone:maxspeed` (non-numeric values **dropped**, `osm.py:69-71`) |
-| Surface (paved/gravel) | OSM `surface`, `tracktype` -> `dirt` bool | Surface class for physics + look | Keep the OSM string (**dropped** at export); add `smoothness` |
-| Bridge / tunnel / level | BD TOPO position + LiDAR arbitration | OSM as first hint (planned in data-sources.md) | OSM `bridge`, `tunnel`, `layer`, `cutting`, `covered`, `maxheight` (all fetched in `tags`, **dropped**) |
+| One-way | BD TOPO `sens_de_circulation`, cross-checked: an explicit OSM `oneway` wins, except on rings (**done**, step 1) | Same | |
+| Speed limit | OSM `maxspeed`, numeric or French code (`FR:urban`, `zone:maxspeed=FR:30`, `maxspeed:type`, `source:maxspeed`), per direction (`:forward/:backward`), else legal default (**done**, step 1) | Same | |
+| Surface (paved/gravel) | OSM `surface`, `tracktype` -> `dirt` bool; the string is exported (BM07) (**done**, step 1) | Surface class for physics + look | add `smoothness` |
+| Bridge / tunnel / level | LiDAR first, then OSM levels (`bridge`, `tunnel`, `covered`, `layer`, `cutting`), then BD TOPO (**done**, step 1) | Same | OSM `maxheight` |
 | Junction control | Give-way lines from rank only | Signals, stops, give-ways, zebras, speed bumps, turn restrictions | OSM nodes `highway=traffic_signals/stop/give_way/crossing`, `traffic_calming`; BD TOPO `non_communication` (turn restrictions); Panoramax sign detections |
 | Lighting | OSM `lit` exported, **unused** in the game | Street lamps on lit roads | (already there) |
 | Pavements | none | Pavements in towns | OSM `sidewalk=*`; BD TOPO `urbain`; PCRS kerbs |

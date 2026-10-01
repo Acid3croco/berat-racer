@@ -365,7 +365,7 @@ def put_roads(buf, items):
     for p, a, b in items:
         e = p.edge
         buf += bytes([(1 if e.dirt else 0) | (2 if p.bridge else 0) | (4 if e.lit else 0), int(e.importance) if e.importance.isdigit() else 0,
-                      e.limit, e.avg, p.oneway, e.lanes, e.kind, e.road_class.rank])
+                      p.limits[0], e.avg, p.oneway, e.lanes, e.kind, e.road_class.rank])
         wi(buf, zlib.crc32(e.cleabs.encode()) & 0x7FFFFFFF); wf(buf, e.width_real, float(p.hw[a:b].mean()), float(p.s[a]))
         wstr(buf, e.name); wi(buf, b - a)
         wfa(buf, np.c_[p.xy[a:b, 0], p.z[a:b], p.xy[a:b, 1]])                       # centreline, then the two edges: x, height, north
@@ -374,6 +374,7 @@ def put_roads(buf, items):
         lines = [(i - a, after) for i, after in p.give_way if (a <= i < b - 1 if after else a < i <= b - 1)]      # those whose drawn segment is in this run
         buf.append(len(lines))
         for i, after in lines: buf += struct.pack("<HB", i, 1 if after else 0)
+        wstr(buf, e.surface); buf.append(p.limits[1])                                # BM07: OSM surface, limit against the piece's direction
 
 def put_junctions(buf, items):
     """Junction meshes of a chunk: [(junction, vertices)]."""
@@ -671,7 +672,7 @@ def process_sector(args):
             th = H[r0:r0 + CV, c0:c0 + CV]; tc = C[r0:r0 + CV, c0:c0 + CV]
             base = float(th.min()); step = max(0.005, math.ceil((float(th.max()) - base) / 65535 * 1000 - 1e-9) / 1000)
             q = np.clip(np.round((th - base) / step), 0, 65535).astype("<u2")
-            buf = bytearray(b"BM06"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
+            buf = bytearray(b"BM07"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
             buf += q.tobytes(); buf += tc.astype(np.uint8).tobytes()
             buf += np.clip(low_col[r0:r0 + CV:4, c0:c0 + CV:4], 0, 255).astype(np.uint8).tobytes()
             wfa(buf, LOW[r0 // 4:r0 // 4 + LV, c0 // 4:c0 // 4 + LV])                 # heights of the 16 m terrain (already kept below the roads)

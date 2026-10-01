@@ -80,7 +80,7 @@ public class Autopilot
         car.Steer = Mathf.Clamp(ang / 24f, -1f, 1f);
 
         // speed: the road's limit (x habit), bends, junctions, the car in front
-        float limit = ObeyLimits ? RoadFollower.LimitKmh(follower.road) * SpeedFactor : 999f;
+        float limit = ObeyLimits ? RoadFollower.LimitKmh(follower.road, follower.fwd) * SpeedFactor : 999f;
         float want = Mathf.Min(TargetKmh, limit);
         float wantMs = Mathf.Min(want / 3.6f, follower.CurveSpeed());
         wantMs = Mathf.Min(wantMs, follower.JunctionSpeed(wantMs));
@@ -100,7 +100,7 @@ public class Autopilot
         stuckT = speedKmh < 2f && want > 15f ? stuckT + dt : 0f;
         if (stuckT > 3f) { stuckT = 0; reverseT = 1.6f; StuckEvents++; DumpContacts();
             Log.I("auto", $"stuck -> reversing at ({p.x:F0},{p.y:F0}), road piece {follower.road.fid} s {follower.s:F0}/{follower.Length:F0}, wanted {want:F0} km/h"); }
-        Status = $"'{follower.road.name}' {want:F0} km/h (limit {RoadFollower.LimitKmh(follower.road):F0}) lane {follower.lane:F1} m steer {car.Steer:F2} | off {off:F1} m, ang {ang:F0}, s {follower.s:F0}/{follower.Length:F0} fwd {follower.fwd} hw {follower.road.hw:F1} ow {follower.road.oneway}";
+        Status = $"'{follower.road.name}' {want:F0} km/h (limit {RoadFollower.LimitKmh(follower.road, follower.fwd):F0}) lane {follower.lane:F1} m steer {car.Steer:F2} | off {off:F1} m, ang {ang:F0}, s {follower.s:F0}/{follower.Length:F0} fwd {follower.fwd} hw {follower.road.hw:F1} ow {follower.road.oneway}";
     }
 
     /// <summary>The car is stuck in a piece of road that leads nowhere: put it on a well-connected road a few hundred metres away, in its lane.</summary>

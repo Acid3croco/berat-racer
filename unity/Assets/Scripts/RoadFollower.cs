@@ -19,10 +19,10 @@ public class RoadFollower
     public float ToEnd => fwd ? road.Length - s : s;
 
     // ------------------------------------------------------------------ speed limits
-    /// <summary>Speed allowed on this road (km/h): the French legal limit from the data, no more than 1.3 x the road's average speed + 8 (winding, narrow roads are slower).</summary>
-    public static float LimitKmh(RoadData r)
+    /// <summary>Speed allowed on this road (km/h) in the direction of travel: the French legal limit from the data, no more than 1.3 x the road's average speed + 8 (winding, narrow roads are slower).</summary>
+    public static float LimitKmh(RoadData r, bool forward = true)
     {
-        float limit = r.limit;
+        float limit = !forward && r.limitBack > 0 ? r.limitBack : r.limit;
         if (limit <= 0f) limit = r.imp == "1" ? 110f : r.imp == "2" ? 90f : r.imp == "3" || r.imp == "4" ? 80f : 70f;        // data without limits: guess from the road class
         if (r.avg > 0) limit = Mathf.Min(limit, Mathf.Max(r.avg * 1.3f + 8f, 30f));
         return limit;
