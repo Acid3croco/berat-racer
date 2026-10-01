@@ -10,7 +10,6 @@ then `uv run python build_world.py --list <same list>` puts the roads into the w
 """
 import argparse
 import json
-import time
 from pathlib import Path
 
 import numpy as np
@@ -42,30 +41,32 @@ def cmd_fetch(args):
     print(json.dumps(report, indent=1))
 
 
+def sectors_of(args):
+    return [tuple(s) for s in json.loads(Path(args.list).read_text())["sectors"]]
+
+
 def cmd_build(args):
-    network = build_stage.build(args.list, jobs=args.jobs, fresh=args.fresh)
-    clock = time.time()
-    path = build_stage.save(network)
-    print(f"  save       {round(time.time() - clock, 1)} s")
-    print_report(network.report)
-    print(f"-> {path}")
+    report = build_stage.build(args.list, jobs=args.jobs, fresh=args.fresh)
+    print_report(report)
+    print(f"-> {build_stage.report_path(build_stage.tag_of(args.list))}")
 
 
 def cmd_report(args):
-    print_report(json.loads(build_stage.artefact_path(build_stage.tag_of(args.list)).with_suffix(".report.json").read_text()))
+    print_report(json.loads(build_stage.report_path(build_stage.tag_of(args.list)).read_text()))
 
 
 def cmd_inspect(args):
-    network = build_stage.load(build_stage.tag_of(args.list))
     centre = tuple(float(v) for v in args.at.split(","))
+    network = build_stage.load_around(build_stage.tag_of(args.list), sectors_of(args), centre)
     out = debug.ensure_dir(args.out)
-    debug.save_plan(network, centre, args.radius, out / "plan.png", raw=network.raw)
+    debug.save_plan(network, centre, args.radius, out / "plan.png")
     near = [k for k, link in enumerate(network.links) if np.hypot(*(link.xy - np.array(centre)).T).min() < args.radius]
     if near:
         debug.profile(network, near[:12], out / "profiles.png")
     for k in near:
         link = network.links[k]
-        print(f"L{k}: {link.length:.0f} m, junctions {link.junction}, trims {np.round(link.trim, 1).tolist()}{' (swallowed)' if link.internal else ''}")
+        print(f"L{link.key}: {link.length:.0f} m, junctions {[network.junctions[j].key if j >= 0 else None for j in link.junction]}, "
+              f"trims {np.round(link.trim, 1).tolist()}{' (swallowed)' if link.internal else ''}")
         for e, rev in link.chain:
             edge = network.edges[e]
             print(f"    {edge.cleabs}  {edge.nature}, {edge.klass}, width {edge.width_real:g} m (drawn {edge.width:.1f}), {edge.surface}, "
@@ -74,13 +75,19 @@ def cmd_inspect(args):
 
 
 def cmd_gallery(args):
-    network = build_stage.load(build_stage.tag_of(args.list))
-    out = debug.ensure_dir(args.out)
-    ids = [k for k, j in enumerate(network.junctions) if j.vertices is not None]
-    ids.sort(key=lambda k: -len(network.junctions[k].nodes))                 # the complicated ones first
-    for page, start in enumerate(range(0, len(ids), 48)):
-        debug.gallery(network, ids[start:start + 48], out / f"junctions_{page:02d}.png", radius=args.radius, columns=8)
-    print(f"{len(ids)} junctions -> {out}/junctions_*.png")
+    """Junction plan views, tile by tile: the junctions each tile owns, 48 per sheet, the complicated ones first."""
+    from rasters import HALF, SECTOR
+    from . import tiled
+    tag, sectors, out = build_stage.tag_of(args.list), sectors_of(args), debug.ensure_dir(args.out)
+    count = 0
+    for t in tiled.Area(tag, sectors, build_stage.MARGIN).tiles:
+        network = build_stage.load_around(tag, sectors, (-HALF + (t[0] + 0.5) * SECTOR, -HALF + (t[1] + 0.5) * SECTOR))
+        ids = [k for k, j in enumerate(network.junctions) if j.owner == t and j.vertices is not None]
+        ids.sort(key=lambda k: -len(network.junctions[k].nodes))
+        for page, start in enumerate(range(0, len(ids), 48)):
+            debug.gallery(network, ids[start:start + 48], out / f"junctions_{t[0]}_{t[1]}_{page:02d}.png", radius=args.radius, columns=8)
+        count += len(ids)
+    print(f"{count} junctions -> {out}/junctions_*.png")
 
 
 def main():
@@ -89,7 +96,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("fetch").set_defaults(run=cmd_fetch)
     build = commands.add_parser("build")
-    build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
+    build.add_argument("--jobs", type=int, default=0, help="worker processes (default and most: half the cores, machine.py)")
     build.add_argument("--fresh", action="store_true", help="smooth every stroke and solve every height tile again, even those whose inputs did not change")
     build.set_defaults(run=cmd_build)
     commands.add_parser("report").set_defaults(run=cmd_report)

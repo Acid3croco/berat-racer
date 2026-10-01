@@ -46,6 +46,7 @@ class Element:
     junction: int = -1
     turn: float = 0.0                       # degrees, left positive (connectors)
     arm_in: int = -1                        # index into the junction's arms (connectors)
+    owner: tuple = None                     # ("link", index) or ("junction", index): what it was made for (tiled builds number it from there)
 
 
 def _frame(link, s):
@@ -155,9 +156,10 @@ class Builder:
         self.stats = dict(lanes=0, changes=0, connectors=0, uturns=0, restricted=0, by_turn_lanes=0, dead_ends=0, around_islands=0)
         self.applied = set()          # restrictions found on the network (their ways at their junction)
         self.node_xy = np.array([(n["x"], n["z"]) for n in self.controls["nodes"]]).reshape(-1, 2)
+        self.owner = None                                                   # what the elements being made belong to
 
     def add(self, kind, pts, limit, road, **kw):
-        e = Element(id=len(self.elements), kind=kind, xyz=pts, limit=int(limit), road=road, **kw)
+        e = Element(id=len(self.elements), kind=kind, xyz=pts, limit=int(limit), road=road, owner=self.owner, **kw)
         self.elements.append(e)
         return e
 
@@ -473,6 +475,7 @@ class Builder:
             near = [lanes_[i] for i in tree.query(Point(*e.xyz[-1, :2]).buffer(12.0))
                     if lanes_[i] is not e and _direction(lanes_[i].xyz, False) @ _direction(e.xyz, True) < -0.7]
             if near:
+                self.owner = e.owner
                 self._turn_round(e, near)
 
     # ------------------------------------------------------------------ dead ends
@@ -480,6 +483,7 @@ class Builder:
         for k, link in enumerate(self.network.links):
             if link.internal:
                 continue
+            self.owner = ("link", k)
             for end in (0, 1):
                 if link.junction[end] >= 0:
                     continue
@@ -527,14 +531,17 @@ class Builder:
                     yields=sum(len(e.yields) for e in by_id), controls=controls)
 
 
-def build(network, controls):
-    """The lane graph of a network: [Element], report numbers."""
+def build(network, controls, junctions=None):
+    """The lane graph of a network: [Element], report numbers. `junctions`: the indices of the junctions to connect (None: all)."""
     b = Builder(network, controls)
     for k, link in enumerate(network.links):
         if not link.internal and link.i1 >= link.i0 and link.lanes is not None:
+            b.owner = ("link", k)
             b.link_lanes(k, link)
     for ji, junction in enumerate(network.junctions):
-        b.junction(ji, junction)
+        if junctions is None or ji in junctions:
+            b.owner = ("junction", ji)
+            b.junction(ji, junction)
     b.dead_ends()
     b.lane_ends()
     b.speeds()

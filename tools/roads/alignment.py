@@ -167,43 +167,108 @@ def smooth_polyline(raw, step_eps, step_wavelength, pins, end_weights):
     return s, q, float(ratio.max())
 
 
-def smooth_strokes(graph, stroke_list, frozen, placed, kept):
+PRIORITY_LENGTH = 1600.0          # m: strokes are smoothed by class, then by length up to this (the tiles' halo, roads/tiled.py)
+CONTEXT = 150.0                   # m of a neighbour's finished curve a stroke continuing it is pinned to (tiled builds)
+
+
+def _runs(chain, fixed):
+    """[(first, end)] index ranges of the chain's edges that are not fixed."""
+    out, start = [], None
+    for i, (k, _) in enumerate(chain):
+        if k in fixed:
+            if start is not None:
+                out.append((start, i))
+                start = None
+        elif start is None:
+            start = i
+    if start is not None:
+        out.append((start, len(chain)))
+    return out
+
+
+def _context(graph, chain, fixed, indices, at_start):
+    """The finished curve of the fixed edges next to a run (`indices`, walking away from it), oriented along the chain: up to CONTEXT m."""
+    pieces, length = [], 0.0
+    for i in indices:
+        k, rev = chain[i]
+        if k not in fixed:
+            break
+        xy = fixed[k][::-1] if rev else fixed[k]
+        pieces.append(xy)
+        length += float(np.hypot(*np.diff(xy, axis=0).T).sum())
+        if length >= CONTEXT:
+            break
+    if not pieces:
+        return np.zeros((0, 2))
+    if at_start:                                       # walked backwards: put the pieces back in chain order
+        xy = np.vstack([pieces[-1]] + [p[1:] for p in pieces[-2::-1]])
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+        return xy[s >= s[-1] - CONTEXT]
+    xy = np.vstack([pieces[0]] + [p[1:] for p in pieces[1:]])
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+    return xy[s <= CONTEXT]
+
+
+def smooth_strokes(graph, stroke_list, frozen, placed, kept, fixed=None):
     """Smooth every stroke in place (edge polylines and node positions). `placed`: nodes whose position is already final.
-    `kept`: the strokes of the previous build (`Kept`)."""
+    `kept`: the strokes of the previous build (`Kept`). `fixed`: {edge: finished curve} of edges a neighbouring tile already smoothed;
+    a stroke is solved in the runs between them, each continuing the fixed curve on either side (pinned over CONTEXT metres)."""
     code = code_stamp(sys.modules[__name__])
+    fixed = fixed or {}
     def priority(chain):
-        return (max(graph.edges[k].road_class.rank for k, _ in chain), sum(graph.edges[k].length for k, _ in chain))
+        """Class first, then length up to PRIORITY_LENGTH (a tile sees that much of any stroke through it), then the stroke's first
+        section id: an order a tile and a whole-area build agree on."""
+        return (max(graph.edges[k].road_class.rank for k, _ in chain), min(sum(graph.edges[k].length for k, _ in chain), PRIORITY_LENGTH),
+                min(graph.edges[k].cleabs for k, _ in chain))
+
+    def oriented(chain):
+        """The stroke walked along its first section (by id): the smoothing is not symmetric, so a tile and a whole-area build must walk it alike."""
+        k, rev = min(chain, key=lambda kr: graph.edges[kr[0]].cleabs)
+        return [(e, not r) for e, r in reversed(chain)] if rev else chain
 
     worst = 0.0
-    for chain in sorted(stroke_list, key=priority, reverse=True):
-        if all(k in frozen for k, _ in chain):
+    for whole in sorted((oriented(c) for c in stroke_list), key=priority, reverse=True):
+        if all(k in frozen or k in fixed for k, _ in whole):
             continue
-        pieces = [graph.edges[k].xy[::-1] if rev else graph.edges[k].xy for k, rev in chain]
-        raw = np.vstack([pieces[0]] + [piece[1:] for piece in pieces[1:]])
-        bounds = np.r_[0.0, np.cumsum([np.hypot(*np.diff(piece, axis=0).T).sum() for piece in pieces])]      # arc length of every node on the stroke
-        classes = [graph.edges[k].road_class for k, _ in chain]
-        nodes = chain_nodes(graph, chain)
+        for first, end in _runs(whole, fixed):
+            chain = whole[first:end]
+            before = _context(graph, whole, fixed, range(first - 1, -1, -1), True)
+            after = _context(graph, whole, fixed, range(end, len(whole)), False)
+            pieces = [graph.edges[k].xy[::-1] if rev else graph.edges[k].xy for k, rev in chain]
+            nodes = chain_nodes(graph, chain)
+            body = np.vstack([pieces[0]] + [piece[1:] for piece in pieces[1:]])
+            body[0], body[-1] = graph.nodes[nodes[0]], graph.nodes[nodes[-1]]
+            raw = np.vstack(([before[:-1]] if len(before) else []) + [body] + ([after[1:]] if len(after) else []))
+            lead = float(np.hypot(*np.diff(before, axis=0).T).sum()) if len(before) else 0.0
+            bounds = lead + np.r_[0.0, np.cumsum([np.hypot(*np.diff(piece, axis=0).T).sum() for piece in pieces])]      # arc length of every node on the run
+            classes = [graph.edges[k].road_class for k, _ in chain]
 
-        def per_edge(values):
-            return lambda s: np.asarray(values)[np.clip(np.searchsorted(bounds, s, side="right") - 1, 0, len(chain) - 1)]
+            def per_edge(values, bounds=bounds, n=len(chain)):
+                return lambda s: np.asarray(values)[np.clip(np.searchsorted(bounds, s, side="right") - 1, 0, n - 1)]
 
-        pins = [(bounds[i], graph.nodes[nodes[i]].copy()) for i in range(1, len(nodes) - 1) if nodes[i] in placed]
-        end_weights = [FREE_END if graph.degree(node) == 1 and node not in placed else PIN for node in (nodes[0], nodes[-1])]
-        raw[0], raw[-1] = graph.nodes[nodes[0]], graph.nodes[nodes[-1]]
-        bound, wavelength = [c.max_deviation for c in classes], [c.align_wavelength for c in classes]
-        s, q, ratio = kept.get(digest(raw, bounds, bound, wavelength, pins, end_weights, code),
-                               lambda: smooth_polyline(raw, per_edge(bound), per_edge(wavelength), pins, end_weights))
-        worst = max(worst, ratio)
+            pins = [(bounds[i], graph.nodes[nodes[i]].copy()) for i in range(1, len(nodes) - 1) if nodes[i] in placed]
+            if len(before):
+                arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(before, axis=0).T))]
+                pins = [(float(a), p.copy()) for a, p in zip(arc, before)] + pins
+            if len(after):
+                arc = bounds[-1] + np.r_[0.0, np.cumsum(np.hypot(*np.diff(after, axis=0).T))]
+                pins += [(float(a), p.copy()) for a, p in zip(arc, after)]
+            end_weights = [PIN if (side or (graph.degree(node) != 1 or node in placed)) else FREE_END
+                           for node, side in ((nodes[0], len(before)), (nodes[-1], len(after)))]
+            bound, wavelength = [c.max_deviation for c in classes], [c.align_wavelength for c in classes]
+            s, q, ratio = kept.get(digest(raw, bounds, bound, wavelength, pins, end_weights, code),
+                                   lambda: smooth_polyline(raw, per_edge(bound), per_edge(wavelength), pins, end_weights))
+            worst = max(worst, ratio)
 
-        for i, node in enumerate(nodes):
-            if node in placed:
-                continue
-            graph.nodes[node] = np.array([np.interp(bounds[i], s, q[:, 0]), np.interp(bounds[i], s, q[:, 1])])
-            placed.add(node)
-        for i, (k, rev) in enumerate(chain):
-            inside = (s > bounds[i] + 0.3) & (s < bounds[i + 1] - 0.3)
-            xy = np.vstack([graph.nodes[nodes[i]], q[inside], graph.nodes[nodes[i + 1]]])
-            graph.edges[k].xy = xy[::-1].copy() if rev else xy
+            for i, node in enumerate(nodes):
+                if node in placed:
+                    continue
+                graph.nodes[node] = np.array([np.interp(bounds[i], s, q[:, 0]), np.interp(bounds[i], s, q[:, 1])])
+                placed.add(node)
+            for i, (k, rev) in enumerate(chain):
+                inside = (s > bounds[i] + 0.3) & (s < bounds[i + 1] - 0.3)
+                xy = np.vstack([graph.nodes[nodes[i]], q[inside], graph.nodes[nodes[i + 1]]])
+                graph.edges[k].xy = xy[::-1].copy() if rev else xy
     return worst
 
 
@@ -211,17 +276,3 @@ def reattach(graph):
     """After nodes moved: make every edge end sit exactly on its node."""
     for e in graph.edges:
         e.xy[0], e.xy[-1] = graph.nodes[e.a], graph.nodes[e.b]
-
-
-def align(graph, stroke_list, keep_in=None, fresh=False):
-    """Roundabouts, then strokes. Returns stats for the build report. `keep_in`: file the smoothed strokes are kept in between builds;
-    `fresh`: smooth every stroke again (the file is still written)."""
-    raw = {k: shapely.LineString(e.xy) for k, e in enumerate(graph.edges)}
-    frozen, placed = round_roundabouts(graph)
-    reattach(graph)
-    kept = Kept(keep_in, fresh)
-    worst = smooth_strokes(graph, stroke_list, frozen, set(placed), kept)
-    kept.save()
-    deviation = np.array([shapely.hausdorff_distance(shapely.LineString(e.xy), raw[k]) for k, e in enumerate(graph.edges)])
-    return dict(roundabout_edges=len(frozen), worst_bound_ratio=worst, max_deviation=float(deviation.max()), p99_deviation=float(np.percentile(deviation, 99)),
-                strokes_reused=kept.reused)

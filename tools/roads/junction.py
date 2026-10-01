@@ -210,13 +210,14 @@ def _make_shared(nodes):
     return _make_junction(graph, links, nodes, touching, internal)
 
 
-def build_junctions(graph, links, jobs=1):
+def build_junctions(graph, links, jobs=1, active=None):
     """Group junction nodes into junctions and trim every arm. Sets `junction`, `trim`, `internal` on the links. Returns the junction list.
+    `active`: the junction nodes to build (None: all); a link end at another node is left as a dead end.
 
     Every junction node starts as its own junction. A link left with nothing to draw between its two trims is swallowed and its
     junctions merge; only the junctions that changed are built again, until nothing changes. The junctions of one pass are built
     side by side: a junction only reads the links, and those change between passes, not within one."""
-    parent = {n: n for n in range(len(graph.nodes)) if graph.is_junction(n)}
+    parent = {n: n for n in range(len(graph.nodes)) if graph.is_junction(n) and (active is None or n in active)}
     members = {n: [n] for n in parent}
     touching = {n: [] for n in parent}
     for k, link in enumerate(links):

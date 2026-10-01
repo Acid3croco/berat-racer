@@ -118,3 +118,47 @@ float32 file there, and so does the new layout (the second copies were dropped).
 Verified: the small map built from the tiles (roads with `python -m roads build`, then `build_world.py`) gives road sector files
 and all 1,152 chunk files and `far.bin` byte for byte identical to master; `places.json` now holds the place names of the map's
 tiles and their neighbours instead of the whole region.
+
+## Step 3: the road pipeline per tile (`tools/roads/tiled.py`)
+
+No stage holds the whole network any more. The tiles are the sectors; four passes run over them, each tile reading the source
+tiles and what earlier passes wrote for the tiles around it, and writing only what it owns
+(`data/big/roads/<tag>/<pass>/<si>_<sj>.pkl`):
+
+1. **align**: four rounds, like the colours of a 2 x 2 checkerboard (neighbours are never in the same round). A tile reads the
+   sections within 1.6 km, cuts them where they cross a tile border (the two ends of a cut are one node of their own), and smooths
+   its strokes. What a tile of an earlier round smoothed is fixed; a stroke continuing it is solved in the runs between fixed
+   sections, pinned to the last 150 m of the fixed curve on each side, so it continues smoothly. A tile owns the section parts lying
+   in it and the nodes that no tile of an earlier round touches.
+2. **network**: the sections put back together; graph, links, junctions (only those within 400 m of the tile or of the ends of its
+   links are built), crossings and tunnels. A link belongs to the tile holding its middle, a junction to the tile holding its
+   centre; a tile loads its 3 x 3 neighbourhood and more when a link it needs is not whole there. Records refer to each other by
+   key and owner tile.
+3. **profile**: the existing checkerboard height solve, now one process per tile, the neighbourhood assembled from the records.
+4. **surface**: lanes, the lane graph, road pieces and junction meshes of what the tile owns. Lane graph elements are numbered
+   (tile code << 15) + rank, references to another tile's elements are resolved in a last short pass by what they belong to.
+
+The world builder reads a sector's roads from the 3 x 3 tiles around it (`build.load_sector`). The whole-network pickle, the
+alignment cache of the whole area and `inspect` / `gallery` / `compare_roads` on the whole network are gone (they work on the
+tiles around a spot now).
+
+**The smoothing order.** A tile cannot know the whole length of a stroke, and smoothing results depended on the order strokes
+are smoothed in and on the end they are walked from (the solve is not direction-symmetric, and the stroke list order came from the
+order of the BD TOPO files). The rule is now window-independent: by class, then length up to 1,600 m (the alignment halo), then the
+smallest section id; each stroke walked along that section's digitised direction. Against master that alone moves 35 % of the
+sections by more than 1 cm (p99 1.2 m, within the 1.2 - 2 m bound of the survey); it changes which road places a shared node, not
+the quality (worst bound ratio 1.02 in both). With the same rule, the tiled build reproduces a whole-area build:
+
+| small map, tiled vs whole area (same rules) | |
+|---|---|
+| road pieces, sections, junctions | 2,794 / 2,794, same sections, 1,315 / 1,315 junctions |
+| plan, Hausdorff per piece | p90 0.003 m, p99 0.63 m, 3.4 % over 0.1 m (almost all within 200 m of a tile border) |
+| heights, max per piece | p90 0.000 m, p99 0.017 m, max 0.12 m |
+| junction planes | height p99 3 mm |
+
+Small map, tiled build: `check_roads` OK (no terrain above a road or deck, every road end meets its junction, every lane leads
+on: 12,224 elements, 2 without exit as on master); 2 invalid junctions (master 1; the whole-area build with the new rules has the
+same 2); `check_gaps` 7 cm-level gaps (master 6, the same problem area; a 0.5 mm sliver the ground fill dropped was fixed).
+
+Cost, b70s20 (42 tiles with the ring), from scratch, 5 workers: 65 s wall, 274 s CPU (6.5 s a tile), largest process 916 MB,
+whole tree 3.9 GB (the whole-area build: 77 s wall with 9 workers, 155 s CPU, main process 1.0 GB growing with the area).

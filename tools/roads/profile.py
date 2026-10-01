@@ -34,9 +34,7 @@ Rebuilds. The result of every tile is kept with a hash of what it was solved fro
 neighbours, terrain files, tuning and solver code are all unchanged is not solved again. A change therefore costs the tiles it
 touches, and those around them that were solved after them.
 """
-import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import clarabel
 import numpy as np
@@ -261,25 +259,6 @@ def block_key(block):
     return digest(data, terrain, code_stamp(sys.modules[__name__], rasters), SOLVER, ACROSS)
 
 
-def cache_file(directory, tile):
-    return directory / "profile" / f"tile_{tile[0]}_{tile[1]}.npz"
-
-
-def solve_block_cached(block, path, fresh=False):
-    """`solve_block`, or its stored result when the block hashes as it did when `path` was written (`fresh`: solve anyway)."""
-    key = block_key(block)
-    if path.exists() and not fresh:
-        with np.load(path) as stored:
-            if str(stored["key"]) == key:
-                return dict(tile=block["tile"], z=stored["z"], planes=stored["planes"], ground=stored["ground"], status=str(stored["status"]), t=stored["t"], reused=True)
-    result = solve_block(block)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    scratch = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
-    np.savez(scratch, key=key, z=result["z"], planes=result["planes"], ground=result["ground"], status=result["status"], t=result["t"])
-    os.replace(scratch, path)
-    return result
-
-
 def solve_block(block):
     """Solve one tile with its halo. Returns dict(z per block sample, plane per block junction, ground, status)."""
     n, xy = len(block["ids"]), block["xy"]
@@ -391,43 +370,3 @@ def solve_block(block):
 
 
 # ---------------------------------------------------------------- the whole area
-
-def solve(network, log=print, jobs=6, keep_in=None, fresh=False):
-    """Fill `z`, `tilt`, `ground` of every link and `plane` of every junction. Returns stats for the build report.
-    `keep_in`: directory the tile results are kept in; tiles whose inputs did not change since they were last solved are taken from
-    there, unless `fresh`."""
-    links, junctions = network.links, network.junctions
-    samples = Samples(network)
-    n = samples.offsets[-1]
-    z, ground, tilt = np.full(n, np.nan), np.zeros(n), np.zeros(n)
-    planes = np.full((len(junctions), 3), np.nan)
-    tiles = sorted({tuple(t) for t in samples.tile.tolist()} | {tuple(t) for t in samples.junction_tile.tolist()})
-    statuses, reused = {}, 0
-
-    def submit(pool, block):
-        return pool.submit(solve_block_cached, block, cache_file(keep_in, block["tile"]), fresh) if keep_in else pool.submit(solve_block, block)
-
-    def keep(block, result):
-        nonlocal reused
-        reused += result.get("reused", False)
-        own = block["own"]
-        z[block["ids"][own]], ground[block["ids"][own]], tilt[block["ids"][own]] = result["z"][own], result["ground"][own], result["t"][own]
-        mine = (samples.junction_tile[block["junctions"]] == np.array(block["tile"])).all(axis=1)
-        planes[block["junctions"][mine]] = result["planes"][mine]
-        statuses[result["status"]] = statuses.get(result["status"], 0) + 1
-
-    with ProcessPoolExecutor(jobs) as pool:
-        for colour in range(4):                                     # tiles of one colour never touch: they are solved side by side
-            batch = [t for t in tiles if (t[0] & 1) + 2 * (t[1] & 1) == colour]
-            pending = {submit(pool, block): block for block in (make_block(samples, t, z, planes, tilt) for t in batch)}
-            for count, future in enumerate(as_completed(pending), 1):
-                keep(pending[future], future.result())
-                if count % 20 == 0 or count == len(pending):
-                    log(f"    profile round {colour + 1}/4: {count}/{len(pending)} tiles  {statuses}  ({reused} not solved again)")
-
-    for i, junction in enumerate(junctions):
-        junction.plane = planes[i]
-    for k, link in enumerate(links):
-        span = slice(samples.offsets[k], samples.offsets[k + 1])
-        link.z, link.ground, link.tilt = z[span].copy(), ground[span].copy(), tilt[span].copy()
-    return dict(tiles=len(tiles), samples=int(n), statuses=statuses, unsolved_samples=int(np.isnan(z).sum()), tiles_reused=reused)

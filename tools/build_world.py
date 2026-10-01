@@ -29,6 +29,7 @@ Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs 8] [--ou
        [--far-cell 64] [--fresh] [--skip-existing] [--min-free-gb G] [--stop-file F]   (whole region: --list data/big/region_sectors.json --far-cell 128 --out ../world_region)
        (the world geometry always comes from --list; --sectors only selects which of them to (re)build)
 """
+import machine                    # first: half the machine, single-threaded maths (machine.py)
 import argparse, functools, os, shutil, gzip, math, hashlib, json, struct, sys, time, collections, zlib
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
@@ -983,7 +984,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sectors", default="", help="comma list si:sj to (re)build (default: every sector of --list)")
     ap.add_argument("--list", default=str(DEFAULT_LIST), help="sector list json (defines the world geometry)")
-    ap.add_argument("--jobs", type=int, default=6)
+    ap.add_argument("--jobs", type=int, default=0, help="worker processes (default and most: half the cores, machine.py)")
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--far-cache", default=str(DEFAULT_FAR_CACHE), help="npz keeping the far arrays between partial rebuilds")
     ap.add_argument("--far-cell", type=int, default=FAR_CELL, help="far terrain vertex spacing in metres (divides 3200, multiple of 16)")
@@ -992,6 +993,7 @@ def main():
     ap.add_argument("--min-free-gb", type=float, default=0.0, help="stop submitting new sectors when the free disk space of --out falls below this (0 = no check)")
     ap.add_argument("--stop-file", default="", help="stop submitting new sectors as soon as this file exists")
     a = ap.parse_args()
+    a.jobs = machine.jobs(a.jobs)
     far_cell = a.far_cell
     road_tag = road_build.tag_of(a.list)
     world = [tuple(s) for s in json.loads(Path(a.list).read_text())["sectors"]]
