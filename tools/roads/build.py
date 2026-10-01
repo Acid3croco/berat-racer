@@ -10,7 +10,7 @@ import numpy as np
 
 from rasters import BIG, HALF, SECTOR
 
-from . import alignment, crossing, geometry, graph as graph_stage, junction as junction_stage, lanes, metrics, osm, profile, source, surface
+from . import alignment, controls, crossing, geometry, graph as graph_stage, junction as junction_stage, lanegraph, lanes, metrics, osm, profile, source, surface
 
 MARGIN = 300                      # roads are built this far beyond the sectors, so the world's border sees complete junctions
 
@@ -24,6 +24,7 @@ class Network:
     links: list
     junctions: list
     raw: list = field(default_factory=list)       # surveyed polyline of every edge, before smoothing (debug renders)
+    lanes: list = field(default_factory=list)     # lane graph elements (lanegraph.py)
     report: dict = field(default_factory=dict)
 
 
@@ -52,6 +53,8 @@ def save(network):
     path.with_suffix(".report.json").write_text(json.dumps(network.report, indent=2))
 
     pieces, meshes = surface.pieces(network), surface.junction_meshes(network)
+    lane_lo = np.array([e.xyz[:, :2].min(axis=0) for e in network.lanes]).reshape(-1, 2)
+    lane_hi = np.array([e.xyz[:, :2].max(axis=0) for e in network.lanes]).reshape(-1, 2)
     piece_lo, piece_hi = np.array([p.xy.min(axis=0) for p in pieces]), np.array([p.xy.max(axis=0) for p in pieces])
     mesh_lo, mesh_hi = np.array([v[:, :2].min(axis=0) for _, v in meshes]), np.array([v[:, :2].max(axis=0) for _, v in meshes])
     sector_path(network.tag, 0, 0).parent.mkdir(parents=True, exist_ok=True)
@@ -60,8 +63,9 @@ def save(network):
         hi = lo + SECTOR + 2 * SECTOR_REACH
         keep_p = np.flatnonzero((piece_hi >= lo).all(axis=1) & (piece_lo <= hi).all(axis=1))
         keep_m = np.flatnonzero((mesh_hi >= lo).all(axis=1) & (mesh_lo <= hi).all(axis=1)) if len(meshes) else []
+        keep_l = np.flatnonzero((lane_hi >= lo).all(axis=1) & (lane_lo <= hi).all(axis=1))
         with open(sector_path(network.tag, si, sj), "wb") as fh:
-            pickle.dump(([pieces[i] for i in keep_p], [meshes[i] for i in keep_m]), fh, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(([pieces[i] for i in keep_p], [meshes[i] for i in keep_m], [network.lanes[i] for i in keep_l]), fh, protocol=pickle.HIGHEST_PROTOCOL)
     return path
 
 
@@ -71,7 +75,7 @@ def load(tag):
 
 
 def load_sector(tag, si, sj):
-    """(pieces, junction meshes) around one sector."""
+    """(pieces, junction meshes, lane graph elements) around one sector."""
     with open(sector_path(tag, si, sj), "rb") as fh:
         return pickle.load(fh)
 
@@ -126,6 +130,8 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, fresh=Fal
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
     done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag), fresh=fresh))
     done("lanes", **lanes.layout_all(links, graph.edges))
+    network.lanes, stats = lanegraph.build(network, controls.load(tag))
+    done("lanegraph", **stats)
     report["surface"] = metrics.surface_report(network)
     report["classes"] = metrics.profile_report(network)
     log(f"  report     {round(time.time() - clock, 1)} s")

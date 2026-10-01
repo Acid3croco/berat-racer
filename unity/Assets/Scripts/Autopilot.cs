@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// The player's autopilot. On the road network it is the same driver as the traffic (RoadFollower): it holds the right-hand lane, obeys the French speed limit,
+/// The player's autopilot. On the road network it is the same driver as the traffic (a Follower: the lane graph, or the road pieces of older worlds): it holds its lane, obeys the French speed limit,
 /// slows for bends and junctions, picks a random exit at each junction and keeps its distance to the car in front; only the vehicle differs (real steering and pedals here,
 /// kinematic movement there). A test can also hand it a fixed polyline to follow (FollowPolyline).
 /// </summary>
@@ -11,14 +11,14 @@ public class Autopilot
     readonly WorldData data; readonly CarController car;
     readonly List<Vector2> path = new List<Vector2>();          // only for FollowPolyline
     readonly System.Random rng = new System.Random(5);
-    RoadFollower follower; bool custom;
+    Follower follower; bool custom;
     public float TargetKmh = 130f;                              // upper bound; on the road network the limit is usually lower
     public bool ObeyLimits = true;                              // false: drive at TargetKmh regardless of the road (benchmarks)
     public float SpeedFactor = 1f;                              // habit relative to the limit (1 = exactly at it)
     public static Traffic TrafficRef;                           // the car in front is found through the traffic system
     float stuckT, reverseT;
     public string Status = "";
-    public int StuckEvents, TurnArounds, Relocations; readonly System.Collections.Generic.Queue<float> turnTimes = new System.Collections.Generic.Queue<float>(); public RoadFollower Follower => follower;
+    public int StuckEvents, TurnArounds, Relocations; readonly System.Collections.Generic.Queue<float> turnTimes = new System.Collections.Generic.Queue<float>(); public Follower Follower => follower;
 
     public Autopilot(WorldData d, CarController c) { data = d; car = c; Reset(); }
 
@@ -30,7 +30,7 @@ public class Autopilot
         custom = false; path.Clear();
         Vector2 p = new Vector2(car.transform.position.x, car.transform.position.z);
         Vector2 fwd = new Vector2(car.transform.forward.x, car.transform.forward.z).normalized;
-        follower = new RoadFollower(data, rng);
+        follower = global::Follower.Create(data, rng, TrafficRef != null ? TrafficRef.Busy : (System.Func<int, object, bool>)null, car);
         if (!follower.SnapTo(p, fwd)) follower = null;
     }
 
@@ -50,8 +50,17 @@ public class Autopilot
 
         float off = follower.Track(p);
         if (off > 30f) { Status = "off-road, re-acquiring"; Reset(); return; }
-        follower.lane = Mathf.MoveTowards(follower.lane, RoadFollower.LaneOffset(follower.road), 1.5f * dt);
+        follower.Update(dt);
 
+        if (follower is LaneFollower lf && lf.UTurnAhead(6f) && speedKmh < 12f)
+        {   // the lane graph turns round at this dead end: a real car does it on the spot
+            lf.TakeUTurn();
+            Vector3 lp = lf.Ahead(0.1f, out Vector2 ld);
+            TurnArounds++;
+            Log.I("auto", $"road ends at ({p.x:F0},{p.y:F0}): turning round");
+            car.Respawn(new Vector3(lp.x, lp.y + 0.9f, lp.z), Mathf.Atan2(ld.x, ld.y) * Mathf.Rad2Deg);
+            return;
+        }
         if (follower.DeadEnd && follower.ToEnd < 9f && speedKmh < 12f)
         {   // the road ends here (a driveway, a courtyard): stop and turn round rather than nose into the wall
             follower.Flip();
@@ -80,7 +89,7 @@ public class Autopilot
         car.Steer = Mathf.Clamp(ang / 24f, -1f, 1f);
 
         // speed: the road's limit (x habit), bends, junctions, the car in front
-        float limit = ObeyLimits ? RoadFollower.LimitKmh(follower.road, follower.fwd) * SpeedFactor : 999f;
+        float limit = ObeyLimits ? follower.LimitKmh() * SpeedFactor : 999f;
         float want = Mathf.Min(TargetKmh, limit);
         float wantMs = Mathf.Min(want / 3.6f, follower.CurveSpeed());
         wantMs = Mathf.Min(wantMs, follower.JunctionSpeed(wantMs));
@@ -99,19 +108,16 @@ public class Autopilot
         if (reverseT > 0) { reverseT -= dt; car.Throttle = 0; car.Brake = 1; car.Steer = -car.Steer; if (reverseT <= 0) Reset(); return; }
         stuckT = speedKmh < 2f && want > 15f ? stuckT + dt : 0f;
         if (stuckT > 3f) { stuckT = 0; reverseT = 1.6f; StuckEvents++; DumpContacts();
-            Log.I("auto", $"stuck -> reversing at ({p.x:F0},{p.y:F0}), road piece {follower.road.fid} s {follower.s:F0}/{follower.Length:F0}, wanted {want:F0} km/h"); }
-        Status = $"'{follower.road.name}' {want:F0} km/h (limit {RoadFollower.LimitKmh(follower.road, follower.fwd):F0}) lane {follower.lane:F1} m steer {car.Steer:F2} | off {off:F1} m, ang {ang:F0}, s {follower.s:F0}/{follower.Length:F0} fwd {follower.fwd} hw {follower.road.hw:F1} ow {follower.road.oneway}";
+            Log.I("auto", $"stuck -> reversing at ({p.x:F0},{p.y:F0}), {follower.Describe()}, wanted {want:F0} km/h"); }
+        Status = $"{want:F0} km/h (limit {follower.LimitKmh():F0}) lane {follower.lane:F1} m steer {car.Steer:F2} | off {off:F1} m, ang {ang:F0}, {follower.Describe()}";
     }
 
     /// <summary>The car is stuck in a piece of road that leads nowhere: put it on a well-connected road a few hundred metres away, in its lane.</summary>
     void Relocate(Vector2 from)
     {
-        var r = follower.RandomConnectedPiece(from, 150f, 900f, 60f);
-        if (r == null) { reverseT = 2f; return; }
+        if (!follower.Relocate(from, out _, out _)) { reverseT = 2f; return; }
         Relocations++;
-        float s = r.Length * 0.5f; Vector3 pt = r.At(s, out Vector2 d);
-        var f = new RoadFollower(data, rng); f.Place(r, s, r.oneway != 2); follower = f;
-        Vector3 lp = f.Ahead(0.1f, out Vector2 ld);
+        Vector3 lp = follower.Ahead(0.1f, out Vector2 ld);
         Log.I("auto", $"cut-off road at ({from.x:F0},{from.y:F0}): relocating to ({lp.x:F0},{lp.z:F0})");
         car.Respawn(new Vector3(lp.x, lp.y + 0.9f, lp.z), Mathf.Atan2(ld.x, ld.y) * Mathf.Rad2Deg);
     }
@@ -129,7 +135,7 @@ public class Autopilot
         if (follower != null)
         {
             Vector3 lp = follower.Ahead(0.1f, out Vector2 ld);
-            Log.I("auto", $"   lane point ({lp.x:F1},{lp.z:F1}) heading {Mathf.Atan2(ld.x, ld.y) * Mathf.Rad2Deg:F0}, car is {Vector2.Distance(new Vector2(c.x, c.z), new Vector2(lp.x, lp.z)):F1} m from it; road hw {follower.road.hw:F1} fwd {follower.fwd}; next {(follower.nextRoad != null ? follower.nextRoad.fid : 0)} planned {follower.planned}");
+            Log.I("auto", $"   lane point ({lp.x:F1},{lp.z:F1}) heading {Mathf.Atan2(ld.x, ld.y) * Mathf.Rad2Deg:F0}, car is {Vector2.Distance(new Vector2(c.x, c.z), new Vector2(lp.x, lp.z)):F1} m from it; {follower.Describe()}");
         }
         for (int k = 0; k < 12; k++)
         {   // where is the nearest solid surface, in 30-degree steps around the car?

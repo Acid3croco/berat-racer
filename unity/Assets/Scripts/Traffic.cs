@@ -2,8 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Ambient traffic: cars that drive the real road network at the speed limit. Independent of the driving model — traffic cars are kinematic and follow the road polylines
-/// (right-hand traffic, one-way roads respected, junction turns chosen at random, curves and junctions slow them down, a following distance keeps them apart).
+/// Ambient traffic: cars that drive the real road network at the speed limit. Independent of the driving model — traffic cars are kinematic and follow the lane graph
+/// built offline (BM07: lanes at their real centres, smooth junction connectors, the control of each junction arm, who gives way to whom), or the road polylines
+/// in older worlds (right-hand traffic, one-way roads respected, junction turns chosen at random, curves and junctions slow them down, a following distance keeps them apart).
 /// Speed = min(French legal limit from BD TOPO, 1.3 x the road's average speed + 8 km/h). Cars spawn out of sight around the player and are removed when far away.
 /// Online, the host simulates traffic around every player (Others) and streams it (Capture); a client's traffic is a Replica that only mirrors it (Mirror).
 /// </summary>
@@ -23,6 +24,7 @@ public class Traffic : MonoBehaviour
     readonly System.Random rng = new System.Random(11);
     float spawnTimer, logTimer;
     public int Count => agents.Count;
+    int kinks, laneChanges; float driven;                                  // sudden turns of a car's path (target heading jumping faster than 90 degrees/s), and metres driven: the log reports kinks per km
     public float MeanSpeedKmh { get { if (agents.Count == 0) return 0; float s = 0; foreach (var a in agents) s += a.v; return s / agents.Count * 3.6f; } }
 
     static readonly Color32[] Paints =
@@ -38,7 +40,7 @@ public class Traffic : MonoBehaviour
         public Timeline<TrafficSnap> line;                                                  // replica only
         public float speedFactor = 1f, gapTime = 1.5f, length = 4.6f, trailerYaw;
         public Rigidbody trailerRb; public readonly List<Vector3> crumbs = new List<Vector3>();
-        public RoadFollower f; public float v, spin, stuck, age;
+        public Follower f; public float v, spin, stuck, age, yawTarget = float.NaN, kinkCd, keepRightT;
         public Vector3 pos; public Vector2 dir; public float yaw, slope;
     }
 
@@ -68,6 +70,7 @@ public class Traffic : MonoBehaviour
         if (Replica) { StepReplicas(dt); RefreshVehicles(); return; }
         Maintain(dt);
         RefreshVehicles();
+        RefreshOccupancy();
         for (int i = 0; i < agents.Count; i++) Step(agents[i], dt);
     }
 
@@ -109,20 +112,35 @@ public class Traffic : MonoBehaviour
         {
             logTimer = 20f; int[] n = new int[4]; float sf = 0, sf2 = 0; foreach (var g in agents) { n[(int)g.type]++; sf += g.speedFactor; sf2 += g.speedFactor * g.speedFactor; }
             float mean = agents.Count > 0 ? sf / agents.Count : 0f, sd = agents.Count > 1 ? Mathf.Sqrt(Mathf.Max(0f, sf2 / agents.Count - mean * mean)) : 0f;
-            Log.I("traffic", $"{agents.Count} vehicles (cars {n[0]}, vans {n[1]}, trucks {n[2]}, semis {n[3]}), mean speed {MeanSpeedKmh:F0} km/h, driver speed factor {mean:F2} +- {sd:F2}");
+            Log.I("traffic", $"{agents.Count} vehicles (cars {n[0]}, vans {n[1]}, trucks {n[2]}, semis {n[3]}), mean speed {MeanSpeedKmh:F0} km/h, driver speed factor {mean:F2} +- {sd:F2}, {(lanesMode ? "lane graph" : "road pieces")}, kinks {kinks} in {driven / 1000f:F1} km ({kinks / Mathf.Max(driven / 1000f, 0.01f):F1} / km), stopped {agents.FindAll(g => g.v < 0.5f).Count}, lane changes {laneChanges}");
         }
     }
+
+    bool lanesMode => Follower.UseLanes(world.Data);
 
     /// <summary>A road point around `pp` that no player is close to, nor looking at within 600 m.</summary>
     void TrySpawn(Vector3 pp)
     {
-        var roads = world.Data.Roads; if (roads.Length == 0) return;
         for (int attempt = 0; attempt < 40; attempt++)
         {
-            var r = roads[rng.Next(roads.Length)];
-            if (r.dirt || r.bridge || r.hw < 1.9f || r.Length < 40f || r.imp == "6") continue;
-            float s = (float)(0.15 + 0.7 * rng.NextDouble()) * r.Length;
-            Vector3 p = r.At(s, out Vector2 dirInc);
+            Follower f; Vector3 p;
+            if (lanesMode)
+            {
+                var lanes = world.Data.Lanes.Lanes; if (lanes.Count == 0) return;
+                var e = lanes[rng.Next(lanes.Count)];
+                if (e.dirt || e.hw < 1.9f || e.Length < 40f || e.imp == 6) continue;
+                var lf = new LaneFollower(world.Data, rng, Busy, null); lf.Place(e, (float)(0.15 + 0.7 * rng.NextDouble()) * e.Length);
+                f = lf; p = e.At(lf.s, out _);
+            }
+            else
+            {
+                var roads = world.Data.Roads; if (roads.Length == 0) return;
+                var r = roads[rng.Next(roads.Length)];
+                if (r.dirt || r.bridge || r.hw < 1.9f || r.Length < 40f || r.imp == "6") continue;
+                float s = (float)(0.15 + 0.7 * rng.NextDouble()) * r.Length;
+                var rf = new RoadFollower(world.Data, rng); rf.Place(r, s, r.oneway == 1 ? true : r.oneway == 2 ? false : rng.Next(2) == 0);
+                f = rf; p = r.At(s, out _);
+            }
             Vector3 d3 = p - pp; d3.y = 0;
             if (d3.magnitude > SpawnMax || NearestPlayer(p) < SpawnMin) continue;
             bool seen = false;
@@ -130,8 +148,7 @@ public class Traffic : MonoBehaviour
             if (seen) continue;                                                                       // not popping in ahead of a player
             bool tooClose = false; foreach (var o in agents) if ((o.pos - p).sqrMagnitude < 35f * 35f) { tooClose = true; break; }
             if (tooClose) continue;
-            bool fwd = r.oneway == 1 ? true : r.oneway == 2 ? false : rng.Next(2) == 0;
-            SpawnAt(r, s, fwd); return;
+            SpawnAt(f); return;
         }
     }
 
@@ -143,9 +160,9 @@ public class Traffic : MonoBehaviour
     }
 
     /// <summary>Vehicle mix by road class, after French traffic counts: heavy goods vehicles are ~15% of motorway traffic, ~3% on rural roads, ~1% in town; vans ~10-12%; the rest are cars.</summary>
-    VehicleType PickType(RoadData r)
+    VehicleType PickType(RoadAttr r, float limitKmh)
     {
-        float lim = r.limit > 0 ? r.limit : LimitKmh(r);
+        float lim = limitKmh;
         float semi, truck, van;
         if (r.kind == 2 || r.kind == 3 || lim >= 110f) { semi = 0.13f; truck = 0.03f; van = 0.10f; }
         else if (lim >= 70f) { semi = 0.025f; truck = 0.02f; van = 0.11f; }
@@ -162,17 +179,18 @@ public class Traffic : MonoBehaviour
     static readonly Color32[] HaulPaints = { new Color32(238, 238, 238, 255), new Color32(238, 238, 238, 255), new Color32(30, 60, 130, 255), new Color32(190, 30, 30, 255), new Color32(200, 204, 208, 255), new Color32(40, 110, 60, 255) };
     static readonly Color32[] VanPaints = { new Color32(240, 240, 240, 255), new Color32(240, 240, 240, 255), new Color32(240, 240, 240, 255), new Color32(200, 204, 208, 255), new Color32(30, 60, 130, 255), new Color32(190, 30, 30, 255), new Color32(60, 62, 66, 255) };
 
-    void SpawnAt(RoadData r, float s, bool fwd)
+    void SpawnAt(Follower f)
     {
-        var type = PickType(r);
-        var a = new Agent { type = type, id = nextId++ }; a.f = new RoadFollower(world.Data, rng); a.f.Place(r, s, fwd);
+        var type = PickType(f.Attr, f.LimitKmh());
+        var a = new Agent { type = type, id = nextId++, f = f };
+        if (f is LaneFollower lf) lf.Self = a;
         PickLook(type, out a.lookA, out a.lookB);
         Dress(a);
         // this driver: speed relative to the limit is normally distributed (a few slow, a few fast); lorries are speed-limited and steadier
         bool heavy = type == VehicleType.Truck || type == VehicleType.Semi;
         a.speedFactor = heavy ? Mathf.Clamp(Normal(rng, 0.97f, 0.04f), 0.85f, 1.03f) : Mathf.Clamp(Normal(rng, 1.02f, 0.09f), 0.68f, 1.30f);
         a.gapTime = Mathf.Clamp(Normal(rng, 1.6f, 0.4f), 0.8f, 2.6f);
-        a.v = LimitKmh(r) / 3.6f * a.speedFactor * 0.85f;
+        a.v = f.LimitKmh() / 3.6f * a.speedFactor * 0.85f;
         agents.Add(a);
         Pose(a, 0f, true);
         a.go.transform.SetPositionAndRotation(a.pos, Quaternion.Euler(0, a.yaw, 0));
@@ -238,7 +256,7 @@ public class Traffic : MonoBehaviour
         var f = a.f; f.EnsurePlanned();
 
         // target speed: legal limit x this driver's habit, then bends, junctions, the car in front
-        float lim = RoadFollower.LimitKmh(f.road, f.fwd);
+        float lim = f.LimitKmh();
         if (a.type == VehicleType.Truck || a.type == VehicleType.Semi) lim = Mathf.Min(lim, 90f);                    // heavy goods vehicles: 90 km/h at most
         float vt = lim / 3.6f * a.speedFactor;
         vt = Mathf.Min(vt, f.CurveSpeed() * (a.type == VehicleType.Car ? 1f : 0.8f), f.JunctionSpeed(vt));
@@ -247,11 +265,18 @@ public class Traffic : MonoBehaviour
             float want = 5f + a.v * a.gapTime;
             if (gap < want) vt = Mathf.Min(vt, Mathf.Max(0f, lv - (want - gap) * 0.6f));
             if (gap < 4f) vt = 0f;
+            if (f is LaneFollower lf && gap < want * 1.5f && lv < lim / 3.6f * a.speedFactor - 2.5f && LaneFree(lf, -1, a) && lf.ChangeLane(-1)) laneChanges++;     // overtake on the left
+        }
+        else if (f is LaneFollower lf2 && (a.keepRightT -= dt) <= 0f)
+        {   // keep to the right-hand lane when it is free
+            a.keepRightT = 3f;
+            if (lf2.CanChange(1) && LaneFree(lf2, 1, a) && lf2.ChangeLane(1)) laneChanges++;
         }
         a.v = Mathf.MoveTowards(a.v, vt, (vt > a.v ? 2.6f : 6.5f) * dt);
         a.stuck = a.v < 0.3f ? a.stuck + dt : 0f;
         f.Move(a.v * dt);
-        if (f.DeadEnd && f.road.oneway != 0 && f.ToEnd < 1f) a.stuck = 99f;                                          // one-way dead end: remove
+        driven += a.v * dt;
+        if (f.DeadEnd && f.ToEnd < 1f && (f is LaneFollower || f.Attr.oneWay)) a.stuck = 99f;                        // nowhere to go (one-way dead end, end of the loaded graph): remove
         Pose(a, dt, false);
         a.rb.MovePosition(a.pos); a.rb.MoveRotation(Quaternion.Euler(-a.slope, a.yaw, 0f));
         // breadcrumbs of the cab's path: the trailer follows them (so it cuts corners like a real semi)
@@ -290,22 +315,63 @@ public class Traffic : MonoBehaviour
         a.trailerRb.MovePosition(origin); a.trailerRb.MoveRotation(Quaternion.LookRotation(fwd, Vector3.up));
     }
 
-    /// <summary>Position and heading from the road: right-hand lane, ground = the road surface.</summary>
+    /// <summary>Position and heading from the follower: its lane, ground = the road surface; the heading looks 4 m ahead so the car follows curves smoothly.</summary>
     void Pose(Agent a, float dt, bool snap)
     {
-        var f = a.f; Vector3 p = f.road.At(f.s, out Vector2 dInc);
-        Vector2 dir = f.fwd ? dInc : -dInc;
-        float laneT = RoadFollower.LaneOffset(f.road);
-        f.lane = snap ? laneT : Mathf.MoveTowards(f.lane, laneT, 1.5f * dt);
-        Vector2 right = new Vector2(dir.y, -dir.x);
-        // heading looks a few metres ahead so the car follows curves smoothly
-        Vector3 ahead = f.road.At(f.s + (f.fwd ? 4f : -4f), out _);
+        var f = a.f;
+        if (!snap) f.Update(dt);
+        Vector3 p = f.Pose(out Vector2 dir, out Vector3 ahead);
         Vector2 toAhead = new Vector2(ahead.x - p.x, ahead.z - p.z);
         float yawT = toAhead.sqrMagnitude > 0.01f ? Mathf.Atan2(toAhead.x, toAhead.y) * Mathf.Rad2Deg : Mathf.Atan2(dir.x, dir.y) * Mathf.Rad2Deg;
+        if (!snap && !float.IsNaN(a.yawTarget) && a.v > 3f && dt > 0f)
+        {
+            a.kinkCd -= dt;
+            if (Mathf.Abs(Mathf.DeltaAngle(a.yawTarget, yawT)) / dt > 90f && a.kinkCd <= 0f) { kinks++; a.kinkCd = 0.5f; }
+        }
+        a.yawTarget = yawT;
         a.yaw = snap ? yawT : Mathf.MoveTowardsAngle(a.yaw, yawT, 140f * dt);
         a.dir = dir;
-        a.pos = new Vector3(p.x + right.x * f.lane, p.y + ChunkMeshes.RoadLift + a.parts.groundOffset, p.z + right.y * f.lane);
+        a.pos = new Vector3(p.x, p.y + ChunkMeshes.RoadLift + a.parts.groundOffset, p.z);
         a.slope = toAhead.magnitude > 0.1f ? Mathf.Atan2(ahead.y - p.y, toAhead.magnitude) * Mathf.Rad2Deg : 0f;
+    }
+
+    // ------------------------------------------------------------------ lane graph: who is where
+    readonly Dictionary<int, List<(Agent a, float dist)>> onElem = new Dictionary<int, List<(Agent, float)>>();
+
+    /// <summary>Which car is on, or about to enter, which lane graph element (its current one at distance 0, its next connector at the distance left to it).</summary>
+    void RefreshOccupancy()
+    {
+        foreach (var l in onElem.Values) l.Clear();
+        foreach (var a in agents)
+        {
+            if (!(a.f is LaneFollower lf) || lf.elem == null) continue;
+            Add(lf.elem.id, a, 0f);
+            int next = lf.NextConnector; if (next >= 0) Add(next, a, lf.DistanceTo(next));
+        }
+        void Add(int id, Agent a, float d) { if (!onElem.TryGetValue(id, out var l)) onElem[id] = l = new List<(Agent, float)>(); l.Add((a, d)); }
+    }
+
+    /// <summary>Is a lane graph connector taken: a car on it, or one arriving within ~4 s?</summary>
+    public bool Busy(int id, object self)
+    {
+        if (!onElem.TryGetValue(id, out var l)) return false;
+        foreach (var (a, d) in l) if (!ReferenceEquals(a, self) && (d <= 0f || d < 6f + a.v * 4f)) return true;
+        return false;
+    }
+
+    /// <summary>Is the lane beside free for a lane change (nobody from 20 m behind to 30 m ahead)?</summary>
+    bool LaneFree(LaneFollower f, int side, Agent self)
+    {
+        if (!f.CanChange(side)) return false;
+        Vector3 back = f.PointBeside(side, -20f), front = f.PointBeside(side, 30f);
+        Vector2 a = new Vector2(back.x, back.z), b = new Vector2(front.x, front.z), ab = b - a;
+        foreach (var o in vehs)
+        {
+            if (ReferenceEquals(o.id, self)) continue;
+            float t = Mathf.Clamp01(Vector2.Dot(o.pos - a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-4f));
+            if ((o.pos - (a + ab * t)).sqrMagnitude < 2.2f * 2.2f) return false;
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------ seeing other vehicles
@@ -392,7 +458,7 @@ public class Traffic : MonoBehaviour
     /// a stopped one is an obstacle; one crossing my path is given way to when it comes from my right (priorité à droite).
     /// Oncoming vehicles in the opposite lane are not in the way. `self` is skipped (agent or the player's car).
     /// </summary>
-    public bool FindLeader(RoadFollower f, Vector2 pos, Vector2 dirSelf, float lengthSelf, object self, bool includePlayer, out float gap, out float speed)
+    public bool FindLeader(Follower f, Vector2 pos, Vector2 dirSelf, float lengthSelf, object self, bool includePlayer, out float gap, out float speed)
     {
         float bestGap = 1e9f, bestSpeed = 0f; Vector2 right = new Vector2(dirSelf.y, -dirSelf.x);
         float reach = 46f;

@@ -597,7 +597,7 @@ public class GameBootstrap : MonoBehaviour
             {
                 tick = Time.time;
                 var f = auto.Follower;
-                Log.I("autotest", $"t={Time.time - t0:F0} pos=({p.x:F0},{p.z:F0}) {car.SpeedKmh:F0} km/h piece {(f != null ? f.road.fid : 0)} s {(f != null ? f.s : 0):F0} traffic {(traffic != null ? traffic.Count : 0)}");
+                Log.I("autotest", $"t={Time.time - t0:F0} pos=({p.x:F0},{p.z:F0}) {car.SpeedKmh:F0} km/h {(f != null ? f.Describe() : "off the network")} traffic {(traffic != null ? traffic.Count : 0)}");
             }
         }
         int loops = 0; foreach (var kv in visits) if (kv.Value > 3) loops++;

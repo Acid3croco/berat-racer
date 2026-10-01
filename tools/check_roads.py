@@ -4,6 +4,7 @@
   - the 4 m terrain mesh never stands above a bridge deck either (the ground falls away under it)
   - how far below the roads they lie (a road must not float either)
   - every road end at a junction meets a junction vertex exactly
+  - the lane graph (BM07): every successor exists and starts where its predecessor ends
 
 Usage: uv run python check_roads.py DIR
 """
@@ -41,6 +42,21 @@ def read_roads(r, version):
     return roads
 
 
+def read_lanes(r):
+    out = []
+    for _ in range(r.i()):
+        lane = dict(id=r.i(), kind=r.u8(), control=r.u8(), limit=r.u8())
+        r.take(4); r.fl(2); r.i()
+        n = r.i()
+        lane["pts"] = r.fl(3 * n).reshape(n, 3)
+        lane["speed"] = np.frombuffer(r.take(n), np.uint8) / 4.0
+        lane["succ"] = list(np.frombuffer(r.take(4 * r.u8()), "<i4"))
+        lane["left"], lane["right"] = r.i(), r.i()
+        lane["yields"] = list(np.frombuffer(r.take(4 * r.u8()), "<i4"))
+        out.append(lane)
+    return out
+
+
 def read_junctions(r):
     out = []
     for _ in range(r.i()):
@@ -74,6 +90,7 @@ def parse_mid(raw):
     d["lines"] = r.i()
     for _ in range(d["lines"]): r.f(); r.u8(); r.u8(); r.fl(3 * r.i())
     d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if version >= 6 else []     # water carried by a structure
+    d["lane_list"] = read_lanes(r) if version >= 7 else []
     d["bld"] = r.i()
     for _ in range(d["bld"]):
         r.fl(2 * r.i()); r.fl(3); r.fl(r.i()); r.take(6); r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)
@@ -132,9 +149,11 @@ def check(world_dir):
     files = sorted((world_dir / "chunks").glob("m_*"))
     totals = dict(chunks=len(files), roads=0, junctions=0, points=0, above4=0, above16=0, worst4=0.0, worst16=0.0, loose=0, ends=0,
                   deck_points=0, above_deck=0, worst_deck=0.0)
-    gaps, where = [], []
+    gaps, where, lanes = [], [], {}
     for path in files:
         d = parse_mid(gzip.open(path).read())
+        for lane in d["lane_list"]:
+            lanes[lane["id"]] = lane
         x0, z0 = w["x0"] + d["ci"] * CHUNK, w["z0"] + d["cj"] * CHUNK
         loose, ends = loose_ends(d)
         totals["roads"] += d["roads"]; totals["junctions"] += d["junctions"]; totals["loose"] += loose; totals["ends"] += ends
@@ -163,6 +182,13 @@ def check(world_dir):
     gaps = np.concatenate(gaps) if gaps else np.zeros(1)
     totals["gap_below_road_m"] = dict(median=round(float(np.median(gaps)), 3), p99=round(float(np.percentile(gaps, 99)), 3), max=round(float(gaps.max()), 3))
     totals["worst_spots"] = sorted(where, reverse=True)[:6]
+    if lanes:
+        x1, z1 = w["x0"] + w["ncx"] * CHUNK, w["z0"] + w["ncz"] * CHUNK
+        inside = lambda p: w["x0"] + 60 < p[0] < x1 - 60 and w["z0"] + 60 < p[2] < z1 - 60
+        missing = [l["id"] for l in lanes.values() for t in l["succ"] if t not in lanes and inside(l["pts"][-1])]
+        broken = [l["id"] for l in lanes.values() for t in l["succ"] if t in lanes and np.hypot(*(lanes[t]["pts"][0, [0, 2]] - l["pts"][-1, [0, 2]])) > 0.5]
+        no_exit = [l["id"] for l in lanes.values() if not l["succ"] and inside(l["pts"][-1])]
+        totals["lane_graph"] = dict(elements=len(lanes), missing_successors=len(missing), broken_joins=len(broken), no_exit=len(no_exit))
     return totals
 
 
@@ -170,6 +196,9 @@ if __name__ == "__main__":
     report = check(sys.argv[1])
     for key, value in report.items():
         print(f"{key:<18} {value}")
-    ok = report["above4"] == 0 and report["above16"] == 0 and report["above_deck"] == 0 and report["loose"] == 0
-    print("OK: no terrain above any road or bridge deck, every road end meets its junction" if ok else "PROBLEMS: see above4 / above16 / above_deck / loose")
+    graph = report.get("lane_graph", {})
+    ok = (report["above4"] == 0 and report["above16"] == 0 and report["above_deck"] == 0 and report["loose"] == 0
+          and graph.get("missing_successors", 0) == 0 and graph.get("broken_joins", 0) == 0)
+    print("OK: no terrain above any road or bridge deck, every road end meets its junction, every lane leads on" if ok
+          else "PROBLEMS: see above4 / above16 / above_deck / loose / lane_graph")
     sys.exit(0 if ok else 1)

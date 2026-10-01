@@ -397,6 +397,19 @@ def run_holds(p, a, b, arrow):
     i = int(np.argmin(np.hypot(p.xy[:, 0] - arrow[0], p.xy[:, 1] - arrow[1])))
     return a <= i < b - 1 or (i == b - 1 == len(p.xy) - 1)
 
+def put_lanes(buf, elements):
+    """BM07 lane graph elements (roads/lanegraph.py) passing through a chunk: id, kind, control, limit, road attributes, the points
+    (x, height, north) with the speed each allows, successors, the lanes beside it, and the connectors it gives way to."""
+    wi(buf, len(elements))
+    for e in elements:
+        kind, imp, rank, hw, dirt = e.road
+        wi(buf, e.id); buf += bytes([e.kind, e.control, min(e.limit, 255), 1 if dirt else 0, kind, imp, rank]); wf(buf, hw, e.turn); wi(buf, e.junction)
+        wi(buf, len(e.xyz)); wfa(buf, e.xyz[:, [0, 2, 1]])
+        buf += np.clip(np.round(e.speed * 4.0), 0, 255).astype(np.uint8).tobytes()          # m/s x 4
+        buf.append(len(e.succ)); buf += np.asarray(e.succ, "<i4").tobytes()
+        wi(buf, e.left); wi(buf, e.right)
+        buf.append(min(len(e.yields), 255)); buf += np.asarray(e.yields[:255], "<i4").tobytes()
+
 def put_junctions(buf, items):
     """Junction meshes of a chunk: [(junction, vertices)]."""
     wi(buf, len(items))
@@ -413,9 +426,9 @@ def code_key():
     modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain]
     return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
 
-def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes):
+def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes):
     """Hash of everything the chunks of a sector are made from. Of the roads, what the builder reads: not where a link or a node sits in the network's lists."""
-    roads = digest(pieces, [(j.paved, j.polygon, j.centre, j.plane, j.triangles, j.boundary, v) for j, v in meshes], skip=("link", "a", "b"))
+    roads = digest(pieces, [(j.paved, j.polygon, j.centre, j.plane, j.triangles, j.boundary, v) for j, v in meshes], lanes, skip=("link", "a", "b"))
     size = SECTOR + 2 * MARGIN
     ground = rasters.stamp(-HALF + si * SECTOR - MARGIN, -HALF + sj * SECTOR - MARGIN, size, size, kinds=("mnt", "mnh", "ortho"))
     vectors = [rasters.file_stamp(vec_io.vec_file(base) or base) for name in VECTOR_LAYERS for base in vector_bases(name, si, sj)]
@@ -434,8 +447,8 @@ def process_sector(args):
     ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
 
     # ---- roads: the finished surface of the road pipeline, cut to this window (the same geometry in every sector, so borders match)
-    pieces, meshes = road_build.load_sector(road_tag, si, sj)
-    made_from, stamp = sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes), key_file(out_dir, si, sj)
+    pieces, meshes, lanes = road_build.load_sector(road_tag, si, sj)
+    made_from, stamp = sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes), key_file(out_dir, si, sj)
     if reuse and stamp.exists() and stamp.read_text() == made_from and all(f.exists() for f in chunk_files(out_dir, si, sj, ci0, cj0)):
         return si, sj, None, None, dict(sector=(si, sj), unchanged=True, secs=round(time.time() - t0, 1))
     stamp.unlink(missing_ok=True)                                                    # from here on the chunks on disk are not what that key described
@@ -657,6 +670,10 @@ def process_sector(args):
             for seg in (np.split(idx, np.where(np.diff(idx) != 1)[0] + 1) if len(idx) else []):
                 lo, hi = max(seg[0] - 1, 0), min(seg[-1] + 2, len(p.xy))
                 if hi - lo >= 2: ctx_b[nk].append((p, lo, hi))
+    lane_b = collections.defaultdict(list)                                          # every lane graph element, in each owned chunk it passes through
+    for e in lanes:
+        for key in {chunk_of(x, z) for x, z in e.xyz[:, :2]}:
+            if own(key): lane_b[key].append(e)
     junc_b, jctx_b = collections.defaultdict(list), collections.defaultdict(list)
     for j, v in meshes:
         home = chunk_of(*j.centre); junc_b[home].append((j, v))
@@ -705,6 +722,7 @@ def process_sector(args):
             for hw, seg, lead, trail in wline_b.get(key, []): wf(buf, hw); buf.append(lead); buf.append(trail); wi(buf, len(seg)); wfa(buf, seg.ravel())
             wi(buf, len(trough_b.get(key, [])))                                         # BM06: outlines of the water carried by a structure
             for ring in trough_b.get(key, []): wi(buf, len(ring)); wfa(buf, ring.ravel())
+            put_lanes(buf, lane_b.get(key, []))                                         # BM07: the lane graph traffic drives on
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
                 b = buildings[k]

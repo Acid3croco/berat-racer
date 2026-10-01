@@ -1,6 +1,6 @@
 """Command line of the road pipeline. Run from tools/:
 
-  uv run python -m roads fetch-osm                  download the OpenStreetMap ways of the area (once; needs ssh access to the OSM database host)
+  uv run python -m roads fetch-osm                  download the OpenStreetMap ways, junction control and turn restrictions of the area (once; ssh to the OSM database host, Overpass, IGN WFS)
   uv run python -m roads build                      run every stage, write data/big/roads/<tag>.network.pkl + .report.json, print the report
   uv run python -m roads report                     print the report of the last build
   uv run python -m roads inspect --at X,Z           plan view, height profiles and the surveyed sections around a spot (local metres)
@@ -16,13 +16,13 @@ from pathlib import Path
 import numpy as np
 
 from . import build as build_stage
-from . import debug, osm, source
+from . import controls, debug, osm, source
 
 DEFAULT_LIST = "data/big/small_sectors.json"
 
 
 def print_report(report):
-    for stage in ("source", "graph", "alignment", "junction", "crossing", "profile", "surface", "save"):
+    for stage in ("source", "graph", "alignment", "junction", "crossing", "profile", "lanes", "lanegraph", "surface", "save"):
         if stage in report:
             print(f"{stage:<10} {json.dumps(report[stage], ensure_ascii=False)}")
     print(f"{'class':<11}{'km':>7}{'max grade %':>13}{'min crest m':>13}{'min sag m':>11}{'take-off km/h':>15}{'(draped)':>10}{'cut/fill p90':>14}{'p99':>7}{'max':>7}")
@@ -36,8 +36,12 @@ def print_report(report):
 
 def cmd_fetch_osm(args):
     sectors = [tuple(s) for s in json.loads(Path(args.list).read_text())["sectors"]]
-    path, count = osm.fetch(source.area_of(sectors, build_stage.MARGIN), build_stage.tag_of(args.list))
-    print(f"{count} OSM ways -> {path}")
+    area, tag = source.area_of(sectors, build_stage.MARGIN), build_stage.tag_of(args.list)
+    if not args.controls_only:
+        path, count = osm.fetch(area, tag)
+        print(f"{count} OSM ways -> {path}")
+    path, counts = controls.fetch(area, tag)
+    print(f"junction control {counts} -> {path}")
 
 
 def cmd_build(args):
@@ -85,7 +89,9 @@ def main():
     parser = argparse.ArgumentParser(prog="python -m roads", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--list", default=DEFAULT_LIST, help="sector list json: the area to build")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("fetch-osm").set_defaults(run=cmd_fetch_osm)
+    fetch = commands.add_parser("fetch-osm")
+    fetch.add_argument("--controls-only", action="store_true", help="only junction control and turn restrictions (the ways are cached already)")
+    fetch.set_defaults(run=cmd_fetch_osm)
     build = commands.add_parser("build")
     build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
     build.add_argument("--fresh", action="store_true", help="smooth every stroke and solve every height tile again, even those whose inputs did not change")

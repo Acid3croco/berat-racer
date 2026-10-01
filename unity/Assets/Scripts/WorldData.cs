@@ -62,6 +62,43 @@ public class JunctionData
     public int[] tri;                        // three vertex indices per triangle, clockwise seen from above
     public int[] edge; public bool[] mouth;  // outline: two vertex indices per edge, the surface on its left; mouth: the edge is where a road joins (no kerb there)
 }
+/// <summary>BM07: one element of the lane graph (tools/roads/lanegraph.py): a polyline a car follows from start to end, then onto one of its successors.</summary>
+public class LaneElem
+{
+    public const int Lane = 0, Change = 1, Connector = 2, UTurn = 3;
+    public const int Priority = 0, GiveWay = 1, Stop = 2, Signals = 3, Right = 4;
+    public int id, kind, control, limit, roadKind, imp, rank, junction, left = -1, right = -1;
+    public bool dirt; public float hw, turn;
+    public Vector3[] pts; public float[] cum, speed;          // speed: m/s allowed by the curvature and the limit at each point
+    public int[] succ, yields;                                // successors; connectors this one gives way to
+    public float Length => cum[cum.Length - 1];
+    public Vector3 At(float s, out Vector2 dir)
+    {
+        s = Mathf.Clamp(s, 0f, Length);
+        int i = System.Array.BinarySearch(cum, s); if (i < 0) i = ~i; i = Mathf.Clamp(i, 1, cum.Length - 1);
+        float seg = Mathf.Max(cum[i] - cum[i - 1], 1e-4f), t = (s - cum[i - 1]) / seg;
+        dir = new Vector2(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z); dir = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector2.up;
+        return Vector3.Lerp(pts[i - 1], pts[i], t);
+    }
+    /// <summary>Speed allowed at distance s (m/s), from the nearest points.</summary>
+    public float SpeedAt(float s)
+    {
+        int i = System.Array.BinarySearch(cum, Mathf.Clamp(s, 0f, Length)); if (i < 0) i = ~i;
+        return speed[Mathf.Clamp(i, 0, speed.Length - 1)];
+    }
+    /// <summary>Distance along the element of the point nearest to `p` (plan), searching all of it.</summary>
+    public float Project(Vector2 p, out float dist)
+    {
+        float best = 1e9f, bestS = 0f;
+        for (int i = 0; i + 1 < pts.Length; i++)
+        {
+            Vector2 a = new Vector2(pts[i].x, pts[i].z), b = new Vector2(pts[i + 1].x, pts[i + 1].z), ab = b - a;
+            float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-6f)), d = (p - (a + ab * t)).sqrMagnitude;
+            if (d < best) { best = d; bestS = cum[i] + t * (cum[i + 1] - cum[i]); }
+        }
+        dist = Mathf.Sqrt(best); return bestS;
+    }
+}
 public class BuildingData { public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; public float[] cp; public int[] cn; }
 [Serializable] public class WorldInfo { public float x0, z0; public int ncx, ncz; }
 [Serializable] public class SpawnData { public float x, y, z, heading; public string road; }
@@ -80,6 +117,7 @@ public class ChunkData
     public JunctionData[] Junctions, CtxJunctions;
     public WaterArea[] Areas; public WaterLine[] Lines;
     public WaterArea[] Troughs = new WaterArea[0];       // BM06: water carried by a structure (a canal on an aqueduct over a road): drawn with its channel, dry below
+    public LaneElem[] Lanes = new LaneElem[0];           // BM07: the lane graph elements passing through this chunk (an element crossing chunks is in each)
     public BuildingData[] Buildings;
     public float[] Trees, Shrubs;
     public bool HasNear;
@@ -152,6 +190,7 @@ public class ChunkData
             int nl = br.ReadInt32(); d.Lines = new WaterLine[nl];
             for (int i = 0; i < nl; i++) { var l = new WaterLine { hw = br.ReadSingle(), lead = br.ReadByte(), trail = br.ReadByte() }; int n = br.ReadInt32(); l.pts = Floats(br, n * 3); d.Lines[i] = l; }
             if (version >= 6) d.Troughs = ReadWater(br);
+            if (version >= 7) d.Lanes = ReadLanes(br);
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)
             {
@@ -191,6 +230,22 @@ public class ChunkData
             }
             else r.surface = r.dirt ? "dirt" : "asphalt";
             a[i] = r;
+        }
+        return a;
+    }
+
+    static LaneElem[] ReadLanes(BinaryReader br)
+    {
+        var a = new LaneElem[br.ReadInt32()];
+        for (int i = 0; i < a.Length; i++)
+        {
+            var e = new LaneElem { id = br.ReadInt32(), kind = br.ReadByte(), control = br.ReadByte(), limit = br.ReadByte(), dirt = br.ReadByte() != 0, roadKind = br.ReadByte(), imp = br.ReadByte(), rank = br.ReadByte() };
+            e.hw = br.ReadSingle(); e.turn = br.ReadSingle(); e.junction = br.ReadInt32();
+            int n = br.ReadInt32(); var f = Floats(br, n * 3); e.pts = new Vector3[n]; e.cum = new float[n];
+            for (int k = 0; k < n; k++) { e.pts[k] = new Vector3(f[k * 3], f[k * 3 + 1], f[k * 3 + 2]); if (k > 0) e.cum[k] = e.cum[k - 1] + Vector2.Distance(new Vector2(e.pts[k].x, e.pts[k].z), new Vector2(e.pts[k - 1].x, e.pts[k - 1].z)); }
+            var sp = br.ReadBytes(n); e.speed = new float[n]; for (int k = 0; k < n; k++) e.speed[k] = sp[k] / 4f;
+            e.succ = Ints(br, br.ReadByte()); e.left = br.ReadInt32(); e.right = br.ReadInt32(); e.yields = Ints(br, br.ReadByte());
+            a[i] = e;
         }
         return a;
     }
@@ -312,6 +367,16 @@ public class WorldData
         }
     }
     public int LoadedRoadVersion => version;
+    LaneGraph lanes; int lanesVersion = -1;
+    /// <summary>The lane graph of the loaded chunks (empty for worlds built before BM07).</summary>
+    public LaneGraph Lanes
+    {
+        get
+        {
+            if (lanesVersion != version) { lanes = new LaneGraph(Chunks.Values); lanesVersion = version; }
+            return lanes;
+        }
+    }
 
     /// <summary>Level of the water surface at (x,z) if it lies on standing or running water, else NaN.</summary>
     public float WaterLevel(float x, float z)

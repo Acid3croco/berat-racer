@@ -113,7 +113,20 @@ two-way / one-way and the direction of a one-way road.
    the orthophoto: solid lines are rare here (about 1 in 45 visible marked points; dashed even where we compute 44 - 60 m), and
    the MUTCD passing sight distances would have marked 38 % of the length. Edge lines on marked roads only, dashed from 7.0 m
    drawn width and solid from 8.3 m, the majority over 40 m so a section boundary does not flip them.
-8. **surface**: pieces (centreline + both edges + drawn flags per section and bridge span), junction meshes, footprints and tangent planes for the terrain.
+8. **lane graph** (`roads/lanegraph.py`): what traffic drives on, built offline. Lanes run at each lane's local centre (offset from
+   the smoothed centreline by the eased lane layout), split where a zone changes the lane count (a dropped lane merges across the
+   zone into the inner one, an added one branches off the outer one). Junction connectors are cubic Béziers whose handles make a
+   circular arc between the arriving and leaving tangents (round the island, counter-clockwise, where a roundabout is swallowed
+   into one junction). Movements: no U-turn on the same arm and nothing sharper than 160° unless it is the only way out;
+   `turn:lanes` says which lane may turn where, else the leftmost lane turns left and the rightmost right; OSM restriction
+   relations (Overpass) and BD TOPO `non_communication` remove more (`python -m roads fetch-osm` caches them with the OSM stop /
+   give-way / lights nodes in `data/big/osm/controls_<tag>.json.gz`). Control per arm: an OSM sign or lights on the arm (the
+   unsigned arms of a signed junction have the priority), else entering a roundabout gives way, the lower-ranked arm gives way,
+   equal ranks give priority to the right. Each connector lists the connectors it gives way to (paths that cross or merge, of
+   higher priority; on equal terms the left turn yields). Speed per point from the curvature (2.4 m/s² lateral) under the limit.
+   Dead ends of two-way roads get a U-turn. Small map: 13,647 elements, 0 joins turning more than 10° (worst 6.6°), 0 gaps,
+   2 lanes without exit (one at the build margin, one where a two-way section turns one-way against it).
+9. **surface**: pieces (centreline + both edges + drawn flags per section and bridge span), junction meshes, footprints and tangent planes for the terrain.
 
 `build_world.py` then shapes the terrain around that surface (`roads/terrain.py`):
 
@@ -136,10 +149,25 @@ ground under the water is back at the depth of a bed, so the ends rest on the ba
 concrete channel (walls where the water stops, a floor 1.8 m under the surface) and keeps the ground under them dry. A BM05 chunk
 is a BM06 chunk without that list; a BM07 road record adds, after the give-way lines, the OSM surface string, the limit against the
 piece's direction (the header byte is the limit along it), the lane lines (kind, then per point the fraction of the way from the
-left edge to the right one), per segment the paint flags (painted, no overtaking along / against, edge style) and the turn arrows. `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+left edge to the right one), per segment the paint flags (painted, no overtaking along / against, edge style) and the turn arrows;
+and after the carried water a BM07 chunk lists the lane graph elements passing through it (id, kind, control, limit, road
+attributes, points with their speed, successors, the lanes beside, the connectors it gives way to). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
 
 The physics surface is the drawn one: `RoadIndex` hashes the very triangles that are rendered.
+
+## Traffic
+
+`Traffic.cs` and the autopilot drive a `Follower`. On a BM07 world it is `LaneFollower`: the route is a list of lane graph element
+ids extended at random among the successors (paved first), the path is the elements' own polylines (no search for the next piece,
+no pivot at a node, no offset stepping at piece boundaries), speeds come from the precomputed curvature speeds braking ahead in
+time, and at a connector from its control and the connectors it must let through (taken when a car is on them or about to enter
+within ~4 s; after 5 s of everyone waiting, go). Cars overtake on the left on multi-lane roads and move back right when the lane is
+free. Older worlds (and `-roadfollower`) use `RoadFollower`, which rediscovers the network from the road pieces at run time.
+
+The traffic log reports *kinks*: a car's path heading jumping faster than 90°/s while it drives. Small map, same build, 400 s:
+18.5 kinks / km with the road pieces, 1.0 / km on the lane graph (0.7 / km in a 240 s run); the mean traffic speed falls from about
+36 to 28 - 33 km/h because cars now stop at stops, give way and take junction corners at their radius.
 
 ## What the build report says (small map, 447 km of roads)
 

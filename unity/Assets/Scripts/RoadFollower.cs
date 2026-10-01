@@ -2,21 +2,43 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// One driver's view of the road network, shared by the traffic AI and the player's autopilot: which road piece it is on, how far along, which lane it holds
-/// (right-hand traffic), where it goes at the next junction (uniformly random exit, one-way roads honoured), how fast the road allows it to go (legal limit, bends).
-/// It knows nothing about vehicles: the caller moves its car (kinematically or with real steering) and asks where to aim.
+/// The follower of worlds without a lane graph (and of -roadfollower): which road piece it is on, how far along, which lane it holds
+/// (right-hand traffic: half the mean width right of the centreline), where it goes at the next junction (the pieces whose ends lie
+/// within 2.5 m, searched at run time; uniformly random exit, one-way roads honoured), how fast the road allows it to go.
 /// </summary>
-public class RoadFollower
+public class RoadFollower : Follower
 {
     public const float LaneMax = 2.1f;
-    public RoadData road; public bool fwd; public float s, lane;
+    public RoadData road; public bool fwd; public float s;
     public RoadData nextRoad; public bool nextFwd, nextSharp, planned;
     readonly WorldData data; readonly System.Random rng;
 
     public RoadFollower(WorldData d, System.Random r) { data = d; rng = r; }
 
     public float Length => road.Length;
-    public float ToEnd => fwd ? road.Length - s : s;
+    public override float ToEnd => fwd ? road.Length - s : s;
+    public override RoadAttr Attr => new RoadAttr { hw = road.hw, limit = road.limit, kind = road.kind, imp = int.TryParse(road.imp, out int i) ? i : 0, dirt = road.dirt, oneWay = road.oneway != 0 };
+    public override float LimitKmh() => LimitKmh(road, fwd);
+    public override void Update(float dt) { lane = Mathf.MoveTowards(lane, LaneOffset(road), 1.5f * dt); }
+    public override string Describe() => $"piece {road.fid} '{road.name}' s {s:F0}/{Length:F0} fwd {fwd} hw {road.hw:F1} ow {road.oneway}";
+
+    /// <summary>Right-hand lane on the road, ground = the road surface; heading looks a few metres ahead along the piece.</summary>
+    public override Vector3 Pose(out Vector2 dir, out Vector3 ahead)
+    {
+        Vector3 p = road.At(s, out Vector2 dInc);
+        dir = fwd ? dInc : -dInc;
+        Vector2 right = new Vector2(dir.y, -dir.x);
+        ahead = road.At(s + (fwd ? 4f : -4f), out _);
+        return new Vector3(p.x + right.x * lane, p.y, p.z + right.y * lane);
+    }
+
+    public override bool Relocate(Vector2 from, out Vector3 pos, out Vector2 dir)
+    {
+        var r = RandomConnectedPiece(from, 150f, 900f, 60f); pos = Vector3.zero; dir = Vector2.up;
+        if (r == null) return false;
+        Place(r, r.Length * 0.5f, r.oneway != 2);
+        pos = Ahead(0.1f, out dir); return true;
+    }
 
     // ------------------------------------------------------------------ speed limits
     /// <summary>Speed allowed on this road (km/h) in the direction of travel: the French legal limit from the data, no more than 1.3 x the road's average speed + 8 (winding, narrow roads are slower).</summary>
@@ -34,7 +56,7 @@ public class RoadFollower
     public void Place(RoadData r, float along, bool forward) { road = r; s = along; fwd = forward; lane = LaneOffset(r); planned = false; nextRoad = null; nextSharp = false; }
 
     /// <summary>Nearest road piece to a world position (paved roads preferred), travelling in the direction closest to `heading`. False if nothing within 40 m.</summary>
-    public bool SnapTo(Vector2 pos, Vector2 heading)
+    public override bool SnapTo(Vector2 pos, Vector2 heading)
     {
         RoadData best = null; float bestD = 40f, bestS = 0f;
         foreach (var r in data.Roads)
@@ -59,7 +81,7 @@ public class RoadFollower
     }
 
     /// <summary>Follow a car that steers itself: move `s` to the point of this piece nearest to `pos` (searching around the old value); crossing to the next piece at the end. Returns the distance to the road centre line.</summary>
-    public float Track(Vector2 pos)
+    public override float Track(Vector2 pos)
     {
         EnsurePlanned();
         float bestS = s, bestD = 1e9f;
@@ -75,7 +97,7 @@ public class RoadFollower
     }
 
     /// <summary>Advance `ds` metres along the travel direction, changing piece at the end.</summary>
-    public void Move(float ds)
+    public override void Move(float ds)
     {
         s += (fwd ? 1f : -1f) * ds;
         float len = road.Length;
@@ -97,9 +119,9 @@ public class RoadFollower
         planned = false; nextRoad = null; nextSharp = false;
     }
 
-    public bool DeadEnd => planned && nextRoad == null;
+    public override bool DeadEnd => planned && nextRoad == null;
     /// <summary>Turn round on the spot: travel the same piece the other way.</summary>
-    public void Flip() { fwd = !fwd; planned = false; nextRoad = null; nextSharp = false; }
+    public override void Flip() { fwd = !fwd; planned = false; nextRoad = null; nextSharp = false; }
 
     /// <summary>A road piece from which one can get somewhere: it has an exit at one end at least, in the direction of travel or against it.</summary>
     public bool Connected(RoadData r) { return Options(r, true).Count + Options(r, false).Count > 0; }
@@ -119,7 +141,7 @@ public class RoadFollower
         return null;
     }
 
-    public void EnsurePlanned() { if (!planned && ToEnd < 90f) Plan(); }
+    public override void EnsurePlanned() { if (!planned && ToEnd < 90f) Plan(); }
 
     // ------------------------------------------------------------------ geometry
     // ------------------------------------------------------------------ the path ahead
@@ -175,7 +197,7 @@ public class RoadFollower
     }
 
     /// <summary>Position on the lane path `along` metres ahead of the current point (crossing into the planned next pieces, corners smoothed), and the travel direction there.</summary>
-    public Vector3 Ahead(float along, out Vector2 dirTravel)
+    public override Vector3 Ahead(float along, out Vector2 dirTravel)
     {
         EnsurePath();
         int n = pathPts.Count; float total = pathCum[n - 1];
@@ -191,7 +213,7 @@ public class RoadFollower
     }
 
     /// <summary>Speed (m/s) that keeps lateral acceleration at ~2.4 m/s2 through the tightest bend in the next 60 m.</summary>
-    public float CurveSpeed()
+    public override float CurveSpeed()
     {
         float sgn = fwd ? 1f : -1f, worst = 0f; road.At(s, out Vector2 d0); d0 = fwd ? d0 : -d0; Vector2 prev = d0;
         for (int k = 1; k <= 3; k++)
@@ -204,7 +226,7 @@ public class RoadFollower
     }
 
     /// <summary>Speed cap for the coming junction or turn (m/s), 99 when the way ahead is straight and free.</summary>
-    public float JunctionSpeed(float cruise)
+    public override float JunctionSpeed(float cruise)
     {
         EnsurePlanned();
         if (!planned || !nextSharp || ToEnd >= 45f) return 99f;

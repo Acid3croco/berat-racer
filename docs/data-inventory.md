@@ -21,6 +21,7 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 |---|---|---|---|
 | 1 | OSM tags already cached: oneway, levels in `crossing.py`, French / directional limits, surface string | done | 24 one-way conflicts settled by OSM (20 to one-way, 4 reversed), rings kept on BD TOPO (61 / 61 counter-clockwise); 0 crossings on the small map, Herbettes sector: LiDAR 39, OSM 9, survey 3, same spans as master; overlap 0 m², terrain above road 0, LiDAR fit unchanged; roadtest 9.9 m/s² (9.8 - 9.9 before) |
 | 2 | Lanes per sample with transition zones; markings from lanes (centre / dividers, edge style, no overtaking, turn arrows) | done | 101 transition zones (8 lane changes), smooth-step replaces the 12 m moving average; centre line on 107 km instead of 243 km (one-lane locals and streets unmarked, measured on the ortho); no overtaking 0.9 km (2.8 s sight, calibrated on the ortho); edge-style changes 0.02 / km (same as before); arrows 0 on the small map, 29 on the Herbettes sector; overlap 0, terrain above road 0, LiDAR fit unchanged; roadtest 9.9 m/s² |
+| 3 | Offline lane graph per chunk; traffic and autopilot follow it | done | 13,647 elements (4,681 lanes, 8,196 connectors, 770 U-turns); 0 kinks at joins (worst 6.6°), 0 gaps; controls from 25 stop / 40 give-way OSM nodes and ranks (3,064 priority, 984 give way, 36 stop, 4,112 priority to the right); 0 of 6 OSM restrictions apply on the small map (5 median U-turns, 1 off our network), 16 of 58 on the Herbettes sector; traffic kinks 18.5 / km -> 1.0 / km; autotest 2,507 m over 28 cells (2,242 m over 19 before), 0 stuck; check_roads: every successor exists and joins |
 
 Legend for the *Status* column: **used**: read and has an effect · **dropped**: fetched or present, then ignored ·
 **absent**: not fetched at all.
@@ -96,7 +97,7 @@ Today (`RoadFollower.cs`, `Traffic.cs`):
 - The offset uses the *mean* half width, so it steps at piece boundaries.
 - Give-way lines are ignored; priority is always to the right.
 
-Target: **a lane graph built offline** and exported per chunk.
+Target: **a lane graph built offline** and exported per chunk (**done**, step 3: `roads/lanegraph.py`, `LaneFollower.cs`).
 
 - One polyline per lane, offset from the smoothed centreline by the *local* lane centre. Lane changes follow the transition zones of 1.2.
 - **Junction connectors**: for each allowed (incoming lane -> outgoing lane) pair, a smooth curve (clothoid or cubic Bezier) whose radius

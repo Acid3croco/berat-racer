@@ -45,6 +45,16 @@ def plan(ax, network, centre, radius, raw=None, labels=False):
     if raw is not None:
         ax.add_collection(LineCollection([xy for xy in raw if near(xy)], colors="red", linewidths=0.5, linestyles="dotted"))
     ax.add_collection(LineCollection(centrelines, colors="gold", linewidths=0.5))
+    lanes = [e for e in getattr(network, "lanes", []) if near(e.xyz[:, :2])]
+    if lanes:                                                      # lane graph: lanes blue, connectors by control, arrows at their ends
+        colour = {0: "#2060d0", 1: "#20a0a0", 3: "#a040c0"}
+        control = ("#20a020", "#e0a000", "#d02020", "#d020d0", "#ff7000")  # priority, give way, stop, signals, right
+        ax.add_collection(LineCollection([e.xyz[:, :2] for e in lanes], linewidths=0.8,
+                                         colors=[control[e.control] if e.kind == 2 else colour[e.kind] for e in lanes]))
+        for e in lanes:
+            if e.kind == 0 and len(e.xyz) > 1:
+                a, b = e.xyz[-2, :2], e.xyz[-1, :2]
+                ax.annotate("", xy=b, xytext=a, arrowprops=dict(arrowstyle="->", color="#2060d0", lw=0.8), annotation_clip=True)
     ax.set_xlim(cx - radius, cx + radius)
     ax.set_ylim(cz - radius, cz + radius)
     ax.set_aspect("equal")

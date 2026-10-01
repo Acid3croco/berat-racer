@@ -44,6 +44,13 @@ NO_OVERTAKING_GAP = 50.0          # a gap shorter than this between two no-overt
 NO_OVERTAKING_MIN = 30.0          # a no-overtaking stretch shorter than this is dropped
 ARROW_DISTANCES = (12.0, 40.0)    # turn arrows are painted this far before the junction
 
+# lane graph (lanegraph.py)
+TURN_MAX = 160.0                  # degrees: sharper movements through a junction (U-turns) are not offered
+TURN_STRAIGHT = 35.0              # degrees: a movement turning less than this is straight on
+CONTROL_REACH = 30.0              # an OSM stop / give-way node this far along an arm from its mouth controls that arm
+LATERAL_ACCEL = 2.4               # m/s2: traffic takes a curve no faster than this lateral acceleration
+KINK_ANGLE = 10.0                 # degrees: a change of direction where one element meets the next counts as a kink (report)
+
 # roads running side by side closer than their widths (dual carriageways, slip roads): each keeps its share of the gap
 CLAMP_GAP = 0.6                   # ground left between the two
 CLAMP_MIN_HALF_WIDTH = 1.25       # never narrower than this (then they overlap: the data has them on top of each other)
