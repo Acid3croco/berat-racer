@@ -199,7 +199,6 @@ public static class Facade
                     if (!e.front && f == 0 && rng.NextDouble() < 0.22) continue;         // blind ground-floor bays on side/back walls
                     if (!e.front && rng.NextDouble() < 0.08) continue;
                     float wy = arched ? fy + Mathf.Max(1.6f, wallH * 0.25f) : fy + (f == 0 ? 0.95f : 0.9f);
-                    if (fy + wy - fy + h > wallH + 0.05f && f > 0) continue;
                     if (wy + h > top - 0.35f) continue;
                     Window(mb, e, tc, wy, w, h, s, s.mode == 0 && !strip, arched);
                 }
