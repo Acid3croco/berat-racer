@@ -591,7 +591,7 @@ def process_sector(args):
         if len(t):
             v[:, 2] = road_field(v[:, :2], v[:, 2] - land.PARK_LIFT)[0] + land.PARK_LIFT
             park_meshes.append((v, t))
-    field = stitch.EdgeField(stitch.paved_edges(pieces, meshes, park_meshes), terrain_at)
+    field = road_field.extended(stitch.paved_edges([], [], park_meshes)) if park_meshes else road_field
     park_drawn = [shapely.union_all(shapely.polygons(v[t][:, :, :2])) for v, t in park_meshes]   # what each car park's mesh covers, with all its outline points
     surfaces = shapely.union_all(road_surface.footprints(pieces, meshes) + park_drawn) if (pieces or park_drawn) else Polygon()
     band_cut = stitch.cut_cells(surfaces, field, win.x0, win.z0, CELL, nv, nv)

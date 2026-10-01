@@ -261,21 +261,28 @@ def parking_surfaces(area_list, road_polygons, stats=None):
     if not parks:
         return []
     merged = shapely.union_all(parks).buffer(0)
-    roads = shapely.union_all(road_polygons) if road_polygons else None
-    has_roads = roads is not None and not roads.is_empty
     road_tree = shapely.STRtree(road_polygons) if road_polygons else None
-    if has_roads:
+
+    def roads_near(geometry, reach=0.0, skip=()):
+        """Union of the road polygons within `reach` of a geometry (the rest cannot change the answer there)."""
+        if road_tree is None:
+            return Polygon()
+        near = road_tree.query(geometry, predicate="dwithin", distance=reach) if reach > 0 else road_tree.query(geometry, predicate="intersects")
+        return shapely.union_all([road_polygons[k] for k in sorted(near) if k not in skip])
+    roads = roads_near(merged)
+    if not roads.is_empty:
         merged = merged.difference(roads)
     pieces = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "Polygon" and g.area >= PARK_MIN_AREA]
     out = []
     for i, q in enumerate(pieces):
-        if has_roads and q.exterior.intersection(roads.buffer(0.5)).length < ACCESS_TOUCH:
+        nearby = roads_near(q, ACCESS_MAX + 1.0)
+        if road_tree is not None and q.exterior.intersection(nearby.buffer(0.5)).length < ACCESS_TOUCH:
             others = shapely.union_all([p for j, p in enumerate(pieces) if j != i]).buffer(ACCESS_OTHER)      # a road piece touching another
             aisles = set(road_tree.query(others, predicate="intersects").tolist()) if not others.is_empty else set()   # car park is its aisle
-            public = shapely.union_all([p for k, p in enumerate(road_polygons) if k not in aisles])
+            public = roads_near(q, ACCESS_MAX + 1.0, aisles)
             gap = q.distance(public) if not public.is_empty else np.inf
             if gap > ACCESS_MAX:                                                       # only aisles nearby: a shared aisle is the way in
-                public, gap = roads, q.distance(roads)
+                public, gap = nearby, (q.distance(nearby) if not nearby.is_empty else np.inf)
             if gap <= ACCESS_MAX:
                 a, b = nearest_points(q, public)
                 if stats is not None:
@@ -283,7 +290,7 @@ def parking_surfaces(area_list, road_polygons, stats=None):
                 d = np.array(b.coords[0]) - a.coords[0]
                 d = d / max(np.hypot(*d), 1e-9)
                 way = LineString([np.array(a.coords[0]) - d * 2.0, np.array(b.coords[0]) + d * 1.0]).buffer(ACCESS_WIDTH / 2, cap_style="flat")
-                joined = q.union(way).difference(roads)
+                joined = q.union(way).difference(roads_near(q.union(way)))
                 q = max(getattr(joined, "geoms", [joined]), key=lambda g: g.area)
                 if stats is not None:
                     stats["entrances"] = stats.get("entrances", 0) + 1

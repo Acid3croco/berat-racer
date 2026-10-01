@@ -33,12 +33,26 @@ NEIGHBOURS = 16        # edge samples blended at each point
 SAMPLE_STEP = 1.0      # m between edge samples
 
 
-def _densify(points, step):
-    out = [points[:1]]
-    for a, b in zip(points[:-1], points[1:]):
-        n = max(int(np.ceil(np.hypot(*(b[:2] - a[:2])) / step)), 1)
-        out.append(a[None, :] + (b - a)[None, :] * (np.arange(1, n + 1) / n)[:, None])
-    return np.vstack(out)
+def _densify_all(polylines, step):
+    """Every polyline with points added so that none are more than `step` apart (each segment cut into equal parts), one after the other."""
+    if not polylines:
+        return np.zeros((0, 5))
+    firsts = np.array([p[0] for p in polylines])
+    a = np.vstack([p[:-1] for p in polylines])
+    b = np.vstack([p[1:] for p in polylines])
+    seg_counts = np.array([len(p) - 1 for p in polylines])
+    n = np.maximum(np.ceil(np.hypot(b[:, 0] - a[:, 0], b[:, 1] - a[:, 1]) / step).astype(int), 1)
+    seg = np.repeat(np.arange(len(a)), n)
+    k = np.arange(len(seg)) - np.repeat(np.cumsum(n) - n, n) + 1                # 1 .. n within each segment
+    pts = a[seg] + (b[seg] - a[seg]) * (k / n[seg])[:, None]
+    # each polyline: its first point, then the points of its segments
+    per_line = np.add.reduceat(n, np.r_[0, np.cumsum(seg_counts)[:-1]])
+    starts = np.r_[0, np.cumsum(per_line + 1)[:-1]]
+    out = np.empty((len(pts) + len(polylines), polylines[0].shape[1]))
+    rest = np.ones(len(out), bool)
+    rest[starts] = False
+    out[starts], out[rest] = firsts, pts
+    return out
 
 
 def blend_width(xy, y, out, ground):
@@ -54,19 +68,21 @@ def blend_width(xy, y, out, ground):
 class EdgeField:
     """The height field around the paved edges. `edges`: [(points (n, 3) x, north, height along the edge, outward (n, 2))]."""
 
-    def __init__(self, edges, ground):
-        xy, y, out = [], [], []
-        for pts, o in edges:
-            if len(pts) < 2:
-                continue
-            dense = _densify(np.c_[pts, o], SAMPLE_STEP)
-            xy.append(dense[:, :2]); y.append(dense[:, 2])
-            n = dense[:, 3:5]; out.append(n / np.maximum(np.hypot(n[:, 0], n[:, 1]), 1e-9)[:, None])
+    def __init__(self, edges, ground, base=None):
+        dense = _densify_all([np.c_[pts, o] for pts, o in edges if len(pts) >= 2], SAMPLE_STEP)
+        n = dense[:, 3:5]
+        out = n / np.maximum(np.hypot(n[:, 0], n[:, 1]), 1e-9)[:, None]
         self.ground = ground
-        self.xy = np.vstack(xy) if xy else np.zeros((0, 2))
-        self.y = np.concatenate(y) if y else np.zeros(0)
-        self.width = blend_width(self.xy, self.y, np.vstack(out), ground) if xy else np.zeros(0)
+        xy, y = dense[:, :2], dense[:, 2]
+        width = blend_width(xy, y, out, ground) if len(xy) else np.zeros(0)
+        if base is not None:                                                   # `base`'s samples first, as if built from its edges + these
+            xy, y, width = np.vstack([base.xy, xy]), np.r_[base.y, y], np.r_[base.width, width]
+        self.xy, self.y, self.width = xy, y, width
         self.tree = cKDTree(self.xy) if len(self.xy) else None
+
+    def extended(self, edges):
+        """The field of this one's edges and more (each sample is computed alone, so this is the field of all the edges)."""
+        return EdgeField(edges, self.ground, base=self)
 
     def influence(self, p):
         """(heights of the near samples (m, k), their f (m, k)) at plan points p (m, 2)."""
@@ -213,7 +229,9 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     paved = surfaces.intersection(box(bx0 - 1, bz0 - 1, bx1 + 1, bz1 + 1))
     shapely.prepare(paved)
     pieces = shapely.box(ox.ravel(), oz.ravel(), ox.ravel() + FILL_STEP, oz.ravel() + FILL_STEP, ccw=False)     # a box the paved surfaces miss stays
-    touched = shapely.intersects(paved, boxes)                                             # whole (wound as the difference would give it)
+    covered = shapely.contains(paved, boxes)                                               # whole (wound as the difference would give it);
+    touched = shapely.intersects(paved, boxes) & ~covered                                  # one wholly on a paved surface leaves nothing
+    pieces[covered] = None
     pieces[touched] = shapely.difference(boxes[touched], paved)
     parts = shapely.get_parts(pieces)
     parts = parts[(shapely.get_type_id(parts) == shapely.GeometryType.POLYGON) & (shapely.area(parts) > 1e-9)]
@@ -225,7 +243,7 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     pts = pts[~((a == b).all(1) | (b == c).all(1) | (c == a).all(1))]                 # a road edge through a fill point) covers nothing; its zero-length edge reads as open
     if not len(pts):
         return np.zeros((0, 3, 3)), np.zeros((0, 3))
-    xy = pts.reshape(-1, 2)
+    xy, back = np.unique(pts.reshape(-1, 2), axis=0, return_inverse=True)            # a fill point is a corner of ~6 triangles: each is worked out once
     y, f = field(xy)
     on_paved = shapely.dwithin(paved, shapely.points(xy), SNAP) if not paved.is_empty else np.zeros(len(xy), bool)
     if on_paved.any():
@@ -253,6 +271,7 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     if vz.any():
         t = gx[vz] - cx2[vz]
         y[vz] = H[rz2[vz], cx2[vz]] * (1 - t) + H[rz2[vz], np.minimum(cx2[vz] + 1, H.shape[1] - 1)] * t
+    y, f = y[back], f[back]
     out = np.dstack([pts, y.reshape(-1, 3)])
     a, b, c = out[:, 0, :2], out[:, 1, :2], out[:, 2, :2]
     ccw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
