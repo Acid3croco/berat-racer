@@ -33,6 +33,7 @@ public class CarController : MonoBehaviour, IWheelFx
 
     // ------------------------------------------------------------------ inputs (player, autopilot or test harness)
     [HideInInspector] public float Throttle, Brake, Steer;
+    [HideInInspector] public bool SteerDirect;     // a steering wheel: its rim is already smooth, so Steer is used as is instead of eased in
     [HideInInspector] public bool Handbrake;
 
     // ------------------------------------------------------------------ outputs
@@ -389,7 +390,7 @@ public class CarController : MonoBehaviour, IWheelFx
     void UpdateSteering(float dt, float speed)
     {
         float rate = (Mathf.Abs(Steer) > Mathf.Abs(steerSm) ? 7f : 10f) / (1f + speed / 30f);                 // quick at parking speed, calmer as speed rises
-        steerSm = Mathf.MoveTowards(steerSm, Mathf.Clamp(Steer, -1f, 1f), rate * dt);
+        steerSm = SteerDirect ? Mathf.Clamp(Steer, -1f, 1f) : Mathf.MoveTowards(steerSm, Mathf.Clamp(Steer, -1f, 1f), rate * dt);
         float dCmd = steerSm * MaxSteerRad(speed);
         if (AssistMode == Assist.Drift && speed > 3f)
         {   // the front wheels follow the direction the front axle travels and the stick adds a slip angle to it: counter-steer is automatic,

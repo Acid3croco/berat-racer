@@ -24,10 +24,11 @@ public class GameBootstrap : MonoBehaviour
     bool smoke; float smokeT, smokeSeconds = 24f;
     float fps, fpsAcc, fpsMin = 999f; int fpsN; float fpsNext, telemetryNext;
     GUIStyle big, small, mono;
-    float lastInputErr; bool inputTest, mapTest, shotsMode; Vector3? shotFocus;
+    float lastInputErr; bool inputTest, wheelTest, mapTest, shotsMode; Vector3? shotFocus;
     bool scriptedTest => System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-bridgetest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hulltest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-stabtest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-drifttest") >= 0 || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-hitboxtest") >= 0;   // physics harness owns the car inputs
     bool showHelp = true, showDebug; Autopilot auto; bool autoOn;
     string padName = "none"; float steerIn, thrIn, brkIn; bool handIn;
+    readonly WheelInput wheel = new WheelInput();
 
     IEnumerator Start()
     {
@@ -36,6 +37,7 @@ public class GameBootstrap : MonoBehaviour
         Time.fixedDeltaTime = 0.01f;
         smoke = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-smoke") >= 0;
         inputTest = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-inputtest") >= 0;
+        wheelTest = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-wheeltest") >= 0;
         mapTest = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-maptest") >= 0;
         shotsMode = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-shots") >= 0;
         var args = System.Environment.GetCommandLineArgs();
@@ -75,6 +77,7 @@ public class GameBootstrap : MonoBehaviour
         }
         if (smoke) StartCoroutine(SmokeTest());
         if (inputTest) StartCoroutine(InputTest());
+        if (wheelTest) StartCoroutine(WheelTest());
         if (mapTest) StartCoroutine(MapTest());
         if (shotsMode) StartCoroutine(Shots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-worldshots") >= 0) StartCoroutine(WorldShots());
@@ -115,8 +118,8 @@ public class GameBootstrap : MonoBehaviour
     {
         if (Application.isBatchMode)
         {   // automated headless runs drive themselves: a gamepad in use by a game being played on the same machine must not steer them
-            foreach (var d in InputSystem.devices.ToArray()) if (d is Gamepad || d is Joystick) InputSystem.DisableDevice(d);
-            InputSystem.onDeviceChange += (d, change) => { if (change == InputDeviceChange.Added && (d is Gamepad || d is Joystick)) InputSystem.DisableDevice(d); };
+            foreach (var d in InputSystem.devices.ToArray()) if ((d is Gamepad || d is Joystick) && d.native) InputSystem.DisableDevice(d);
+            InputSystem.onDeviceChange += (d, change) => { if (change == InputDeviceChange.Added && (d is Gamepad || d is Joystick) && d.native) InputSystem.DisableDevice(d); };   // the test modes' synthetic devices stay
             Log.I("input", "batch run: gamepads disabled");
             return;
         }
@@ -222,11 +225,16 @@ public class GameBootstrap : MonoBehaviour
     {
         if (world == null || !world.Ready || car == null) return;
         var kbM = Keyboard.current; var gpM = Gamepad.current;
-        if (!smoke && !NetSession.Typing && ((kbM != null && kbM.mKey.wasPressedThisFrame) || (gpM != null && gpM.selectButton.wasPressedThisFrame))) { map.Toggle(); }
+        if (!smoke && !NetSession.Typing && !wheel.SetupActive && ((kbM != null && kbM.mKey.wasPressedThisFrame) || (gpM != null && gpM.selectButton.wasPressedThisFrame))) { map.Toggle(); }
         world.UpdateStreaming(shotFocus.HasValue ? shotFocus.Value : (map.Active ? map.Focus : car.transform.position));
         if (NetSession.Typing || map.Active && NetSession.Live) HoldCar();              // the online panel has the keyboard; an online game does not pause for the map
         if (NetSession.Typing) return;
         if (map.Active) { map.Tick(); return; }
+        bool inWheelSetup = wheel.SetupActive;                                          // its Esc / Enter must not also quit or reach the game
+        wheel.Tick();
+        if (!inWheelSetup && kbM != null && kbM.lKey.wasPressedThisFrame) { if (wheel.Device != null) wheel.StartSetup(); else Announce("NO WHEEL CONNECTED"); }
+        car.SteerDirect = false;
+        if (inWheelSetup || wheel.SetupActive) { HoldCar(); return; }
         HandleCameraInput(); HandleCoordinateKeys();
         if (carVisual != null) { carVisual.brakeGlow.SetActive(car.Brake > 0.1f && car.Gear > 0 || car.Gear < 0 && car.Throttle > 0.1f); carVisual.reverseGlow.SetActive(car.Gear < 0); }
         if (Time.unscaledDeltaTime > 0.028f && Time.frameCount > 120) Log.I("perf", $"slow frame {Time.unscaledDeltaTime * 1000f:F0} ms  streamToggle={(world.LastToggleFrame == Time.frameCount)}  gc={System.GC.CollectionCount(0)}  speed={(car != null ? car.SpeedKmh : 0):F0}");
@@ -271,6 +279,13 @@ public class GameBootstrap : MonoBehaviour
             if (kb.f3Key.wasPressedThisFrame) showDebug = !showDebug;
             if (kb.escapeKey.wasPressedThisFrame) { Log.I("boot", "quit (Esc)"); Application.Quit(); }
         }
+        if (wheel.Active)
+        {   // the rim alone steers directly; with keys or a stick also steering, the usual easing stays
+            car.SteerDirect = steer == 0f;
+            steer += wheel.Steer;
+            thr = Mathf.Max(thr, wheel.Throttle); brk = Mathf.Max(brk, wheel.Brake);
+            hand |= wheel.Handbrake; reset |= wheel.ResetPressed;
+        }
         steerIn = Mathf.Clamp(steer, -1, 1); thrIn = thr; brkIn = brk; handIn = hand;
         car.Steer = steerIn; car.Throttle = thrIn; car.Brake = brkIn; car.Handbrake = handIn;
         } catch (System.Exception e) { if (Time.unscaledTime > lastInputErr) { lastInputErr = Time.unscaledTime + 2f; Log.I("input", "INPUT EXCEPTION: " + e); } }
@@ -310,6 +325,8 @@ public class GameBootstrap : MonoBehaviour
         var kb = Keyboard.current; var mouse = Mouse.current; var gp = pad;
         bool back = false;
         if (kb != null) { if (kb.cKey.wasPressedThisFrame) cam.NextMode(); back |= kb.bKey.isPressed; }
+        if (wheel.CameraPressed) cam.NextMode();
+        back |= wheel.LookBack;
         if (mouse != null && mouse.rightButton.isPressed) cam.Look(mouse.delta.ReadValue() * 0.18f);
         if (gp != null)
         {
@@ -349,7 +366,7 @@ public class GameBootstrap : MonoBehaviour
         telemetryNext = Time.unscaledTime + 1f;
         var p = car.transform.position;
         Log.I("tel", $"pos=({p.x:F0},{p.y:F1},{p.z:F0}) {car.SpeedKmh:F0}km/h fwd={car.ForwardSpeed:F1}m/s wheels={car.WheelsOnGround}/4 surf={car.CurrentSurface} " +
-                     $"in[steer={steerIn:F2} thr={thrIn:F2} brk={brkIn:F2} hand={handIn}] gear={car.Gear} rpm={car.Rpm:F0} audioPeak={(audio != null ? audio.Synth.LastPeak : 0):F2} buffers={(audio != null ? audio.Synth.Buffers : 0)} gc={System.GC.CollectionCount(0)} fx={(fx != null ? fx.Strength : 0):F2} smoke={(tyres != null ? tyres.Alive : 0)} wfx=[{car.WheelFx[0]:F1},{car.WheelFx[1]:F1},{car.WheelFx[2]:F1},{car.WheelFx[3]:F1}] cam={(cam != null ? cam.ModeName : "-")} camdist={(cam != null ? Vector3.Distance(cam.transform.position, car.transform.position) : 0):F2} fov={(mainCam != null ? mainCam.fieldOfView : 0):F0} pad={padName} focus={Application.isFocused} kb={(Keyboard.current != null)} auto={autoOn} fps={fps:F0} (min {fpsMin:F0}) mem={System.GC.GetTotalMemory(false) / 1048576}MB");
+                     $"in[steer={steerIn:F2} thr={thrIn:F2} brk={brkIn:F2} hand={handIn}] gear={car.Gear} rpm={car.Rpm:F0} audioPeak={(audio != null ? audio.Synth.LastPeak : 0):F2} buffers={(audio != null ? audio.Synth.Buffers : 0)} gc={System.GC.CollectionCount(0)} fx={(fx != null ? fx.Strength : 0):F2} smoke={(tyres != null ? tyres.Alive : 0)} wfx=[{car.WheelFx[0]:F1},{car.WheelFx[1]:F1},{car.WheelFx[2]:F1},{car.WheelFx[3]:F1}] cam={(cam != null ? cam.ModeName : "-")} camdist={(cam != null ? Vector3.Distance(cam.transform.position, car.transform.position) : 0):F2} fov={(mainCam != null ? mainCam.fieldOfView : 0):F0} pad={padName} wheel={(wheel.Active ? wheel.Name : "-")} focus={Application.isFocused} kb={(Keyboard.current != null)} auto={autoOn} fps={fps:F0} (min {fpsMin:F0}) mem={System.GC.GetTotalMemory(false) / 1048576}MB");
         fpsMin = 999f;
     }
 
@@ -380,6 +397,55 @@ public class GameBootstrap : MonoBehaviour
         yield return new WaitForSeconds(1.5f);
         Log.I("itest", $"brake: brake={brkIn:F2} speed={car.SpeedKmh:F0} km/h");
         Log.I("itest", "done");
+        Application.Quit();
+    }
+
+    /// <summary>A synthetic G29-like wheel (pedals resting at +1, silent until its first report) through the whole setup, then driving, then reloading the saved setup.</summary>
+    IEnumerator WheelTest()
+    {
+        yield return new WaitForSeconds(1.5f);
+        InputSystem.RegisterLayout<TestWheel>();
+        var w = InputSystem.AddDevice<TestWheel>();
+        string cfg = WheelInput.ConfigPath(w);
+        if (File.Exists(cfg)) File.Delete(cfg);
+        var kb = Keyboard.current ?? InputSystem.AddDevice<Keyboard>();
+        float x = 0f, y = 1f, rz = 1f;
+        void Send(int buttons) => InputSystem.QueueStateEvent(w, new TestWheelState { stick = new Vector2(x, y), z = 1f, rz = rz, buttons = buttons });
+        IEnumerator Press(int bit) { Send(1 << bit); yield return null; yield return null; Send(0); yield return null; yield return null; }
+        int fails = 0;
+        void Check(string what, bool ok) { if (!ok) fails++; Log.I("wtest", $"{what} -> {(ok ? "PASS" : "FAIL")}"); }
+
+        yield return null; yield return null;
+        Check($"silent wheel found ({wheel.Name}) but not in use", wheel.Device == w && !wheel.Active && !wheel.SetupActive);
+        Send(0); yield return null; yield return null;
+        Check("first report opens the setup", wheel.SetupActive);
+        yield return Press(0);                                     // centred, feet off
+        x = 0.2f; Send(0); yield return null; yield return Press(0);   // quarter turn right
+        x = 0f; y = -1f; Send(0); yield return null; yield return Press(0);   // throttle down
+        y = 1f; rz = -1f; Send(0); yield return null; yield return Press(0);  // brake down
+        rz = 1f; Send(0); yield return null;
+        yield return Press(1);                                     // handbrake
+        yield return Press(1);                                     // reset: already taken, refused
+        Check("a button cannot be given twice", wheel.SetupActive);
+        yield return Press(2);                                     // reset
+        InputSystem.QueueStateEvent(kb, new KeyboardState(Key.Enter)); yield return null; InputSystem.QueueStateEvent(kb, new KeyboardState()); yield return null; yield return null;   // camera: none
+        yield return Press(3);                                     // look back
+        Check($"setup done and saved to {cfg}", !wheel.SetupActive && wheel.Active && File.Exists(cfg));
+
+        x = 0.1f; y = -1f;                                         // 45 degrees right, full throttle: 45 / 180 lock = 0.25
+        for (float t = 0; t < 3f; t += Time.deltaTime) { Send(0); yield return null; }
+        Check($"drive: speed={car.SpeedKmh:F0} km/h throttle={thrIn:F2} steer={steerIn:F2} direct={car.SteerDirect}", car.SpeedKmh > 8f && thrIn > 0.95f && Mathf.Abs(steerIn - 0.25f) < 0.02f && car.SteerDirect);
+        x = 0f; y = 1f; rz = -1f;
+        for (float t = 0; t < 1f; t += Time.deltaTime) { Send(0); yield return null; }
+        Check($"brake: brake={brkIn:F2} throttle={thrIn:F2} speed={car.SpeedKmh:F0} km/h", brkIn > 0.95f && thrIn < 0.01f);
+        rz = 1f; Send(1 << 1); yield return null; yield return null;
+        Check($"handbrake button: hand={handIn} brake={brkIn:F2}", handIn && brkIn < 0.01f);
+        Send(0); yield return null;
+
+        var again = new WheelInput(); again.Tick();
+        Check("saved setup reloads", again.Device == w && again.Mapped && !again.SetupActive);
+        Log.I("wtest", fails == 0 ? "ALL PASS" : $"{fails} FAILED");
+        Log.I("wtest", "done");
         Application.Quit();
     }
 
@@ -1049,6 +1115,7 @@ public class GameBootstrap : MonoBehaviour
             return;
         }
         if (map != null && map.Active) { map.DrawGUI(); return; }
+        if (wheel.SetupActive) { wheel.DrawGUI(); return; }
         GUI.Label(new Rect(Screen.width - 340, Screen.height - 110, 320, 80), $"{car.SpeedKmh:F0} km/h", big);
         float carAge = Time.unscaledTime - shownCarAt;
         if (carAge < 3.5f) { if (stCarName == null) { stCarName = new GUIStyle(big) { fontSize = 34, alignment = TextAnchor.UpperCenter }; stCarTag = new GUIStyle(small) { alignment = TextAnchor.UpperCenter, fontSize = 18 }; } stCarName.normal.textColor = stCarTag.normal.textColor = new Color(1, 1, 1, Mathf.Clamp01(3.5f - carAge)); GUI.Label(new Rect(0, 70, Screen.width, 50), car.Spec.Name, stCarName); GUI.Label(new Rect(0, 118, Screen.width, 30), car.Spec.Tagline, stCarTag); }
@@ -1058,9 +1125,9 @@ public class GameBootstrap : MonoBehaviour
         if (minimap != null) minimap.DrawGUI();
         if (autoOn) { if (stAuto == null) { stAuto = new GUIStyle(big) { fontSize = 30, alignment = TextAnchor.UpperCenter }; stAuto.normal.textColor = new Color(1f, 0.85f, 0.2f); } GUI.Label(new Rect(0, 138, Screen.width, 44), "AUTOPILOT ON  (P / Circle to take over)", stAuto); }
         DrawPositionBox();
-        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   model {DrivingModels.Names[car.ModelIndex].Split(' ')[0]}  assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
+        GUI.Label(new Rect(16, 12, 700, 24), $"{fps:F0} fps   |   pad: {padName}{(wheel.Device != null ? "   |   wheel: " + wheel.Name : "")}   |   gear {(car.Gear < 0 ? "R" : car.Gear == 0 ? "N" : car.Gear.ToString())}  {car.Rpm:F0} rpm   model {DrivingModels.Names[car.ModelIndex].Split(' ')[0]}  assist {car.AssistMode}{(car.AbsActive ? " ABS" : "")}{(car.TcsActive ? " TCS" : "")}   traffic {(traffic != null && traffic.Enabled ? traffic.Count + " cars" : "off")}   vol {(audio != null ? audio.Volume * 100 : 0):F0}%{(audio != null && audio.Synth.Muted ? " [muted]" : "")}", small);
         if (showHelp)
-            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N   Online: O\nHelp: H / Options     Debug: F3     Quit: Esc", small);
+            GUI.Label(new Rect(16, 36, 1100, 170), "Berat (31370) — LiDAR HD + BD TOPO\nDrive: W/S A/D  or  R2 / L2 + left stick     Handbrake: Space / Square / R1     Reset: R / Triangle     Autopilot: P / Circle     MAP: M / Select     Camera: C / D-pad up   Look: right stick / right-drag   Rear: B / R3   Car: F / D-pad right   Copy spot: K   Jump to clipboard coords: J   V-sync: V   Assists: T   Volume: [ ]   Mute: N   Online: O\nWheel setup: L     Help: H / Options     Debug: F3     Quit: Esc", small);
         if (showDebug)
         {
             var sb = new StringBuilder();

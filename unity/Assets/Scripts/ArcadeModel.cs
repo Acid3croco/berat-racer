@@ -43,7 +43,7 @@ public class ArcadeModel : DrivingModel
         bool reverse = lv.z < 0.8f && car.Brake > 0.05f && car.Throttle < 0.05f;
         float thr = reverse ? car.Brake : car.Throttle, brk = reverse ? 0f : car.Brake;
         if (lv.z < -0.5f && car.Throttle > 0.05f) { brk = car.Throttle; thr = 0f; }
-        steerSm = Mathf.MoveTowards(steerSm, Mathf.Clamp(car.Steer, -1f, 1f), (Mathf.Abs(car.Steer) > Mathf.Abs(steerSm) ? 6f : 10f) / (1f + speed / 40f) * dt);
+        steerSm = car.SteerDirect ? Mathf.Clamp(car.Steer, -1f, 1f) : Mathf.MoveTowards(steerSm, Mathf.Clamp(car.Steer, -1f, 1f), (Mathf.Abs(car.Steer) > Mathf.Abs(steerSm) ? 6f : 10f) / (1f + speed / 40f) * dt);
         float steerAngle = steerSm * car.MaxSteerRad(speed);
 
         // ---- a plausible gearbox for the sound and the HUD: pick the gear that keeps the engine in its power band

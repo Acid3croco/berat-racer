@@ -58,6 +58,11 @@ Road benchmark (autopilot, 150 s on the real roads): invisible stops 3 -> 0, ver
 | Online session (host / join) | O (Esc closes the panel) | |
 | Quit | Esc | |
 
+**Steering wheel** (Logitech G29 / G920 / G923, Thrustmaster, Fanatec...): plug it in and turn the wheel; a short setup opens the first time
+(centre, a quarter turn right, throttle, brake, then pick the wheel buttons for handbrake, reset, camera and look back). It is saved per
+wheel in the log folder (`wheel-<name>.json`); `L` runs it again. Full steering lock is at 180° of wheel each way (`lockDeg` in that
+file). No force feedback yet, so the wheel does not centre itself.
+
 ## Run it
 
 0. **Just want to play?** Download `BeratRacer-windows-x64.zip` from the [latest release](../../releases/latest), unzip it and run `BeratRacer\BeratRacer.exe` (Windows 10/11 x64; unsigned, so SmartScreen may ask you to confirm with *More info ▸ Run anyway*). It contains the berat70 map (70 x 70 km, new road pipeline). Logs: `%LOCALAPPDATA%\BeratRacer\berat.log`.
@@ -83,7 +88,7 @@ Run the player on a generated world with `BERAT_WORLD=/path/to/world_small`. The
 
 ## Headless tests
 
-The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-maptest`, `-camtest`, `-shots`, `-worldshots` (streaming showcase: chase, long view, 8 km overview, 40 km horizon, water), `-carshots`, `-smokeshots`, `-audiotest`, `-netaudiotest` (other players' engine sound: panning and distance fade through the real mixer), `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
+The player has scripted test modes (run with `-batchmode`): `-phystest -car N` (13 vehicle-dynamics checks), `-roadtest` (drive the real roads and measure jolts, wheel hops and phantom stops), `-hulltest` (whole-car ground collision), `-bridgetest`, `-audit` (obstacle clearances), `-gridtest`, `-inputtest`, `-wheeltest` (a synthetic wheel through setup and driving), `-maptest`, `-camtest`, `-shots`, `-worldshots` (streaming showcase: chase, long view, 8 km overview, 40 km horizon, water), `-carshots`, `-smokeshots`, `-audiotest`, `-netaudiotest` (other players' engine sound: panning and distance fade through the real mixer), `-smoke -smokeSeconds N [-autoKmh K]`. `-autopilot` starts the game driving itself, `-car N` picks the car, `-vsync` caps the frame rate.
 
 ## Data & attribution
 
