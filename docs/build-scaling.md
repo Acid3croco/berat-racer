@@ -162,3 +162,12 @@ same 2); `check_gaps` 7 cm-level gaps (master 6, the same problem area; a 0.5 mm
 
 Cost, b70s20 (42 tiles with the ring), from scratch, 5 workers: 65 s wall, 274 s CPU (6.5 s a tile), largest process 916 MB,
 whole tree 3.9 GB (the whole-area build: 77 s wall with 9 workers, 155 s CPU, main process 1.0 GB growing with the area).
+
+## Step 5: far terrain, places, world files
+
+The far terrain is a patch per sector (`<world>/far/<si>_<sj>.npz`, the sector's 64 m heights and colours), written by the sector's
+own build, so an unchanged sector keeps its patch: the whole-map `far_<tag>.npz` cache and `--far-cache` / `--skip-existing` are
+gone (the content keys decide what to rebuild). `far.bin`, which the game reads as one file, is written from the patches one row of
+sectors at a time (two passes: heights, then colours); a vertex no sector covers takes the nearest covered height of its band.
+Small map: `far.bin` byte for byte the same as before; a second run rebuilds 0 of 9 sectors. `places.json` comes from the place
+tiles of the map (step 2); `world.json` and `spawn.json` are a few hundred bytes.
