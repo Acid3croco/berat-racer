@@ -135,9 +135,21 @@ two-way / one-way and the direction of a one-way road.
 
 `build_world.py` then shapes the terrain around that surface (`roads/terrain.py`):
 
-- *blend*: under the road and on a 1.5 m shoulder the ground sits 5 cm below the road, easing back to natural ground over 6 m;
+- *ribbons*: along every road edge and junction kerb an embankment ribbon is computed with the road's own samples: a 1.5 m
+  shoulder 4 cm under the edge, a 1:2 slope (fill or cut) to the LiDAR ground, the ground out to at least 6.5 m from the edge, never
+  closer than a metre to another road and never past 70 % of the radius on the inside of a bend (it would fold); then a 6 m apron
+  that redraws the terrain as it was before it was lowered (a lowered 4 m triangle reaches that far). The game draws them with the
+  terrain (gravel strip, ground colour, a lip down at the end) and the car drives on them: the 4 m grid's steps lie under a surface
+  that follows the road. This replaced the 6 m blend, which the 4 m grid could only follow as a staircase on diagonal roads.
+  Verge roughness beside paved roads (second difference of the visible ground along lines 1 - 14 m from the edge, every 4th chunk):
+  p99 0.162 -> 0.112 m, steps over 0.25 m 0.43 % -> 0.22 %; at 4 - 8 m from the edge p99 0.21 - 0.24 -> 0.11 - 0.14 m. A conforming
+  triangulation was not needed for that.
+- *drape*: every 4 m vertex under a ribbon is lowered 6 cm under the lowest ribbon there.
 - *bench*: every corner of a terrain cell touched by a road is lowered below the tangent planes of the road points that can share
-  that cell.
+  that cell, less cell^2 / 2R over a crest (the road falls away from its tangent plane there).
+- the 16 m terrain, drawn far away without ribbons, keeps the old blend (ground eased to the road over 6 m), benched under the road;
+- the ground colour of vertices within 2 m of a road comes from the nearest bare ground, not the photo's asphalt (luminance near
+  the roads was 4.5 above the ground 10 - 14 m away, now 0.2).
 - tunnels are not terrain inputs: the hill stays over them. The 4 m cells over a tunnel road where the ground is less than 5 m above
   it (the portals) are cut out (BM07 hole list); the game draws the tube (dark inside, concrete outside), a concrete headwall at
   each portal, and treats the tunnel road like a deck: it carries whatever is under its ceiling, not the hill above. A triangle whose corners are all below the road's tangent planes is below the road, so this holds for the 4 m mesh
@@ -160,7 +172,9 @@ piece's direction (the header byte is the limit along it), the lane lines (kind,
 left edge to the right one), per segment the paint flags (painted, no overtaking along / against, edge style) and the turn arrows;
 and after the carried water a BM07 chunk lists the lane graph elements passing through it (id, kind, control, limit, road
 attributes, points with their speed, successors, the lanes beside, the connectors it gives way to), then the terrain cells cut away
-(tunnel portals). The road flags byte has bit 8 for a tunnel piece. `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+(tunnel portals). The road flags byte has bit 8 for a tunnel piece. Road records end with the ribbon profile of each point and
+side (shoulder, toe distance / height, outer distance / height, apron heights and width), junctions with each vertex's kerb normal
+and profile. The 4 m terrain has skirts against its neighbours (not on the world's border). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
 
 The physics surface is the drawn one: `RoadIndex` hashes the very triangles that are rendered.

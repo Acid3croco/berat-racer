@@ -88,6 +88,7 @@ public class GameBootstrap : MonoBehaviour
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-audit") >= 0) { world.AuditObstacles(new Vector2(1037.5f, 1062.5f)); Application.Quit(); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-gridtest") >= 0) { PhysTest.GridRun(); Application.Quit(); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-groundscan") >= 0) StartCoroutine(GroundScan());
+        { var la3 = System.Environment.GetCommandLineArgs(); int gi3 = System.Array.IndexOf(la3, "-groundat"); if (gi3 >= 0 && gi3 + 2 < la3.Length && float.TryParse(la3[gi3 + 1], out float gx3) && float.TryParse(la3[gi3 + 2], out float gz3)) StartCoroutine(GroundAt(gx3, gz3)); }
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-roadtest") >= 0) StartCoroutine(PhysTest.RoadRun(world, car, 150f, 100f));
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-carshots") >= 0) StartCoroutine(CarShots());
         if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-phystest") >= 0) StartCoroutine(PhysTest.Run(world, car));
@@ -835,6 +836,30 @@ public class GameBootstrap : MonoBehaviour
     }
 
     /// <summary>Samples the physics ground function every 0.25 m along the main road and compares road-ribbon vs terrain-mesh profiles.</summary>
+    /// <summary>-groundat X Z: logs what the car would stand on in a 12 m square around a spot (1 m grid): ground height, road weight, ribbon height, surface. Then quits.</summary>
+    IEnumerator GroundAt(float x, float z)
+    {
+        car.Respawn(new Vector3(x, 400f, z)); yield return new WaitForSecondsRealtime(3f);
+        for (float dz = -6f; dz <= 6f; dz += 1f)
+        {
+            var line = new System.Text.StringBuilder();
+            for (float dx = -6f; dx <= 6f; dx += 1f)
+            {
+                float g = world.GroundHeight(x + dx, z + dz, 400f, out Surface sf); world.Roads.Query(x + dx, z + dz, 400f, out _, out float ry, out float w);
+                float rb = world.Roads.RibbonHeight(x + dx, z + dz);
+                line.Append($" {g:F2}/{w:F1}/{(float.IsNaN(rb) ? "-" : rb.ToString("F2"))}");
+            }
+            Log.I("groundat", $"z {z + dz:F0}:{line}");
+        }
+        for (float dz = -6f; dz <= 6f; dz += 0.25f)                                   // anything standing above the road within 6 m
+            for (float dx = -6f; dx <= 6f; dx += 0.25f)
+            {
+                float g = world.GroundHeight(x + dx, z + dz, 400f, out _); world.Roads.Query(x + dx, z + dz, 400f, out _, out float ry, out float w);
+                if (!float.IsNaN(ry) && g > ry + 0.2f) Log.I("groundat", $"high ground at ({x + dx:F2},{z + dz:F2}): {g:F2} vs road {ry:F2} (weight {w:F2}) ribbon {world.Roads.RibbonHeight(x + dx, z + dz):F2}");
+            }
+        Application.Quit();
+    }
+
     IEnumerator GroundScan()
     {
         yield return new WaitForSeconds(0.5f);

@@ -113,6 +113,16 @@ ROAD_SINK = 0.05                  # the ground under and beside a road lies this
 SHOULDER = 1.5                    # flat ground kept beside the carriageway before the slope starts
 EMBANKMENT = 6.0                  # width of the blend from the shoulder back to the natural ground
 LOD_SINK = 0.30                   # same as ROAD_SINK for the 16 m terrain
+# embankment ribbons (terrain.py): drawn along every road edge and junction kerb, the terrain is lowered under them
+VERGE_DROP = 0.04                 # the shoulder lies this far under the road edge (more makes a trough a wheel leaving the road feels)
+EMBANKMENT_SLOPE = 0.5            # rise / run of the slope from the shoulder to the ground (1:2, cut or fill; 2:3 jolted a car leaving the road)
+RIBBON_MIN = 6.5                  # a ribbon reaches at least this far from the edge: past every corner the bench lowers (0.5 m + a 4 m cell diagonal)
+RIBBON_REACH = 14.0               # ... and at most this far past the shoulder (steeper ground: the slope stops there)
+RIBBON_SINK = 0.06                # the terrain under a ribbon lies this far below it
+APRON = 6.0                       # beyond the ribbon, the terrain as it was before the drape is redrawn this wide (a 4 m cell diagonal and a bit)
+FOLD_FRACTION = 0.7               # on the inside of a bend a ribbon (apron included) reaches at most this share of the edge's radius
+APRON_LIFT = 0.02                 # ... this far above it
+ORTHO_ROAD_MASK = 2.0             # terrain vertices this close to a road take the colour of the nearest bare ground instead of the photo's (asphalt)
 
 
 @dataclass(frozen=True)

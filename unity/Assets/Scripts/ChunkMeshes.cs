@@ -83,7 +83,7 @@ public class ChunkMeshes
                     mb.Quad(mb.Vertex(l0, Concrete), mb.Vertex(l1, Concrete), mb.Vertex(l1 + dn, Concrete), mb.Vertex(l0 + dn, Concrete));
                     mb.Quad(mb.Vertex(r0, Concrete), mb.Vertex(r0 + dn, Concrete), mb.Vertex(r1 + dn, Concrete), mb.Vertex(r1, Concrete));
                 }
-                else
+                else if (r.ribbon == null)                       // BM07 worlds draw the embankment ribbon with the terrain instead
                 {
                     Vector3 out0 = Flat(l0 - r0).normalized, out1 = Flat(l1 - r1).normalized;
                     Verge(mb, d, r0, r1, -out0, -out1, !r.dirt); Verge(mb, d, l1, l0, out1, out0, !r.dirt);
@@ -98,7 +98,7 @@ public class ChunkMeshes
             for (int t = 0; t + 2 < j.tri.Length; t += 3) mb.Tri(first + j.tri[t], first + j.tri[t + 1], first + j.tri[t + 2]);
             for (int e = 0; e < j.mouth.Length; e++)              // kerb edges get the verge, road mouths do not
             {
-                if (j.mouth[e]) continue;
+                if (j.mouth[e] || j.ribbon != null) continue;
                 Vector3 a = mb.V[first + j.edge[e * 2]], b = mb.V[first + j.edge[e * 2 + 1]], along = Flat(b - a);
                 if (along.sqrMagnitude < 1e-6f) continue;
                 Vector3 outward = new Vector3(along.z, 0f, -along.x).normalized;      // the surface lies on the left of the edge
@@ -281,6 +281,7 @@ public class ChunkMeshes
     public static ChunkMeshes BuildNear(ChunkData d, ChunkMeshes m)
     {
         m.BuildTerrainFull(d);
+        m.BuildRibbons(d);
         m.BuildMarks(d);
         var local = new RoadIndex(); local.Add(-2, d.Roads, d.Junctions); local.Add(-1, d.Ctx, d.CtxJunctions);      // own + neighbouring roads: clearance for everything solid
         var boxes = m.BuildBuildingDetail(d, local);
@@ -306,7 +307,84 @@ public class ChunkMeshes
                 int a = z * CV + x, b = a + CV, c = a + 1, e = b + 1;
                 if (((x + z) & 1) == 0) { mb.Tri(a, b, e); mb.Tri(a, e, c); } else { mb.Tri(a, b, c); mb.Tri(c, b, e); }
             }
+        void Skirt(int i0, int i1)                                                       // hides the cracks against a neighbour drawn with the 16 m mesh
+        {
+            int s0 = mb.Vertex(mb.V[i0] + Vector3.down * 2f, mb.C[i0]), s1 = mb.Vertex(mb.V[i1] + Vector3.down * 2f, mb.C[i1]);
+            mb.Tri(i0, i1, s1); mb.Tri(i0, s1, s0); mb.Tri(i0, s1, i1); mb.Tri(i0, s0, s1);
+        }
+        bool south = d.cj > 0, north = d.cj < WorldData.NCZ - 1, west = d.ci > 0, east = d.ci < WorldData.NCX - 1;      // none on the world's own border
+        for (int i = 0; i < CV - 1; i++)
+        {
+            if (south) Skirt(i, i + 1);
+            if (north) Skirt((CV - 1) * CV + i, (CV - 1) * CV + i + 1);
+            if (west) Skirt(i * CV, (i + 1) * CV);
+            if (east) Skirt(i * CV + CV - 1, (i + 1) * CV + CV - 1);
+        }
     }
+
+    /// <summary>Ground colour of the 4 m grid at (x, z), bilinear (clamped to the chunk).</summary>
+    static Color32 GroundColour(ChunkData d, float x, float z)
+    {
+        const int CV = ChunkData.CV;
+        float fx = Mathf.Clamp((x - d.x0) / WorldData.Cell, 0, CV - 1.001f), fz = Mathf.Clamp((z - d.z0) / WorldData.Cell, 0, CV - 1.001f);
+        int ix = (int)fx, iz = (int)fz; float tx = fx - ix, tz = fz - iz; var c = new float[3];
+        for (int k = 0; k < 3; k++)
+        {
+            float c00 = d.Col[(iz * CV + ix) * 3 + k], c10 = d.Col[(iz * CV + ix + 1) * 3 + k], c01 = d.Col[((iz + 1) * CV + ix) * 3 + k], c11 = d.Col[((iz + 1) * CV + ix + 1) * 3 + k];
+            c[k] = Mathf.Lerp(Mathf.Lerp(c00, c10, tx), Mathf.Lerp(c01, c11, tx), tz);
+        }
+        return new Color32((byte)c[0], (byte)c[1], (byte)c[2], 255);
+    }
+
+    /// <summary>
+    /// BM07 embankment ribbons (Ribbons.cs) drawn with the terrain: a gravel strip along paved roads, then the shoulder, the slope and the
+    /// apron in the ground's colour, and a lip down from the apron's end that hides any seam with the 4 m grid. Each side of a road is
+    /// one strip: a cross-section's seven vertices (and the lip's foot) are shared by the segments on either side of it.
+    /// </summary>
+    void BuildRibbons(ChunkData d)
+    {
+        var mb = Terrain; var pts = new Vector3[Ribbons.Points];
+        int[] Section(bool paved)
+        {
+            var idx = new int[Ribbons.Points + 1];
+            for (int k = 0; k < Ribbons.Points; k++) idx[k] = mb.Vertex(pts[k], paved && k <= 1 ? Shoulder : GroundColour(d, pts[k].x, pts[k].z));
+            idx[Ribbons.Points] = mb.Vertex(pts[Ribbons.Points - 1] + Vector3.down * Ribbons.Lip, mb.C[idx[Ribbons.Points - 1]]);
+            return idx;
+        }
+        bool Inside(Vector3 p) => WorldData.InBounds(p.x, p.z);                      // nothing past the world's edge
+        void Between(int[] a, int[] b, bool left)
+        {
+            if (!Inside(mb.V[a[Ribbons.Points - 1]]) || !Inside(mb.V[b[Ribbons.Points - 1]])) return;
+            for (int q = 0; q + 1 < Ribbons.Points; q++) Ribbons.Quad(a[q], b[q], b[q + 1], a[q + 1], left, (x, y, z) => { if (Ribbons.Upright(mb.V[x], mb.V[y], mb.V[z])) mb.Tri(x, y, z); });
+            int e = Ribbons.Points - 1, f = Ribbons.Points;                          // the lip, seen from either side
+            mb.Tri(a[e], b[e], b[f]); mb.Tri(a[e], b[f], a[f]); mb.Tri(a[e], b[f], b[e]); mb.Tri(a[e], a[f], b[f]);
+        }
+        foreach (var r in d.Roads)
+        {
+            if (!Ribbons.Has(r)) continue;
+            for (int side = 0; side < 2; side++)
+            {
+                int[] prev = null;
+                for (int k = 0; k < r.Count; k++)
+                {
+                    bool used = (k > 0 && r.drawn[k - 1]) || (k + 1 < r.Count && r.drawn[k]);
+                    if (!used) { prev = null; continue; }
+                    Ribbons.RoadSection(r, k, side, pts); var cur = Section(!r.dirt);
+                    if (prev != null && r.drawn[k - 1]) Between(prev, cur, side == 0);
+                    prev = cur;
+                }
+            }
+        }
+        foreach (var j in d.Junctions)
+        {
+            if (j.ribbon == null) continue;
+            var at = new Dictionary<int, int[]>();
+            int[] Of(int i) { if (!at.TryGetValue(i, out var v)) { Ribbons.JunctionSection(j, i, pts); at[i] = v = Section(!j.dirt); } return v; }
+            for (int e = 0; e < j.mouth.Length; e++)
+                if (!j.mouth[e]) Between(Of(j.edge[e * 2]), Of(j.edge[e * 2 + 1]), false);
+        }
+    }
+
 
     /// <summary>
     /// Road markings by French practice, from the real data (carriageway width, lane count, one-way, road kind):

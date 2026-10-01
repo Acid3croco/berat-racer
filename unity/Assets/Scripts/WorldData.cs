@@ -16,6 +16,7 @@ public class RoadData
     public float[][] lineAcross;         // per lane line, per point: fraction of the way from the left edge to the right one; negative where not painted
     public byte[] marks;                 // per segment: bit 0 painted, bit 1 / 2 no overtaking along / against the line, bits 3-4 edge lines (0 none, 1 dashed, 2 solid)
     public float[] arrows = new float[0]; public int[] arrowBits = new int[0];      // turn arrows: x y z dx dz each; bits 1 left, 2 through, 4 right
+    public float[] ribbon;               // BM07 embankment per point: left then right side, each shoulder width, toe distance / height, outer distance / height, apron heights (Ribbons.cs; null: none)
     public float[] pts, left, right;     // centreline and the two edges of the carriageway, x y z per point. The edges carry the cross slope.
     public int[] giveWayAt = new int[0]; public bool[] giveWayAfter = new bool[0];      // points where this road meets a junction as the minor road (a give-way line is painted); After: the drawn road lies after the point
     public bool[] drawn;                 // per segment: is it rendered and driven on? Not inside a junction: the junction surface covers it, the centreline stays for the traffic.
@@ -61,6 +62,7 @@ public class JunctionData
     public bool dirt; public float[] v;      // x y z per vertex
     public int[] tri;                        // three vertex indices per triangle, clockwise seen from above
     public int[] edge; public bool[] mouth;  // outline: two vertex indices per edge, the surface on its left; mouth: the edge is where a road joins (no kerb there)
+    public float[] ribbon;                   // BM07 per vertex: outward normal (x, z), then the embankment as for roads
 }
 /// <summary>BM07: one element of the lane graph (tools/roads/lanegraph.py): a polyline a car follows from start to end, then onto one of its successors.</summary>
 public class LaneElem
@@ -183,7 +185,7 @@ public class ChunkData
             {
                 d.LowH = Floats(br, LV * LV);
                 d.Roads = ReadRoads(br, version); d.Ctx = ReadRoads(br, version);
-                d.Junctions = ReadJunctions(br); d.CtxJunctions = ReadJunctions(br);
+                d.Junctions = ReadJunctions(br, version); d.CtxJunctions = ReadJunctions(br, version);
             }
             else if (magic == "BM02" || magic == "BM03" || magic == "BM04") LegacyChunk.ReadRoads(br, magic, d);      // worlds built before the road pipeline
             else throw new InvalidDataException(path);
@@ -233,6 +235,7 @@ public class ChunkData
                 r.marks = br.ReadBytes(n - 1);
                 int na = br.ReadByte(); r.arrows = new float[na * 5]; r.arrowBits = new int[na];
                 for (int k = 0; k < na; k++) { var f = Floats(br, 5); System.Array.Copy(f, 0, r.arrows, k * 5, 5); r.arrowBits[k] = br.ReadByte(); }
+                if (br.ReadByte() != 0) r.ribbon = Floats(br, n * 2 * Ribbons.Profile);
             }
             else r.surface = r.dirt ? "dirt" : "asphalt";
             a[i] = r;
@@ -256,7 +259,7 @@ public class ChunkData
         return a;
     }
 
-    static JunctionData[] ReadJunctions(BinaryReader br)
+    static JunctionData[] ReadJunctions(BinaryReader br, int version)
     {
         int count = br.ReadInt32(); var a = new JunctionData[count];
         for (int i = 0; i < count; i++)
@@ -266,6 +269,7 @@ public class ChunkData
             j.tri = UShorts(br, br.ReadInt32() * 3);
             int ne = br.ReadInt32(); j.edge = UShorts(br, ne * 2);
             var flags = br.ReadBytes(ne); j.mouth = new bool[ne]; for (int k = 0; k < ne; k++) j.mouth[k] = flags[k] != 0;
+            if (version >= 7) j.ribbon = Floats(br, j.v.Length / 3 * (Ribbons.Profile + 2));
             a[i] = j;
         }
         return a;

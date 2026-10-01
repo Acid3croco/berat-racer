@@ -121,8 +121,8 @@ def junction_meshes(network):
 
 def cloud(piece_list, meshes):
     """Points of the ground-level road surface: dict of xy (n, 2), z, grad (n, 2), tan (n, 2: direction of the road),
-    hw (half width of the road across the point, 0 in junctions)."""
-    xy, z, grad, tan_, hw = [], [], [], [], []
+    hw (half width of the road across the point, 0 in junctions), crest (how sharply the road bends down there: 1 / radius, 0 on a sag)."""
+    xy, z, grad, tan_, hw, crest = [], [], [], [], [], []
     for piece in piece_list:
         if piece.bridge or piece.tunnel:
             continue
@@ -134,11 +134,13 @@ def cloud(piece_list, meshes):
 
         tan = np.c_[lerp(piece.tan[:, 0]), lerp(piece.tan[:, 1])]
         grade = lerp(np.gradient(piece.z, s)) if len(s) > 2 else np.full(len(t), (piece.z[-1] - piece.z[0]) / max(s[-1], 1e-6))
+        bend = lerp(np.gradient(np.gradient(piece.z, s), s)) if len(s) > 2 else np.zeros(len(t))       # vertical curvature: negative over a crest
         xy.append(np.c_[lerp(piece.xy[:, 0]), lerp(piece.xy[:, 1])])
         z.append(lerp(piece.z))
         grad.append(tan * grade[:, None] + np.c_[-tan[:, 1], tan[:, 0]] * lerp(piece.tilt)[:, None])
         tan_.append(tan)
         hw.append(lerp(piece.hw))
+        crest.append(np.maximum(-bend, 0.0))
     for junction, vertices in meshes:
         points = np.vstack([vertices[:, :2], vertices[junction.triangles][:, :, :2].mean(axis=1)])
         xy.append(points)
@@ -146,9 +148,10 @@ def cloud(piece_list, meshes):
         grad.append(np.tile(junction.plane[1:], (len(points), 1)))
         tan_.append(np.tile([1.0, 0.0], (len(points), 1)))
         hw.append(np.zeros(len(points)))
+        crest.append(np.zeros(len(points)))
     if not xy:
-        return dict(xy=np.zeros((0, 2)), z=np.zeros(0), grad=np.zeros((0, 2)), tan=np.zeros((0, 2)), hw=np.zeros(0))
-    return dict(xy=np.vstack(xy), z=np.concatenate(z), grad=np.vstack(grad), tan=np.vstack(tan_), hw=np.concatenate(hw))
+        return dict(xy=np.zeros((0, 2)), z=np.zeros(0), grad=np.zeros((0, 2)), tan=np.zeros((0, 2)), hw=np.zeros(0), crest=np.zeros(0))
+    return dict(xy=np.vstack(xy), z=np.concatenate(z), grad=np.vstack(grad), tan=np.vstack(tan_), hw=np.concatenate(hw), crest=np.concatenate(crest))
 
 
 def thin(points, every):

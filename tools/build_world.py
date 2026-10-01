@@ -178,6 +178,53 @@ def densify_pts(pts, step=0.5):
         t = (np.arange(n) / n)[:, None]; out.append(a[None, :] + (b - a)[None, :] * t)
     return np.vstack(out) if out else pts
 
+def road_ribbons(pieces, meshes, natural, footprint):
+    """Embankment ribbons (roads/terrain.py) of the roads and junction kerbs: [(owner, side, edge points (n, 3), outward (n, 2),
+    profile (n, 5), segments)], side 0 / 1 for a road's left / right, -1 for a junction's kerbs."""
+    out_list, normal_at = [], {}
+    for p in pieces:
+        if p.bridge or p.tunnel or not p.drawn.any(): continue
+        across = p.left[:, :2] - p.right[:, :2]
+        out = across / np.maximum(np.hypot(across[:, 0], across[:, 1]), 1e-6)[:, None]
+        drawn = np.flatnonzero(p.drawn)
+        for side, (edge, o) in enumerate(((p.left, out), (p.right, -out))):
+            out_list.append((p, side, edge, o, road_terrain.ribbon_profile(edge, o, natural, footprint), [(k, k + 1) for k in drawn]))
+            for k in {int(drawn[0]), int(drawn[-1]) + 1}:
+                normal_at[(edge[k, 0], edge[k, 1])] = o[k]
+    for j, v in meshes:
+        kerb = j.boundary[j.boundary[:, 2] == 0]
+        if not len(kerb): continue
+        out = np.zeros((len(v), 2))
+        for a, b in kerb[:, :2]:
+            d = v[b, :2] - v[a, :2]
+            out[a] += [d[1], -d[0]]; out[b] += [d[1], -d[0]]                          # the surface lies on the left: outward is to the right
+        out /= np.maximum(np.hypot(out[:, 0], out[:, 1]), 1e-9)[:, None]
+        for i in range(len(v)):                                                      # where a kerb meets a road edge, the road's ribbon continues
+            if (v[i, 0], v[i, 1]) in normal_at: out[i] = normal_at[(v[i, 0], v[i, 1])]
+        used = np.unique(kerb[:, :2])
+        prof = np.zeros((len(v), 5))
+        prof[used] = road_terrain.ribbon_profile(v[used], out[used], natural, footprint)
+        out_list.append((j, -1, v, out, prof, [tuple(e) for e in kerb[:, :2]]))
+    return out_list
+
+def ribbon_tris(ribbons):
+    """The ribbons' triangles without their aprons: what the terrain is lowered under."""
+    tris = [road_terrain.ribbon_triangles(road_terrain.ribbon_points(edge, o, prof[:, :5]), segs) for _, _, edge, o, prof, segs in ribbons if segs]
+    return np.concatenate(tris) if tris else np.zeros((0, 3, 3))
+
+def shape_under_ribbons(H, ribbons, x0, z0):
+    """The terrain under the ribbons: lowered under them (drape). A lowered corner tilts its 4 m triangles up to a cell diagonal past the
+    ribbon: the apron redraws the terrain as it was (H before the drape) over that band. Where a triangle straddling the ribbon's
+    outer part still rises through it, it is the ground itself showing (measured: median 1.5 cm, p90 7 cm)."""
+    tris = ribbon_tris(ribbons)
+    out = road_terrain.drape(H, x0, z0, CELL, tris, road_config.RIBBON_SINK)
+    for i, (owner, side, edge, o, prof, segs) in enumerate(ribbons):                # the apron: the terrain before the drape, a little above it
+        width = road_terrain.apron_width(edge, o, prof) if side >= 0 else np.full(len(edge), road_config.APRON)
+        a = road_terrain.apron_points(edge, o, prof, width).reshape(-1, 2)
+        rr, cc, ww = road_terrain._mesh_corners(H.shape[0], H.shape[1], x0, z0, CELL, a)
+        ribbons[i] = (owner, side, edge, o, np.c_[prof, ((H[rr, cc] * ww).sum(axis=0) + road_config.APRON_LIFT).reshape(-1, 2), width], segs)
+    return out
+
 def tunnel_holes(H, pieces, x0, z0):
     """4 m cells cut out of the terrain over a tunnel road wherever the ground there is less than TUNNEL_CLEARANCE above the road
     (the portals: the hill face meets the road there). (rows, cols) of cells, True = hole."""
@@ -378,8 +425,8 @@ def runs_by_chunk(pts_xz, values=None):
 def chunk_of(x, z):
     return int(np.floor((x + HALF) / CHUNK)), int(np.floor((z + HALF) / CHUNK))
 
-def put_roads(buf, items):
-    """Road records of a chunk: [(piece, first sample, one past the last sample)]."""
+def put_roads(buf, items, ribbons):
+    """Road records of a chunk: [(piece, first sample, one past the last sample)]; `ribbons`: {id(piece): (left, right) profiles}."""
     wi(buf, len(items))
     for p, a, b in items:
         e = p.edge
@@ -395,6 +442,9 @@ def put_roads(buf, items):
         for i, after in lines: buf += struct.pack("<HB", i, 1 if after else 0)
         wstr(buf, e.surface); buf.append(p.limits[1])                                # BM07: OSM surface, limit against the piece's direction
         put_lane_marks(buf, p, a, b)
+        sides = ribbons.get(id(p))                                                     # BM07: embankment ribbon per point and side: shoulder, toe d / y, outer d / y, apron y x 2, apron width
+        buf.append(1 if sides else 0)
+        if sides: wfa(buf, np.c_[sides[0][a:b], sides[1][a:b]])
 
 def put_lane_marks(buf, p, a, b):
     """BM07 lane markings of a road run (samples a .. b - 1): the lane lines (kind, then per point the fraction of the way from the
@@ -429,8 +479,8 @@ def put_lanes(buf, elements):
         wi(buf, e.left); wi(buf, e.right)
         buf.append(min(len(e.yields), 255)); buf += np.asarray(e.yields[:255], "<i4").tobytes()
 
-def put_junctions(buf, items):
-    """Junction meshes of a chunk: [(junction, vertices)]."""
+def put_junctions(buf, items, ribbons):
+    """Junction meshes of a chunk: [(junction, vertices)]; `ribbons`: {id(junction): (normals, profiles)}."""
     wi(buf, len(items))
     for j, v in items:
         buf.append(0 if j.paved else 1)
@@ -438,6 +488,8 @@ def put_junctions(buf, items):
         tri = road_surface.junction_triangles(j, v)
         wi(buf, len(tri)); buf += tri.astype("<u2").tobytes()
         wi(buf, len(j.boundary)); buf += j.boundary[:, :2].astype("<u2").tobytes(); buf += j.boundary[:, 2].astype(np.uint8).tobytes()
+        normals, prof = ribbons.get(id(j), (np.zeros((len(v), 2)), np.zeros((len(v), 8))))   # BM07: per vertex the kerb's outward normal and ribbon
+        wfa(buf, np.c_[normals, prof])
 
 @functools.lru_cache(maxsize=1)
 def code_key():
@@ -527,12 +579,20 @@ def process_sector(args):
         drop = 1.4 * (1.0 - np.clip((dd - (hw + 2.5)) / 3.5, 0.0, 1.0))
         h[m] = np.minimum(h[m], seg[ii, 2] - drop)
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
-    H = road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud)
-    H = road_terrain.bench(H, win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
+    # the terrain stays natural beside the roads: the embankment ribbons are drawn over it, and it is lowered under them
+    ribbons = road_ribbons(pieces, meshes, lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2), footprint)
+    H = road_terrain.bench(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
+    H = shape_under_ribbons(H, ribbons, win.x0, win.z0)
+    # the 16 m terrain, drawn far away without ribbons, keeps the old embankments: blended to the road, then benched under it
+    H_far = road_terrain.bench(road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
+    ribbon_piece, ribbon_junction = {}, {}
+    for owner, side, _, o, prof, _ in ribbons:
+        if side < 0: ribbon_junction[id(owner)] = (o, prof)
+        else: ribbon_piece.setdefault(id(owner), [None, None])[side] = prof
     holes = tunnel_holes(H, pieces, win.x0, win.z0)
     troughs = carried_water(areas, H, wmask, wlevel, pieces, win.x0, win.z0, nv)
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
-    LOW = correlate(H, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
+    LOW = correlate(H_far, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
     LOW = road_terrain.bench(LOW, win.x0, win.z0, LOD_CELL, footprint, road_surface.thin(cloud, 4), road_config.LOD_SINK)
 
     # ---- ground colour
@@ -540,6 +600,7 @@ def process_sector(args):
     rgb = np.stack([win.sample(band, gx.ravel(), gz.ravel(), 4) for band in ortho], axis=1).reshape(nv, nv, 3)
     cov = maximum_filter(win.mnh, 3) > 1.3
     covered = win.sample(cov.astype(np.float32), gx.ravel(), gz.ravel(), 2).reshape(nv, nv) > 0.4
+    covered |= footprint.distance(gx, gz) < road_config.ORTHO_ROAD_MASK                  # asphalt in the photo is not the ground's colour either
     C = ground_colour(rgb, covered)
     far_raw = soften(grade(gaussian_filter(rgb, sigma=(2, 2, 0))))                  # far view keeps forests and villages (no cover removal)
     low_col = uniform_filter(far_raw, size=(4, 4, 1), mode="nearest")               # 16 m LOD colours
@@ -734,8 +795,8 @@ def process_sector(args):
             buf += q.tobytes(); buf += tc.astype(np.uint8).tobytes()
             buf += np.clip(low_col[r0:r0 + CV:4, c0:c0 + CV:4], 0, 255).astype(np.uint8).tobytes()
             wfa(buf, LOW[r0 // 4:r0 // 4 + LV, c0 // 4:c0 // 4 + LV])                 # heights of the 16 m terrain (already kept below the roads)
-            put_roads(buf, road_b.get(key, [])); put_roads(buf, ctx_b.get(key, []))
-            put_junctions(buf, junc_b.get(key, [])); put_junctions(buf, jctx_b.get(key, []))
+            put_roads(buf, road_b.get(key, []), ribbon_piece); put_roads(buf, ctx_b.get(key, []), ribbon_piece)
+            put_junctions(buf, junc_b.get(key, []), ribbon_junction); put_junctions(buf, jctx_b.get(key, []), ribbon_junction)
             wi(buf, len(area_b.get(key, [])))
             for ring in area_b.get(key, []): wi(buf, len(ring)); wfa(buf, ring.ravel())
             wi(buf, len(wline_b.get(key, [])))

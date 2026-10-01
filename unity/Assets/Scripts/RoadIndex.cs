@@ -14,6 +14,11 @@ public class RoadIndex
     struct Line { public Vector2 a, b; public bool bridge; public int owner; }
     const float CellSize = 12f, FadeWidth = 0.6f;
     readonly Dictionary<long, List<Tri>> grid = new Dictionary<long, List<Tri>>();
+    // BM07 embankment ribbons: the ground beside the roads (not a road). Asked for many times per physics step (wheels, hull, contact
+    // patch): their own fine grid, and each triangle's bounding box checked before anything else.
+    struct RTri { public Vector2 a, b, c; public float ya, yb, yc, x0, z0, x1, z1; public int owner; }
+    const float RibbonCell = 4f;
+    readonly Dictionary<long, List<RTri>> ribbons = new Dictionary<long, List<RTri>>();
     readonly Dictionary<long, List<Line>> lines = new Dictionary<long, List<Line>>();
     readonly Dictionary<int, List<long>> ownerCells = new Dictionary<int, List<long>>();
 
@@ -42,10 +47,39 @@ public class RoadIndex
         }
     }
 
+    readonly Dictionary<int, List<long>> ribbonCells = new Dictionary<int, List<long>>();
+
+    /// <summary>The embankment ribbons of these roads and junctions as ground for the car (BM07; only where the car can be: the near chunks).</summary>
+    public void AddRibbons(int owner, RoadData[] roads, JunctionData[] junctions)
+    {
+        if (!ribbonCells.TryGetValue(owner, out var cells)) ribbonCells[owner] = cells = new List<long>();
+        Ribbons.Triangles(roads, junctions, (a, b, c) =>
+        {
+            var t = new RTri { a = new Vector2(a.x, a.z), b = new Vector2(b.x, b.z), c = new Vector2(c.x, c.z), ya = a.y, yb = b.y, yc = c.y, owner = owner,
+                               x0 = Mathf.Min(a.x, Mathf.Min(b.x, c.x)), x1 = Mathf.Max(a.x, Mathf.Max(b.x, c.x)), z0 = Mathf.Min(a.z, Mathf.Min(b.z, c.z)), z1 = Mathf.Max(a.z, Mathf.Max(b.z, c.z)) };
+            for (int cx = Mathf.FloorToInt(t.x0 / RibbonCell); cx <= Mathf.FloorToInt(t.x1 / RibbonCell); cx++)
+                for (int cz = Mathf.FloorToInt(t.z0 / RibbonCell); cz <= Mathf.FloorToInt(t.z1 / RibbonCell); cz++)
+                {
+                    long key = Key(cx, cz);
+                    if (!ribbons.TryGetValue(key, out var list)) ribbons[key] = list = new List<RTri>();
+                    list.Add(t); cells.Add(key);
+                }
+        });
+    }
+
+    public void RemoveRibbons(int owner)
+    {
+        if (!ribbonCells.TryGetValue(owner, out var cells)) return;
+        foreach (long key in new HashSet<long>(cells))
+            if (ribbons.TryGetValue(key, out var rl)) { rl.RemoveAll(t => t.owner == owner); if (rl.Count == 0) ribbons.Remove(key); }
+        ribbonCells.Remove(owner);
+    }
+
     static Vector3 V(JunctionData j, int i) => new Vector3(j.v[i * 3], j.v[i * 3 + 1], j.v[i * 3 + 2]);
 
-    void AddTri(List<long> cells, Vector3 a, Vector3 b, Vector3 c, Surface s, bool bridge, int owner, bool tunnel = false)
+    void AddTri(List<long> cells, Vector3 a, Vector3 b, Vector3 c, Surface s, bool bridge, int owner, bool tunnel = false, Dictionary<long, List<Tri>> into = null)
     {
+        into = into ?? grid;
         var t = new Tri { a = new Vector2(a.x, a.z), b = new Vector2(b.x, b.z), c = new Vector2(c.x, c.z), ya = a.y, yb = b.y, yc = c.y, s = s, bridge = bridge, tunnel = tunnel, owner = owner };
         float m = FadeWidth + 0.1f;                                         // a query near a cell border must still find the road
         int x0 = Cell(Mathf.Min(t.a.x, Mathf.Min(t.b.x, t.c.x)) - m), x1 = Cell(Mathf.Max(t.a.x, Mathf.Max(t.b.x, t.c.x)) + m);
@@ -54,7 +88,7 @@ public class RoadIndex
             for (int cz = z0; cz <= z1; cz++)
             {
                 long key = Key(cx, cz);
-                if (!grid.TryGetValue(key, out var list)) grid[key] = list = new List<Tri>();
+                if (!into.TryGetValue(key, out var list)) into[key] = list = new List<Tri>();
                 list.Add(t); cells.Add(key);
             }
     }
@@ -78,6 +112,7 @@ public class RoadIndex
         foreach (long key in new HashSet<long>(cells))
         {
             if (grid.TryGetValue(key, out var list)) { list.RemoveAll(t => t.owner == owner); if (list.Count == 0) grid.Remove(key); }
+            if (ribbons.TryGetValue(key, out var rl)) { rl.RemoveAll(t => t.owner == owner); if (rl.Count == 0) ribbons.Remove(key); }
             if (lines.TryGetValue(key, out var ll)) { ll.RemoveAll(l => l.owner == owner); if (ll.Count == 0) lines.Remove(key); }
         }
         ownerCells.Remove(owner);
@@ -141,6 +176,24 @@ public class RoadIndex
     }
 
     public Surface Query(float x, float z, float refY, out float deckY) => Query(x, z, refY, out deckY, out _, out _);
+
+    /// <summary>Height of the embankment ribbon at (x, z) (the highest where two overlap: the one drawn on top), NaN where there is none.</summary>
+    public float RibbonHeight(float x, float z)
+    {
+        float best = float.NaN;
+        if (!ribbons.TryGetValue(Key(Mathf.FloorToInt(x / RibbonCell), Mathf.FloorToInt(z / RibbonCell)), out var list)) return best;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var t = list[i];
+            if (x < t.x0 || x > t.x1 || z < t.z0 || z > t.z1) continue;
+            float area = (t.b.x - t.a.x) * (t.c.y - t.a.y) - (t.b.y - t.a.y) * (t.c.x - t.a.x); if (Mathf.Abs(area) < 1e-6f) continue;
+            float wb = ((x - t.a.x) * (t.c.y - t.a.y) - (z - t.a.y) * (t.c.x - t.a.x)) / area, wc = ((t.b.x - t.a.x) * (z - t.a.y) - (t.b.y - t.a.y) * (x - t.a.x)) / area;
+            if (wb < 0f || wc < 0f || wb + wc > 1f) continue;
+            float y = (1f - wb - wc) * t.ya + wb * t.yb + wc * t.yc;
+            if (!(y <= best)) best = y;
+        }
+        return best;
+    }
 
     /// <summary>Distance from (x,z) to the nearest drivable surface (decks included); -1 when on one. 999 when no road is within a dozen metres.</summary>
     public float EdgeClearance(float x, float z)

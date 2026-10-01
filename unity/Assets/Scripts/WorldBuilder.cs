@@ -280,6 +280,7 @@ public class WorldBuilder : MonoBehaviour
     {
         c.state = State.Near;
         c.terrain = MakeObject("terrain", c.root, m.Terrain.ToMesh("terrain"), terrainMat, false, true);
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-noribbonphysics") < 0) Roads.AddRibbons(c.key, c.data.Roads, c.data.Junctions);
         if (!m.Marks.Empty) c.marks = MakeObject("marks", (c.roads != null ? c.roads : c.terrain).transform, m.Marks.ToMesh("marks"), markMat);
         if (c.buildings != null && !m.Facades.Empty) c.facades = MakeObject("facades", c.buildings.transform, m.Facades.ToMesh("facades"), markMat, false, true);
         if (c.buildings != null && !m.Collision.Empty && System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-nobcol") < 0)
@@ -307,7 +308,7 @@ public class WorldBuilder : MonoBehaviour
         var mc = c.buildings != null ? c.buildings.GetComponent<MeshCollider>() : null;
         if (mc != null) { if (mc.sharedMesh != null) Destroy(mc.sharedMesh); Destroy(mc); }
         c.terrain = c.marks = c.facades = c.trees = c.street = null;
-        RemoveObstacles(c); c.state = State.Mid;
+        RemoveObstacles(c); c.state = State.Mid; Roads.RemoveRibbons(c.key);
         c.data.Trees = c.data.Shrubs = null; c.data.HasNear = false;
     }
 
@@ -435,7 +436,9 @@ public class WorldBuilder : MonoBehaviour
         surface = Roads.Query(x, z, refY, out float deck, out float roadY, out float wgt);
         if (TerrainPhysicsOnly) { return float.IsNaN(deck) ? terrain : deck + RoadLift; }        // old behaviour (benchmark comparison)
         if (!float.IsNaN(deck)) return deck + RoadLift;
-        if (wgt > 0f) return Mathf.Lerp(terrain, roadY + RoadLift, wgt);      // on the carriageway the physics surface IS the ribbon; it fades into the terrain over 0.6 m
+        float ribbon = Roads.RibbonHeight(x, z);                                // BM07: beside the road the ground is the embankment ribbon drawn over the (lowered) terrain
+        if (!float.IsNaN(ribbon)) terrain = ribbon;
+        if (wgt > 0f) return Mathf.Lerp(terrain, roadY + RoadLift, wgt);      // on the carriageway the physics surface IS the road; it fades into the ground over 0.6 m
         float wl = Data.WaterLevel(x, z);
         if (!float.IsNaN(wl) && terrain < wl - 0.02f) surface = Surface.Water;
         return terrain;

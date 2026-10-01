@@ -40,6 +40,7 @@ def read_roads(r, version):
             road["lines"] = [(kind, r.fl(n)) for kind in kinds]                                   # (kind, fraction across per point)
             road["marks"] = np.frombuffer(r.take(n - 1), np.uint8)
             road["arrows"] = [(r.fl(5), r.u8()) for _ in range(r.u8())]
+            road["ribbon"] = r.fl(16 * n).reshape(n, 2, 8) if r.u8() else None
         roads.append(road)
     return roads
 
@@ -59,7 +60,7 @@ def read_lanes(r):
     return out
 
 
-def read_junctions(r):
+def read_junctions(r, version):
     out = []
     for _ in range(r.i()):
         r.u8()
@@ -67,7 +68,10 @@ def read_junctions(r):
         tri = np.frombuffer(r.take(6 * r.i()), "<u2").reshape(-1, 3)
         ne = r.i()
         edge = np.frombuffer(r.take(4 * ne), "<u2").reshape(-1, 2)
-        out.append(dict(v=v, tri=tri, edge=edge, mouth=np.frombuffer(r.take(ne), np.uint8).astype(bool)))
+        j = dict(v=v, tri=tri, edge=edge, mouth=np.frombuffer(r.take(ne), np.uint8).astype(bool))
+        if version >= 7:
+            j["ribbon"] = r.fl(10 * len(v)).reshape(-1, 10)                        # outward normal (2), profile (8) per vertex
+        out.append(j)
     return out
 
 
@@ -85,7 +89,7 @@ def parse_mid(raw):
     r.take(CV * CV * 3); r.take(LV * LV * 3)
     d["LOW"] = r.fl(LV * LV).reshape(LV, LV).astype(np.float64)
     d["road_list"], d["ctx_list"] = read_roads(r, version), read_roads(r, version)
-    d["junction_list"], d["ctx_junction_list"] = read_junctions(r), read_junctions(r)
+    d["junction_list"], d["ctx_junction_list"] = read_junctions(r, version), read_junctions(r, version)
     d["roads"], d["ctx"], d["junctions"] = len(d["road_list"]), len(d["ctx_list"]), len(d["junction_list"])
     d["areas"] = r.i()
     for _ in range(d["areas"]): r.fl(3 * r.i())
@@ -95,8 +99,10 @@ def parse_mid(raw):
     d["lane_list"] = read_lanes(r) if version >= 7 else []
     d["holes"] = np.frombuffer(r.take(2 * r.i()), "<u2").astype(int) if version >= 7 else np.zeros(0, int)
     d["bld"] = r.i()
+    d["bld_list"] = []
     for _ in range(d["bld"]):
-        r.fl(2 * r.i()); r.fl(3); r.fl(r.i()); r.take(6); r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)
+        outline = r.fl(2 * r.i()).reshape(-1, 2); base, height, rise = r.fl(3); r.fl(r.i()); r.take(6); kind = r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)
+        d["bld_list"].append(dict(outline=outline, base=float(base), height=float(height), rise=float(rise), kind=kind))
     assert r.o == len(raw), (r.o, len(raw))
     return d
 
