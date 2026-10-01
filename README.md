@@ -70,8 +70,8 @@ Road benchmark (autopilot, 150 s on the real roads): invisible stops 3 -> 0, ver
 ```sh
 uv sync
 cd tools
-uv run python fetch_big.py        # LiDAR HD MNT/MNH (2 m) + orthophoto (4 m), 900 tiles, resumable  -> tools/data/big
-uv run python fetch_vectors.py    # BD TOPO roads, buildings, hydrography + OSM points of interest, 10 x 10 sectors, resumable
+uv run python sources.py fetch data/big/small_sectors.json   # optional: the builds fetch the tiles they lack themselves (LiDAR, orthophoto,
+                                                              # BD TOPO, RPG, BD Haie, OSM) -> tools/data/big/src, resumable
 uv run python -m roads build      # roads of the area -> data/big/roads/ (default area: the 10 x 10 km "small" map; docs/roads.md)
 uv run python build_world.py --list data/big/small_sectors.json --out ../world_small --far-cache data/big/far_small_v2.npz
 uv run python check_roads.py ../world_small      # no terrain above a road, every road end meets its junction
@@ -79,7 +79,7 @@ uv run python check_roads.py ../world_small      # no terrain above a road, ever
 
 Run the player on a generated world with `BERAT_WORLD=/path/to/world_small`. The 1,000 km² and region worlds in `world/` predate the road pipeline (it solves one build area at a time, sized for the small map so far); they still load, with their old roads.
 
-`build_world.py` processes the sectors of 3.2 km in parallel, each with a 240 m margin so borders match exactly (`--sectors 4:4,5:5` for a subset, `--jobs N`). The area is `CX`, `CY` in `tools/fetch.py` (Lambert-93) and `HALF` in `fetch_big.py`: change them to build a different place in France.
+`build_world.py` processes the sectors of 3.2 km in parallel, each with a 240 m margin so borders match exactly (`--sectors 4:4,5:5` for a subset, `--jobs N`). The map's origin is `CX`, `CY` in `tools/fetch.py` (Lambert-93); any sector list on that grid builds, its source tiles fetched on demand (docs/build-scaling.md).
 
 ## Headless tests
 

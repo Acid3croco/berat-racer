@@ -1,31 +1,23 @@
 """Raster tiles (LiDAR ground `mnt`, canopy / surface height `mnh`, orthophoto `ortho`) assembled into one window of local coordinates.
 
 Local coordinates: x = east, z = north, metres from the Berat centre. Tile (i, j) of size `tile_m` covers x in [-HALF + i * tile_m, +tile_m).
-The original 10 x 10 sector block lives in float32 .npy files, every other sector in the compressed files of data/big/hg.
+The tiles are files of sources.py (data/big/src/{kind}/), fetched there on demand.
 """
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 from scipy.ndimage import distance_transform_edt, map_coordinates, maximum_filter, median_filter, minimum_filter
+
+import sources
 
 HALF = 16000
 SECTOR = 3200
-NS = 2 * HALF // SECTOR           # 10 sectors per side of the original block (stored as .npy tiles)
 SPIKE = 100.0                     # m: a 2 m ground pixel this far from its 5 x 5 median is a data error
 MIN_GROUND = -20.0                # m: nothing in the region lies below this, lower samples are data errors
 BIG = Path("data/big")
 
 TILE_M = {"mnt": 1600, "mnh": 1600, "ortho": 3200}
 RES = {"mnt": 2, "mnh": 2, "ortho": 4}
-
-
-def tile_file(kind, i, j, tile_m):
-    """The file holding raster tile (i, j) of `kind` (it may not exist)."""
-    si, sj = i * tile_m // SECTOR, j * tile_m // SECTOR                               # sector owning the tile
-    if 0 <= si < NS and 0 <= sj < NS:
-        return BIG / f"{kind}_{i}_{j}.npy"
-    return BIG / "hg" / (f"ortho_{i}_{j}.jpg" if kind == "ortho" else f"{kind}_{i}_{j}.npz")
 
 
 def tiles_over(kind, x0, z0, width, height):
@@ -35,33 +27,9 @@ def tiles_over(kind, x0, z0, width, height):
             for i in range((x0 + HALF) // tile_m, (x0 + width + HALF - 1) // tile_m + 1)]
 
 
-def file_stamp(path):
-    """What tells whether a data file changed: its name, size and modification time (None when it does not exist)."""
-    path = Path(path)
-    if not path.exists():
-        return str(path), None
-    stat = path.stat()
-    return str(path), stat.st_size, stat.st_mtime_ns
-
-
 def stamp(x0, z0, width, height, kinds):
-    """The stamps of every raster file a `Mosaic` of this rectangle reads."""
-    return [file_stamp(tile_file(kind, i, j, TILE_M[kind])) for kind in kinds for i, j in tiles_over(kind, int(x0), int(z0), int(width), int(height))]
-
-
-def read_tile(kind, i, j, tile_m):
-    """One raster tile (i, j) of `kind`, north row first, or None if the file is missing."""
-    f = tile_file(kind, i, j, tile_m)
-    if not f.exists():
-        return None
-    if f.suffix == ".npy":
-        return np.load(f)
-    if kind == "ortho":
-        return np.asarray(Image.open(f).convert("RGB"))
-    a = np.load(f)["a"]
-    if kind == "mnt":
-        return np.where(a == 65535, np.nan, a / 20.0 - 100).astype(np.float32)
-    return (a / 10.0).astype(np.float32)
+    """Content hashes of every raster tile a `Mosaic` of this rectangle reads (None for a missing one)."""
+    return [(kind, i, j, sources.stamp(kind, i, j)) for kind in kinds for i, j in tiles_over(kind, int(x0), int(z0), int(width), int(height))]
 
 
 class Mosaic:
@@ -87,7 +55,7 @@ class Mosaic:
             out = np.full((rows, cols), np.nan if kind == "mnt" else 0.0, np.float32)
         px = tile_m // res
         for i, j in tiles_over(kind, self.x0, self.z0, self.width, self.height):
-            a = read_tile(kind, i, j, tile_m)
+            a = sources.read_raster(kind, i, j)
             if a is None:
                 continue
             tx0, tz1 = -HALF + i * tile_m, -HALF + (j + 1) * tile_m                    # tile north-west corner

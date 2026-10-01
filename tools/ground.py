@@ -1,4 +1,4 @@
-"""What covers the ground, per 4 m terrain vertex, and the dressing that goes with it (fetch_ground.py gets the data).
+"""What covers the ground, per 4 m terrain vertex, and the dressing that goes with it (sources.py gets the data).
 
   class       per vertex, from the most specific source that says something: OSM / BD TOPO areas that name a use (car park, vineyard,
               orchard, cemetery, pitch, farmyard, wood, scrub) > the RPG crop of the declared parcel > OSM generic land use (residential,
@@ -17,12 +17,8 @@
   hedges      BD Haie lines where the LiDAR still sees vegetation; their height from it (HEDGE_HEIGHT), shrubs on them dropped
   tree kind   per LiDAR tree, from the vegetation zone it stands in: broadleaf, conifer, poplar, fruit (orchards), else unknown (hash)
 """
-import gzip
 import io
-import json
 import zlib
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
 import shapely
@@ -75,10 +71,6 @@ TREE_KINDS = {"Forêt fermée de feuillus": BROADLEAF, "Forêt ouverte": BROADLE
               "Peupleraie": POPLAR, "Verger": FRUIT}
 
 
-def rpg_codes(vec_dir):
-    return {c["code_culture"]: c["libelle_groupe_culture"] for c in json.loads((Path(vec_dir) / "rpg_codes.json").read_text())}
-
-
 def rpg_class(props, codes):
     code = props.get("code_cultu")
     return RPG_CODES.get(code) or RPG_GROUPS.get(codes.get(code), NONE)
@@ -125,29 +117,6 @@ def measure_rows(cx, cy):
     return float((gradient + np.pi / 2) % np.pi), float(np.hypot(jxx - jyy, 2 * jxy) / (jxx + jyy + 1e-9))
 
 
-def rows_path(big, tag):
-    return Path(big) / "vec" / f"rows_{tag}.json.gz"
-
-
-def measure_all(parcels, path, threads=6):
-    """Measure the rows of every rowed parcel of ROW_SAMPLE_AREA or more not measured yet; cache {id: [radians, coherence]}."""
-    from fetch import CX, CY
-    done = json.loads(gzip.open(path).read()) if path.exists() else {}
-    todo = [(pid, poly) for pid, poly in parcels if pid not in done and poly.area >= ROW_SAMPLE_AREA]
-    def one(item):
-        pid, poly = item
-        inner = poly.buffer(-10)
-        p = (inner if not inner.is_empty else poly).representative_point()
-        return pid, measure_rows(p.x + CX, p.y + CY)
-    with ThreadPoolExecutor(threads) as pool:
-        for pid, value in pool.map(one, todo):
-            done[pid] = list(value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt") as fh:
-        json.dump(done, fh)
-    return done
-
-
 def row_angle(pid, poly, measured):
     m = measured.get(pid)
     if m is not None and m[1] >= ROW_COHERENCE:
@@ -157,7 +126,7 @@ def row_angle(pid, poly, measured):
 
 def areas(load, osm_feats, local, codes, measured):
     """[(polygon, class, rank, row angle or None, id, measured)] of every source, in local metres. `load(name)`: the sector's features
-    of a fetch_ground layer; `local(geometry)`: to local coordinates."""
+    of a ground layer (sources.py); `local(geometry)`: to local coordinates."""
     out = []
     def polys(g):
         return [g] if g.geom_type == "Polygon" else [q for q in getattr(g, "geoms", []) if q.geom_type == "Polygon"]

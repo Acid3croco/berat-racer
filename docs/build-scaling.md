@@ -78,3 +78,43 @@ World build (`tools/build_world.py`):
 
 Fetchers: one file per area for OSM roads, junction control, OSM land use, OSM roof tags, orthophoto row measurements; POIs per
 departement; rasters and BD TOPO per tile already.
+
+## Step 2: source tiles, fetched on demand (`tools/sources.py`)
+
+One layout for every source, one file per tile and kind under `data/big/src/<kind>/`: the LiDAR rasters per 1.6 km tile, the
+orthophoto per 3.2 km tile, and everything else per sector tile (3.2 km): BD TOPO layers (roads, buildings, water, vegetation,
+transport, structures, `non_communication`), RPG, BD Haie, OSM from the massif-extractor database on mace (drivable ways, control
+nodes) and from Overpass (land use, car parks, roof tags, turn restrictions, points of interest, place names: one query per tile,
+the five answers separated by `out count`), and the orthophoto row measurements of the rowed parcels. A line or area is kept in
+every tile its box meets (readers de-duplicate on its id), a point in the tile holding it.
+
+A build asks for the tiles of its sectors and their neighbours (`sources.ensure`, called by `python -m roads build` and
+`build_world.py`); whatever is missing is fetched for those tiles only, written atomically (re-running resumes), each service with
+its own pool (IGN WMS 4, WFS 3, mace 1 ssh session per 40 tiles, Overpass 1 query at a time 2 s apart, orthophoto crops 6). The
+fetch report (requests, MB and seconds per service) goes to `data/big/profile/fetch_<tag>.json`. `uv run python sources.py status
+<list>` says what a list has and lacks.
+
+Rasters are stored lossless and leaner: the uint16 codes (5 cm ground, 0.1 m canopy) as the difference along each row, zstd level
+19 (decoded in 2.5 ms a tile; xz was 31 ms); the float32 tiles of the original 10 x 10 block with their bytes shuffled, zstd.
+The keys of the incremental builds now hash the content of every tile a sector or a height tile read (`sources.stamp`), not
+file names and times.
+
+Conversion of today's caches (`convert_sources.py`, once, nothing downloaded): rasters re-encoded and checked bit for bit before
+the old file was removed; BD TOPO files moved (the Haute-Garonne ones gzipped); the per-area OSM files split into the tiles they
+cover wholly (a tile only partly covered is left to be fetched); POIs and place names split by tile.
+
+| source | before | after |
+|---|---|---|
+| LiDAR ground `mnt` (region, 19,348 tiles) | 12.3 GB npz + 1.0 GB float32 .npy (original block) | 5.97 GB |
+| LiDAR height `mnh` | 7.2 GB npz + 1.0 GB .npy | 6.39 GB |
+| orthophoto | 0.53 GB JPEG + 0.19 GB .npy | 0.61 GB (JPEG as served, PNG for the original block) |
+| BD TOPO roads, buildings, water | 4.2 GB (the Haute-Garonne GeoJSON uncompressed) | 1.09 GB |
+| ground layers, OSM | (per-area files) | 0.07 GB |
+| **total** | **~26 GB, 0.53 MB/km²** | **14.1 GB, 0.29 MB/km²** (4,837 sectors, 49,500 km²) |
+
+100 tiles of the original block had been downloaded a second time by the region fetch; the old reader always took the original
+float32 file there, and so does the new layout (the second copies were dropped).
+
+Verified: the small map built from the tiles (roads with `python -m roads build`, then `build_world.py`) gives road sector files
+and all 1,152 chunk files and `far.bin` byte for byte identical to master; `places.json` now holds the place names of the map's
+tiles and their neighbours instead of the whole region.

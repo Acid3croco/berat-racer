@@ -1,4 +1,4 @@
-"""Turn the downloaded LiDAR HD tiles + BD TOPO vectors (tools/fetch_big.py, tools/fetch_vectors.py) into streamable chunk files.
+"""Turn the LiDAR HD tiles, BD TOPO vectors and OSM data (tools/sources.py, fetched per tile on demand) into streamable chunk files.
 
 The 32 x 32 km area is cut into 10 x 10 sectors of 3.2 km. Each sector is processed independently (in parallel) together with a
 240 m margin, so everything computed near a sector border sees the same neighbourhood from both sides and the seams match.
@@ -18,8 +18,8 @@ x in [-16000 + 400 ci, +400), z in [-16000 + 400 cj, +400).
 
 Haute-Garonne extension: the sector list is data/big/hg_sectors.json (indices may be negative; sector (si, sj) covers x in
 [-16000 + 3200 si, +3200), z likewise). The world origin (x0, z0) is the south-west corner of the sector list; chunk files are named with
-indices RELATIVE to it (ci = floor((x - x0) / 400)). Sectors 0..9 x 0..9 read the float32 .npy tiles, all others the compressed files of
-data/big/hg (see HG_README.txt). Terrain heights of a chunk are base + uint16 * step (step >= 5 mm, larger for mountain chunks).
+indices RELATIVE to it (ci = floor((x - x0) / 400)). The source tiles a build needs are fetched first when missing (sources.py).
+Terrain heights of a chunk are base + uint16 * step (step >= 5 mm, larger for mountain chunks).
 
 Rebuilds: a sector leaves a key in <out>/keys, a hash of everything its chunks were made from (its roads, the raster and vector files
 under it, this code and its tuning). A sector whose key is unchanged and whose chunks are all there is not built again (--fresh: build
@@ -49,10 +49,9 @@ import facades
 import ground as land
 import roofs
 import stitch
-import vec_io
+import sources
 from fetch import CX, CY
 from rasters import BIG, HALF, SECTOR, Mosaic
-from vec_io import exists_vec, read_vec
 from roads import build as road_build, config as road_config, surface as road_surface, terrain as road_terrain
 from roads.digest import code_stamp, digest
 
@@ -66,7 +65,6 @@ FAR_CELL = 64
 MARGIN = 240
 DEFAULT_OUT = Path("../world_hg")
 DEFAULT_SPAWN = Path("../world/spawn.json")
-PLACES = BIG / "places.json"      # the map's place names (tools/fetch_places.py), copied into every world
 DEFAULT_LIST = BIG / "hg_sectors.json"
 DEFAULT_FAR_CACHE = BIG / "far_hg.npz"
 FAR_NEUTRAL = (96, 104, 88)       # far colour outside the covered sectors
@@ -81,70 +79,50 @@ class Window(Mosaic):
 
 # ------------------------------------------------------------------ vectors
 
-VECTOR_LAYERS = ("hydro_areas", "hydro_lines", "buildings")
+VECTOR_LAYERS = ("hydro_areas", "hydro_lines", "buildings", "vegetation", "transport", "rpg", "hedges")
+OSM_KINDS = ("osm_ground", "osm_roofs", "osm_pois", "rows")
 
-def vector_bases(name, si, sj):
-    """The vector files (without extension) a sector reads for one layer: its own and its eight neighbours'."""
-    return [BIG / "vec" / f"{name}_{si + di}_{sj + dj}" for dj in (-1, 0, 1) for di in (-1, 0, 1)]
+def tiles_around(si, sj):
+    """The vector tiles a sector reads: its own and its eight neighbours', row by row from the south-west."""
+    return [(si + di, sj + dj) for dj in (-1, 0, 1) for di in (-1, 0, 1)]
 
 def load_vectors(name, si, sj):
-    """Features of every vector file touching the sector's window, de-duplicated on cleabs."""
-    seen, out = set(), []
-    for base in vector_bases(name, si, sj):
-        if not exists_vec(base): continue
-        for feat in read_vec(base):
-            key = feat["properties"].get("cleabs") or feat.get("id")
-            if key in seen: continue
-            seen.add(key); out.append(feat)
-    return out
+    """Features of every vector tile touching the sector's window, de-duplicated on cleabs (else the feature id)."""
+    return sources.read_tiles(name, tiles_around(si, sj))
 
-@functools.lru_cache(maxsize=1)
-def osm_ground(tag):
-    """OSM areas and lines of fetch_ground.py, each with its local bounds (empty when not fetched)."""
-    from fetch_ground import osm_path
-    path = osm_path(tag)
-    if not path.exists(): return []
+def osm_order(f):
+    """Overpass order: nodes, ways, relations, each by id (`osmw123`)."""
+    return "nwr".index(f["id"][3]), int(f["id"][4:])
+
+def osm_ground(si, sj):
+    """OSM areas and lines (land use, car parks, barriers) around a sector, each with its local bounds."""
     out = []
-    for f in json.loads(gzip.open(path).read()):
+    for f in sorted(sources.read_tiles("osm_ground", tiles_around(si, sj)), key=osm_order):
         g = geom_local(f)
         f["_local"], f["_bounds"] = g, g.bounds
         out.append(f)
     return out
 
-@functools.lru_cache(maxsize=1)
-def row_directions(tag):
-    path = land.rows_path(BIG, tag)
-    return json.loads(gzip.open(path).read()) if path.exists() else {}
-
-@functools.lru_cache(maxsize=1)
-def rpg_codes():
-    return land.rpg_codes(BIG / "vec") if (BIG / "vec" / "rpg_codes.json").exists() else {}
-
-def poi_files():
-    return [f for f in [BIG / "vec" / n for n in ("osm_poi.json", "osm_poi_hg.json")] + sorted((BIG / "vec").glob("osm_poi_hg_*.json.gz")) if f.exists()]
-
-@functools.lru_cache(maxsize=1)
-def load_pois():
-    """OSM points of interest of every download (original block, Haute-Garonne bbox, one file per other departement), de-duplicated on (type, id)."""
-    seen, out = set(), []
-    for f in poi_files():
-        text = gzip.open(f, "rt", encoding="utf-8").read() if f.suffix == ".gz" else f.read_text()
-        for e in json.loads(text)["elements"]:
-            if (e["type"], e["id"]) in seen: continue
-            seen.add((e["type"], e["id"])); out.append(e)
+def row_directions(si, sj):
+    out = {}
+    for t in tiles_around(si, sj):
+        out.update(sources.read_tile("rows", *t))
     return out
 
 @functools.lru_cache(maxsize=1)
-def load_poi_points():
-    """The points of interest that name a kind of building: (kinds, names, x, y in local coordinates), in file order."""
+def rpg_codes():
+    return sources.rpg_codes()
+
+def load_poi_points(si, sj):
+    """The points of interest around a sector that name a kind of building: (kinds, names, x, y in local coordinates), by (type, id)."""
     kinds, names, lon, lat = [], [], [], []
-    for e in load_pois():
+    for e in sorted(sources.read_tiles("osm_pois", tiles_around(si, sj)), key=lambda e: ("nwr".index(e["type"][0]), e["id"])):
         where = e if e["type"] == "node" else e["center"]
         kind = poi_kind(e["tags"])
         if not kind: continue
         kinds.append(kind); names.append(e["tags"].get("name", "")); lon.append(where.get("lon")); lat.append(where.get("lat"))
     x, y = Transformer.from_crs(4326, 2154, always_xy=True).transform(np.array(lon, float), np.array(lat, float))
-    return kinds, names, x - CX, y - CY
+    return kinds, names, np.asarray(x) - CX, np.asarray(y) - CY
 
 def feature_bounds(f):
     """(min x, min y, max x, max y) of a GeoJSON polygon / multipolygon feature in its own coordinates, from the outer rings."""
@@ -484,15 +462,15 @@ def put_junctions(buf, items, ribbons):
 @functools.lru_cache(maxsize=1)
 def code_key():
     """What this process builds sectors with: the code, its tuning, the libraries and the points of interest."""
-    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs, facades, land, stitch]
-    return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
+    modules = [sys.modules[__name__], rasters, sources, fetch, road_surface, road_terrain, roofs, facades, land, stitch]
+    return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], rpg_codes())
 
 def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes):
     """Hash of everything the chunks of a sector are made from. Of the roads, what the builder reads: not where a link or a node sits in the network's lists."""
     roads = digest(pieces, [(j.paved, j.polygon, j.centre, j.plane, j.triangles, j.boundary, v) for j, v in meshes], lanes, skip=("link", "a", "b"))
     size = SECTOR + 2 * MARGIN
     ground = rasters.stamp(-HALF + si * SECTOR - MARGIN, -HALF + sj * SECTOR - MARGIN, size, size, kinds=("mnt", "mnh", "ortho"))
-    vectors = [rasters.file_stamp(vec_io.vec_file(base) or base) for name in VECTOR_LAYERS for base in vector_bases(name, si, sj)]
+    vectors = [(name, t, sources.stamp(name, *t)) for name in VECTOR_LAYERS + OSM_KINDS for t in tiles_around(si, sj)]
     return digest(roads, ground, vectors, code_key(), [si, sj, ci0, cj0, far_cell])
 
 def key_file(out_dir, si, sj):
@@ -540,8 +518,8 @@ def process_sector(args):
     # ---- ground areas (tools/ground.py); car parks are paved like the roads, and the photo's colour skips them
     to_local = lambda g: shapely.transform(shapely.force_2d(g), lambda c: c - np.array([CX, CY]))
     wx0, wz0, wx1, wz1 = win.x0, win.z0, win.x0 + win.size, win.z0 + win.size
-    near_osm = [f for f in osm_ground(road_tag) if f["_bounds"][2] >= wx0 and f["_bounds"][0] <= wx1 and f["_bounds"][3] >= wz0 and f["_bounds"][1] <= wz1]
-    garea = [a for a in land.areas(lambda name: load_vectors(name, si, sj), near_osm, to_local, rpg_codes(), row_directions(road_tag))
+    near_osm = [f for f in osm_ground(si, sj) if f["_bounds"][2] >= wx0 and f["_bounds"][0] <= wx1 and f["_bounds"][3] >= wz0 and f["_bounds"][1] <= wz1]
+    garea = [a for a in land.areas(lambda name: load_vectors(name, si, sj), near_osm, to_local, rpg_codes(), row_directions(si, sj))
              if a[0].bounds[2] >= wx0 and a[0].bounds[0] <= wx1 and a[0].bounds[3] >= wz0 and a[0].bounds[1] <= wz1]
     road_polys = road_surface.footprints(pieces, meshes)
     park_stats = {}
@@ -643,7 +621,12 @@ def process_sector(args):
     road_tree = cKDTree(road_pts[:, :2]) if len(road_pts) else None
     owned = box(ox, oz, ox + SECTOR, oz + SECTOR); owned_wide = owned.buffer(6)
     buildings, bpolys, roof_stats, candidates = [], [], {}, []
-    osm_roofs = roofs.osm_buildings(road_tag)
+    osm_roofs = roofs.osm_buildings(tiles_around(si, sj))
+    roof_tree = STRtree([q for q, _ in osm_roofs]) if osm_roofs else None
+    def roof_tags(pt):
+        """Tags of the first OSM building (by id) holding the point."""
+        hits = sorted(i for i in roof_tree.query(pt) if osm_roofs[i][0].contains(pt)) if roof_tree is not None else []
+        return osm_roofs[hits[0]][1] if hits else {}
     reach_lo, reach_hi = (ox + CX - 8, oz + CY - 8), (ox + CX + SECTOR + 8, oz + CY + SECTOR + 8)      # `owned_wide` and a bit, in the features' coordinates
     for f in load_vectors("buildings", si, sj):
         bx0, by0, bx1, by1 = feature_bounds(f)
@@ -715,7 +698,7 @@ def process_sector(args):
         axis, long_, short = (e1 / L, L, Wd) if L >= Wd else (e2 / Wd, Wd, L)
         rise = max(ridge - eave, 0.0)
         if kind in ("church", "chapel"): rise = max(rise, float(short) * 0.32)
-        osm_tags = next((t for q, t in osm_roofs if q.contains(poly.representative_point())), {}) if osm_roofs else {}
+        osm_tags = roof_tags(poly.representative_point())
         near = [candidates[i][1] for i in neighbours.query(poly.buffer(facades.PARTY_DISTANCE)) if candidates[i][1] is not poly]
         party = facades.party_edges(ring, near)
         courtyard_n = sum(len(h.coords) - 1 for h in poly.interiors)
@@ -750,7 +733,7 @@ def process_sector(args):
     # ---- POIs -> kind + name
     if bpolys:
         strtree = STRtree(bpolys)
-        poi_kinds, poi_names, poi_x, poi_y = load_poi_points()
+        poi_kinds, poi_names, poi_x, poi_y = load_poi_points(si, sj)
         for e in np.flatnonzero(shapely.contains_xy(owned.buffer(20), poi_x, poi_y)):
             kind, pt = poi_kinds[e], Point(poi_x[e], poi_y[e])
             hit = [i for i in strtree.query(pt) if bpolys[i].contains(pt)]
@@ -1012,6 +995,9 @@ def main():
     far_cell = a.far_cell
     road_tag = road_build.tag_of(a.list)
     world = [tuple(s) for s in json.loads(Path(a.list).read_text())["sectors"]]
+    fetched = sources.ensure(world, sources.BUILD_KINDS, log=lambda m: print(m, flush=True))
+    if fetched["failures"]:
+        sys.exit(f"source tiles could not be fetched: {fetched['failures'][:3]}")
     if not road_build.sector_path(road_tag, *world[0]).exists():
         sys.exit(f"no roads for {a.list}: run `uv run python -m roads --list {a.list} build` first")
     out = Path(a.out); (out / "chunks").mkdir(parents=True, exist_ok=True)
@@ -1086,8 +1072,8 @@ def main():
         fo.write(fh_.astype("<f4").tobytes()); fo.write(fc_.tobytes())
     (out / "world.json").write_text(json.dumps(dict(x0=x0, z0=z0, ncx=ncx, ncz=ncz, chunk=CHUNK, cell=CELL, cv=CV, farCell=far_cell, farNx=far_nx, farNz=far_nz, lambertE=CX, lambertN=CY)))
     shutil.copy(DEFAULT_SPAWN, out / "spawn.json")
-    if PLACES.exists(): shutil.copy(PLACES, out / "places.json")
-    else: print(f"no {PLACES}: the map will have no place names (run fetch_places.py)", flush=True)
+    places = sources.read_tiles("osm_places", sources.window(world))                 # the place names of the map and around it
+    (out / "places.json").write_text(json.dumps(sorted(places, key=lambda p: (p["r"], -p["pop"])), ensure_ascii=False, separators=(",", ":")))
     print("stopped early:" if stopped else "done,", stopped or "", f"{n_done - unchanged - len(failed)} sectors built, {unchanged} unchanged, failed sectors:", failed, flush=True)
 
 if __name__ == "__main__":

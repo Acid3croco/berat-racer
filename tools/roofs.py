@@ -13,14 +13,9 @@ meet there. A face is the edge's own roof plane: the edge and its nodes, which a
 their position along it. `roof()` returns the faces as triangles; a footprint the simulation cannot settle returns None (the caller
 then lays a flat roof).
 """
-import gzip
-import json
-import time
-
 import numpy as np
 
 EPS = 1e-7
-OVERPASS = "https://overpass-api.de/api/interpreter"
 OSM_SHAPES = {"flat": "flat", "gabled": "gabled", "hipped": "hipped", "pyramidal": "hipped", "half-hipped": "hipped",
               "skillion": "flat", "dome": "hipped", "round": "hipped", "mansard": "hipped", "gambrel": "gabled", "saltbox": "gabled"}
 
@@ -414,58 +409,10 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
     return dict(shape="gabled" if gables.any() else "hipped", tris=tris, wall=shaped[1], pitch=pitch)
 
 
-# ---------------------------------------------------------------- OSM roof tags (Overpass; the OSM database on mace has no buildings)
+# ---------------------------------------------------------------- OSM roof tags (sources.py: Overpass, the OSM database on mace has no buildings)
 
-def osm_cache(tag):
-    from rasters import BIG
-    return BIG / "osm" / f"buildings_{tag}.json.gz"
-
-
-def fetch_osm(area, tag):
-    """OSM buildings of `area` (local metres) that tag their roof or levels, with their outline: cached for `osm_buildings`."""
-    import requests
-    from pyproj import Transformer
-    from fetch import CX, CY
-    x0, z0, x1, z1 = area
-    to_wgs = Transformer.from_crs(2154, 4326, always_xy=True)
-    to_l93 = Transformer.from_crs(4326, 2154, always_xy=True)
-    lon0, lat0 = to_wgs.transform(x0 + CX, z0 + CY)
-    lon1, lat1 = to_wgs.transform(x1 + CX, z1 + CY)
-    box = f"({lat0},{lon0},{lat1},{lon1})"
-    query = f'[out:json][timeout:180];(way["building"]["roof:shape"]{box};way["building"]["building:levels"]{box};way["building"]["roof:orientation"]{box};);out tags geom;'
-    for attempt in range(6):
-        reply = requests.post(OVERPASS, data={"data": query}, timeout=300, headers={"User-Agent": "berat-racer/1.0 (hobby game, non-commercial)"})
-        if reply.ok and reply.text.lstrip().startswith("{"):
-            break
-        time.sleep(10 + 10 * attempt)
-    else:
-        raise RuntimeError(f"Overpass buildings failed: HTTP {reply.status_code}")
-    out = []
-    for way in reply.json()["elements"]:
-        pts = [to_l93.transform(g["lon"], g["lat"]) for g in way.get("geometry", [])]
-        out.append(dict(id=way["id"], tags=way.get("tags", {}), xy=[(x - CX, y - CY) for x, y in pts]))
-    path = osm_cache(tag)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt", encoding="utf-8") as fh:
-        json.dump(out, fh)
-    return path, len(out)
-
-
-def osm_buildings(tag):
-    """[(shapely polygon, tags)] of the cached OSM buildings, or []."""
+def osm_buildings(tiles):
+    """[(shapely polygon, tags)] of the OSM buildings of these tiles that tag their roof or levels, by id."""
     from shapely.geometry import Polygon
-    path = osm_cache(tag)
-    if not path.exists():
-        return []
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        return [(Polygon(b["xy"]), b["tags"]) for b in json.load(fh) if len(b["xy"]) >= 4]
-
-
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent))
-    from roads import build, source
-    list_path = sys.argv[1] if len(sys.argv) > 1 else "data/big/small_sectors.json"
-    sectors = [tuple(s) for s in json.loads(Path(list_path).read_text())["sectors"]]
-    print(fetch_osm(source.area_of(sectors, build.MARGIN), build.tag_of(list_path)))
+    import sources
+    return [(Polygon(b["xy"]), b["tags"]) for b in sorted(sources.read_tiles("osm_roofs", tiles), key=lambda b: b["id"]) if len(b["xy"]) >= 4]

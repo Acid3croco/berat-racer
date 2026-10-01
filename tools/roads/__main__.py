@@ -1,6 +1,6 @@
 """Command line of the road pipeline. Run from tools/:
 
-  uv run python -m roads fetch-osm                  download the OpenStreetMap ways, junction control and turn restrictions of the area (once; ssh to the OSM database host, Overpass, IGN WFS)
+  uv run python -m roads fetch                      fetch the source tiles the area needs and does not have yet (sources.py; `build` does it too)
   uv run python -m roads build                      run every stage, write data/big/roads/<tag>.network.pkl + .report.json, print the report
   uv run python -m roads report                     print the report of the last build
   uv run python -m roads inspect --at X,Z           plan view, height profiles and the surveyed sections around a spot (local metres)
@@ -16,7 +16,9 @@ from pathlib import Path
 import numpy as np
 
 from . import build as build_stage
-from . import controls, debug, osm, source
+import sources
+
+from . import debug
 
 DEFAULT_LIST = "data/big/small_sectors.json"
 
@@ -34,14 +36,10 @@ def print_report(report):
     print("junctions ", json.dumps(report.get("classes", {}).get("junctions", {})))
 
 
-def cmd_fetch_osm(args):
+def cmd_fetch(args):
     sectors = [tuple(s) for s in json.loads(Path(args.list).read_text())["sectors"]]
-    area, tag = source.area_of(sectors, build_stage.MARGIN), build_stage.tag_of(args.list)
-    if not args.controls_only:
-        path, count = osm.fetch(area, tag)
-        print(f"{count} OSM ways -> {path}")
-    path, counts = controls.fetch(area, tag)
-    print(f"junction control {counts} -> {path}")
+    report = sources.ensure(sectors, build_stage.ROAD_KINDS)
+    print(json.dumps(report, indent=1))
 
 
 def cmd_build(args):
@@ -89,9 +87,7 @@ def main():
     parser = argparse.ArgumentParser(prog="python -m roads", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--list", default=DEFAULT_LIST, help="sector list json: the area to build")
     commands = parser.add_subparsers(dest="command", required=True)
-    fetch = commands.add_parser("fetch-osm")
-    fetch.add_argument("--controls-only", action="store_true", help="only junction control and turn restrictions (the ways are cached already)")
-    fetch.set_defaults(run=cmd_fetch_osm)
+    commands.add_parser("fetch").set_defaults(run=cmd_fetch)
     build = commands.add_parser("build")
     build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
     build.add_argument("--fresh", action="store_true", help="smooth every stroke and solve every height tile again, even those whose inputs did not change")

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+import sources
 from rasters import BIG, HALF, SECTOR
 
 from . import alignment, controls, crossing, geometry, graph as graph_stage, junction as junction_stage, lanegraph, lanes, metrics, osm, profile, source, surface
@@ -28,6 +29,7 @@ class Network:
     report: dict = field(default_factory=dict)
 
 
+ROAD_KINDS = ("roads", "osm_roads", "osm_controls", "osm_restrictions", "non_communication", "mnt", "mnh")     # what the stages read (sources.py)
 SECTOR_REACH = 260                # a sector file holds the roads within this distance of its sector (the world builder's window margin is 240)
 
 
@@ -95,9 +97,11 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, fresh=Fal
         log(f"  {stage:<10} {report[stage]}")
         clock = time.time()
 
+    fetched = sources.ensure(sectors, ROAD_KINDS, log=log)
+    if fetched["failures"]:
+        raise RuntimeError(f"source tiles could not be fetched: {fetched['failures'][:3]}")
     edges = source.load_edges(sectors, MARGIN)
-    ways = osm.load(tag)
-    osm_stats = osm.enrich(edges, ways) if ways is not None else dict(skipped="no OSM cache: run `python -m roads fetch-osm`")
+    osm_stats = osm.enrich(edges, osm.load(sources.window(sectors)))
     edges = source.apply_overrides(edges, source.load_overrides())
     done("source", edges=len(edges), km=round(sum(e.length for e in edges) / 1000.0, 1), osm=osm_stats)
 
@@ -131,7 +135,7 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, fresh=Fal
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
     done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag), fresh=fresh))
     done("lanes", **lanes.layout_all(links, graph.edges))
-    network.lanes, stats = lanegraph.build(network, controls.load(tag))
+    network.lanes, stats = lanegraph.build(network, controls.load(sources.window(sectors)))
     done("lanegraph", **stats)
     report["surface"] = metrics.surface_report(network)
     report["classes"] = metrics.profile_report(network)

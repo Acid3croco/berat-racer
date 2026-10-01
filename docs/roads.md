@@ -7,7 +7,7 @@ Code: `tools/roads/` (one module per stage), consumed by `tools/build_world.py`,
 
 ```sh
 cd tools
-uv run python -m roads fetch-osm      # once: OpenStreetMap ways of the area (ssh to the OSM database host, read-only)
+uv run python -m roads fetch          # optional: the source tiles of the area (build does it too; sources.py)
 uv run python -m roads build          # ~1.5 min for the small map: every stage, report, artefact in data/big/roads/
 uv run python build_world.py --list data/big/small_sectors.json --out ../world_small --far-cache data/big/far_small_v2.npz
 uv run python check_roads.py ../world_small      # terrain never above a road nor a bridge deck, every road end meets its junction
@@ -130,7 +130,7 @@ two-way / one-way and the direction of a one-way road.
    circular arc between the arriving and leaving tangents (round the island, counter-clockwise, where a roundabout is swallowed
    into one junction). Movements: no U-turn on the same arm and nothing sharper than 160° unless it is the only way out;
    `turn:lanes` says which lane may turn where, else the leftmost lane turns left and the rightmost right; OSM restriction
-   relations (Overpass) and BD TOPO `non_communication` remove more (`python -m roads fetch-osm` caches them with the OSM stop /
+   relations (Overpass) and BD TOPO `non_communication` remove more (sources.py caches them per tile with the OSM stop /
    give-way / lights nodes in `data/big/osm/controls_<tag>.json.gz`). Control per arm: an OSM sign or lights on the arm (the
    unsigned arms of a signed junction have the priority), else entering a roundabout gives way, the lower-ranked arm gives way,
    equal ranks give priority to the right. Each connector lists the connectors it gives way to (paths that cross or merge, of

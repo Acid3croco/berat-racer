@@ -1,4 +1,4 @@
-"""What the ground data covers over a sector list: per source and class, the features and the share of the map's area (fetch_ground.py).
+"""What the ground data covers over a sector list: per source and class, the features and the share of the map's area (sources.py).
 
 Usage: uv run python check_ground.py data/big/small_sectors.json      (the fetched data)
        uv run python check_ground.py --world ../world_small               (what a built world carries: BN02 near files)
@@ -12,11 +12,11 @@ from pathlib import Path
 import shapely
 from shapely.geometry import box, shape
 
+import sources
 from build_world import load_vectors
-from fetch_ground import LAYERS, osm_path
-from fetch_hg import X0, Y0
-from fetch_vectors import SECTOR
-from roads import build as road_build
+from sources import SECTOR, X0, Y0
+
+LAYERS = ("vegetation", "transport", "structures", "rpg", "hedges")
 
 CLASS_FIELD = {"vegetation": "nature", "transport": "nature", "structures": "nature", "rpg": "code_cultu", "hedges": None}
 
@@ -49,7 +49,7 @@ def measure(list_path):
             length[label] += g.length if g.geom_type in ("LineString", "MultiLineString") else 0
         report[name] = {k: dict(share=round(v / area.area, 4), km=round(length[k] / 1000, 1)) for k, v in per_class.most_common()}
         report[name]["_covered_share"] = round(sum(per_class.values()) / area.area, 4)
-    feats = json.loads(gzip.open(osm_path(road_build.tag_of(list_path))).read())
+    feats = sources.read_tiles("osm_ground", sorted({(si, sj) for si, sj in sectors}))
     per_class, length = Counter(), Counter()
     for f in feats:
         g = shape(f["geometry"])
