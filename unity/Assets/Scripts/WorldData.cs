@@ -183,12 +183,49 @@ public class ChunkData
     public bool HasNear;
     public const int CV = WorldData.CV, LV = 26;
 
+    /// <summary>Height of the ground as drawn at (x, z): in a cut cell the ground around the paved surfaces (BM07 seam), else the
+    /// 4 m terrain triangle holding the point (two per cell, the diagonal alternating like ChunkMeshes builds them).</summary>
     public float Height(float x, float z)
     {
         float fx = Mathf.Clamp((x - x0) / WorldData.Cell, 0, CV - 1.001f), fz = Mathf.Clamp((z - z0) / WorldData.Cell, 0, CV - 1.001f);
         int ix = (int)fx, iz = (int)fz; float tx = fx - ix, tz = fz - iz;
-        float h00 = H[iz * CV + ix], h10 = H[iz * CV + ix + 1], h01 = H[(iz + 1) * CV + ix], h11 = H[(iz + 1) * CV + ix + 1];
-        return Mathf.Lerp(Mathf.Lerp(h00, h10, tx), Mathf.Lerp(h01, h11, tx), tz);
+        if (Holes != null && Seam.Length > 0 && Holes[iz * (CV - 1) + ix])
+        {
+            float y = SeamHeight(x, z, iz * (CV - 1) + ix);
+            if (!float.IsNaN(y)) return y;
+        }
+        float a = H[iz * CV + ix], c = H[iz * CV + ix + 1], b = H[(iz + 1) * CV + ix], e = H[(iz + 1) * CV + ix + 1];      // a (x, z), c (x + 1, z), b (x, z + 1), e (x + 1, z + 1)
+        if (((ix + iz) & 1) == 0) return tz >= tx ? a + (b - a) * tz + (e - b) * tx : a + (c - a) * tx + (e - c) * tz;        // diagonal a - e
+        return tx + tz <= 1f ? a + (c - a) * tx + (b - a) * tz : e + (b - e) * (1f - tx) + (c - e) * (1f - tz);                // diagonal b - c
+    }
+
+    List<int>[] seamCells;                               // per 4 m cell, the seam triangles over it (built when the chunk is read)
+
+    internal void IndexSeam()
+    {
+        seamCells = new List<int>[(CV - 1) * (CV - 1)];
+        for (int t = 0; t * 9 + 8 < Seam.Length; t++)
+        {
+            float mnx = float.MaxValue, mxx = float.MinValue, mnz = float.MaxValue, mxz = float.MinValue;
+            for (int q = 0; q < 3; q++) { float px = Seam[t * 9 + q * 3], pz = Seam[t * 9 + q * 3 + 2]; mnx = Mathf.Min(mnx, px); mxx = Mathf.Max(mxx, px); mnz = Mathf.Min(mnz, pz); mxz = Mathf.Max(mxz, pz); }
+            int c0 = Mathf.Clamp((int)((mnx - x0) / WorldData.Cell), 0, CV - 2), c1 = Mathf.Clamp((int)((mxx - x0) / WorldData.Cell), 0, CV - 2);
+            int r0 = Mathf.Clamp((int)((mnz - z0) / WorldData.Cell), 0, CV - 2), r1 = Mathf.Clamp((int)((mxz - z0) / WorldData.Cell), 0, CV - 2);
+            for (int r = r0; r <= r1; r++) for (int c = c0; c <= c1; c++) (seamCells[r * (CV - 1) + c] ??= new List<int>()).Add(t);
+        }
+    }
+
+    float SeamHeight(float x, float z, int cell)
+    {
+        var list = seamCells?[cell]; if (list == null) return float.NaN;
+        foreach (int t in list)
+        {
+            int k = t * 9;
+            float ax = Seam[k], az = Seam[k + 2], bx = Seam[k + 3], bz = Seam[k + 5], cx = Seam[k + 6], cz = Seam[k + 8];
+            float det = (bx - ax) * (cz - az) - (bz - az) * (cx - ax); if (Mathf.Abs(det) < 1e-8f) continue;
+            float wb = ((x - ax) * (cz - az) - (z - az) * (cx - ax)) / det, wc = ((bx - ax) * (z - az) - (bz - az) * (x - ax)) / det;
+            if (wb >= -1e-4f && wc >= -1e-4f && wb + wc <= 1f + 1e-4f) return Seam[k + 1] + wb * (Seam[k + 4] - Seam[k + 1]) + wc * (Seam[k + 7] - Seam[k + 1]);
+        }
+        return float.NaN;
     }
 
     static string Str(BinaryReader br)
@@ -255,7 +292,7 @@ public class ChunkData
                 d.Lanes = ReadLanes(br);
                 int nh = br.ReadInt32();
                 if (nh > 0) { d.Holes = new bool[(CV - 1) * (CV - 1)]; var hb = br.ReadBytes(nh * 2); for (int k = 0; k < nh; k++) d.Holes[hb[k * 2] | hb[k * 2 + 1] << 8] = true; }
-                int ns = br.ReadInt32(); d.Seam = Floats(br, ns * 9); d.SeamF = Floats(br, ns * 3);
+                int ns = br.ReadInt32(); d.Seam = Floats(br, ns * 9); d.SeamF = Floats(br, ns * 3); if (ns > 0) d.IndexSeam();
             }
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)

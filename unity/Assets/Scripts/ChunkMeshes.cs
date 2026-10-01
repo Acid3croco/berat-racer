@@ -867,6 +867,7 @@ public class ChunkMeshes
         for (int i = 0; i < count; i++)
         {
             float x = d.Trees[i * 4], y = d.Trees[i * 4 + 1], z = d.Trees[i * 4 + 2], h = d.Trees[i * 4 + 3];
+            if (d.Seam.Length > 0) y = d.Height(x, z);                                              // the ground as drawn (near roads, the field's)
             if (Water_(d, new Vector3(x, y, z))) continue;
             if (TouchesBridge(local, x, y, z, Mathf.Clamp(h * 0.28f, 0.9f, 4f), h)) continue;                  // nothing grows through a bridge deck
             uint hash = (uint)((i + d.key * 7919) * 2654435761u); float rnd = (hash >> 8 & 255) / 255f;
@@ -1024,6 +1025,7 @@ public class ChunkMeshes
         for (int i = 0; i < count; i++)
         {
             float x = d.Shrubs[i * 4], y = d.Shrubs[i * 4 + 1], z = d.Shrubs[i * 4 + 2], h = d.Shrubs[i * 4 + 3];
+            if (d.Seam.Length > 0) y = d.Height(x, z);
             if (Water_(d, new Vector3(x, y, z))) continue;
             if (TouchesBridge(local, x, y, z, 1.4f, h)) continue;
             uint hash = (uint)((i + d.key * 6007) * 2246822519u); float rnd = (hash >> 9 & 255) / 255f;
