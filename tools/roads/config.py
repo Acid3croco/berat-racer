@@ -28,6 +28,8 @@ LANES_INFERRED_ONEWAY_WIDTH = 6.5    # a one-way road without a lane count has t
 # a two-way road the survey gives one lane is still painted in these classes. Measured on the 20 cm orthophoto of the small map
 # (random one-lane sections, a centre line seen / visible crops): collector 21 / 37, street 1 / 9, local 0 / 11; two lanes 8 / 10
 MARKED_ONE_LANE_CLASSES = ("collector",)
+MARKED_MIN_WIDTH = 4.0            # m surveyed: a paved two-way road this wide gets a centre line whatever its class. A gameplay choice (it
+                                  # helps to read the road while driving), not the ortho: real one-lane locals and streets are mostly unpainted
 EDGE_DASHED_WIDTH = 7.0           # drawn width from which a marked road has dashed edge lines (the 5.5 m surveyed the game used, x WIDTH_SCALE)
 EDGE_SOLID_WIDTH = 8.3            # ... solid edge lines (6.5 m surveyed)
 EDGE_STYLE_WINDOW = 40.0          # the edge style is the majority over this length

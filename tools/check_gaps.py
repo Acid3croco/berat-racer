@@ -28,7 +28,7 @@ from check_roads import parse_mid
 
 CELL, CV, CHUNK = 4.0, 101, 400.0
 ROAD_LIFT = 0.012            # ChunkMeshes.RoadLift
-SKIRT = 0.35                 # ChunkMeshes.SkirtDepth
+SKIRT = 0.34                 # ChunkMeshes: SkirtLength x sin(SkirtAngle), how far the skirt reaches down
 TOLERANCE = 0.01             # m
 OFFSET = 0.02                # m across an open edge
 WORLD_EDGE = 8.0             # m: the band along the world's border that is not checked

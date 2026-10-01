@@ -116,15 +116,15 @@ public class ChunkMeshes
 
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
 
-    const float SkirtDepth = 0.35f;
-    /// <summary>A strip from a paved edge a -> b down and out at 45 degrees (outward is to the right of a -> b), seen from both sides:
-    /// the ground meets the edge at its own vertices, which the road mesh does not share, so hairline cracks would show the sky
-    /// through. Sloped, it slips under the ground beside the road instead of standing as a dark wall.</summary>
+    const float SkirtLength = 0.6f, SkirtAngle = 35f;
+    /// <summary>A strip from a paved edge a -> b going out and down SkirtLength at SkirtAngle below horizontal (outward is to the right of
+    /// a -> b), seen from both sides: the ground meets the edge at its own vertices, which the road mesh does not share, so hairline
+    /// cracks would show the sky through. Flat and sloped, it reads as the road's worn edge rather than a dark wall.</summary>
     static void Skirt(MeshBuilder mb, Vector3 a, Vector3 b, Color32 col)
     {
         Vector3 along = Flat(b - a); if (along.sqrMagnitude < 1e-8f) return;
         Vector3 outward = new Vector3(along.z, 0f, -along.x).normalized;
-        Vector3 dn = (Vector3.down + outward) * SkirtDepth;
+        Vector3 dn = (outward * Mathf.Cos(SkirtAngle * Mathf.Deg2Rad) + Vector3.down * Mathf.Sin(SkirtAngle * Mathf.Deg2Rad)) * SkirtLength;
         int i0 = mb.Vertex(a, col), i1 = mb.Vertex(b, col), i2 = mb.Vertex(b + dn, col), i3 = mb.Vertex(a + dn, col);
         mb.Quad(i0, i1, i2, i3); mb.Quad(i0, i3, i2, i1);
     }

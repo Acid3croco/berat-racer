@@ -63,7 +63,7 @@ def edge_lanes(edge):
         else:
             n = edge.lanes or (2 if edge.width_real >= config.LANES_INFERRED_TWO_WAY_WIDTH else 1)
             along, against = max(n - n // 2, 1), max(n // 2, 1)
-            marked = n >= 2 or edge.klass in config.MARKED_ONE_LANE_CLASSES
+            marked = n >= 2 or edge.klass in config.MARKED_ONE_LANE_CLASSES or edge.width_real >= config.MARKED_MIN_WIDTH
     if edge.dirt or edge.kind == 5:
         marked = False
     if edge.kind == 1:
