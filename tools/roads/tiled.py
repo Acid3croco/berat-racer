@@ -34,6 +34,7 @@ from . import alignment, config, graph as graph_stage, osm, source
 from .digest import code_stamp, digest
 
 TILE = SECTOR
+WORKER_TASKS = 10                 # a worker process is replaced after this many tiles: its memory is what a tile needs, not what piled up
 ALIGN_HALO = 1600.0               # m: how far a tile reads the sections around it for the alignment
 
 
@@ -272,7 +273,7 @@ def align_tile(job):
 def run_rounds(function, area, jobs, fresh, log, label):
     """`function((area, tile, fresh))` for every tile of the area, in four rounds of non-touching tiles."""
     stats = []
-    with ProcessPoolExecutor(jobs) as pool:
+    with ProcessPoolExecutor(jobs, max_tasks_per_child=WORKER_TASKS) as pool:
         for c in range(4):
             batch = [t for t in area.tiles if colour(t) == c]
             futures = [pool.submit(function, (area, t, fresh)) for t in batch]
@@ -487,7 +488,7 @@ def network_tile(job):
 def run_all(function, area, jobs, fresh, log, label):
     """`function((area, tile, fresh))` for every tile of the area, side by side."""
     stats = []
-    with ProcessPoolExecutor(jobs) as pool:
+    with ProcessPoolExecutor(jobs, max_tasks_per_child=WORKER_TASKS) as pool:
         for f in as_completed([pool.submit(function, (area, t, fresh)) for t in area.tiles]):
             stats.append(f.result())
     log(f"    {label}: {len(stats)} tiles")
