@@ -149,26 +149,32 @@ class PavedHeight:
         flat = tris.reshape(-1, 3)
         self.vtree = cKDTree(flat[:, :2]) if len(flat) else None
         self.vy = flat[:, 2]
-        self.ctree = cKDTree(tris[:, :, :2].mean(axis=1)) if len(tris) else None
-        self.reach = float(np.hypot(*(tris[:, :, :2] - tris[:, :, :2].mean(axis=1)[:, None, :]).transpose(2, 0, 1)).max()) if len(tris) else 0.0
+        if len(tris):                                                                    # each triangle's box, grown by what the barycentric
+            lo, hi = tris[:, :, :2].min(axis=1), tris[:, :, :2].max(axis=1)                # tolerance below can reach beyond it
+            grow = SNAP + 2e-3 * (hi - lo).max(axis=1)
+            self.boxes = shapely.STRtree(shapely.box(lo[:, 0] - grow, lo[:, 1] - grow, hi[:, 0] + grow, hi[:, 1] + grow))
 
     def __call__(self, xy):
         out = np.full(len(xy), np.nan)
-        if self.vtree is None:
+        if self.vtree is None or not len(xy):
             return out
-        for i, hit in enumerate(self.vtree.query_ball_point(xy, SNAP)):
-            best = self.vy[hit].min() if hit else np.inf                                    # every surface meeting there counts, vertex or not
-            for t in self.ctree.query_ball_point(xy[i], self.reach + SNAP):
-                a, b, c = self.tris[t]
-                det = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-                if abs(det) < 1e-9:
-                    continue
-                wb = ((xy[i, 0] - a[0]) * (c[1] - a[1]) - (xy[i, 1] - a[1]) * (c[0] - a[0])) / det
-                wc = ((b[0] - a[0]) * (xy[i, 1] - a[1]) - (b[1] - a[1]) * (xy[i, 0] - a[0])) / det
-                if min(wb, wc, 1 - wb - wc) >= -1e-3:
-                    best = min(best, a[2] + wb * (b[2] - a[2]) + wc * (c[2] - a[2]))
-            out[i] = best if np.isfinite(best) else np.nan
-        return out
+        best = np.full(len(xy), np.inf)
+        hits = self.vtree.query_ball_point(xy, SNAP)                                     # every surface meeting there counts, vertex or not
+        count = np.fromiter((len(h) for h in hits), int, len(hits))
+        if count.any():
+            np.minimum.at(best, np.repeat(np.arange(len(xy)), count), self.vy[np.concatenate([h for h in hits if h])])
+        i, t = self.boxes.query(shapely.points(xy))
+        a, b, c = self.tris[t, 0], self.tris[t, 1], self.tris[t, 2]
+        p = xy[i]
+        det = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
+        ok = np.abs(det) >= 1e-9
+        a, b, c, p, i, det = a[ok], b[ok], c[ok], p[ok], i[ok], det[ok]
+        wb = ((p[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (p[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) / det
+        wc = ((b[:, 0] - a[:, 0]) * (p[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (p[:, 0] - a[:, 0])) / det
+        inside = np.minimum(np.minimum(wb, wc), 1 - wb - wc) >= -1e-3
+        z = a[:, 2] + wb * (b[:, 2] - a[:, 2]) + wc * (c[:, 2] - a[:, 2])
+        np.minimum.at(best, i[inside], z[inside])
+        return np.where(np.isfinite(best), best, np.nan)
 
 
 def cut_cells(surfaces, field, x0, z0, cell, rows, cols):
@@ -205,15 +211,20 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     oz = z0 + (r0 + rr[:, None]) * cell + sz.ravel()[None, :] * FILL_STEP
     boxes = shapely.box(ox.ravel(), oz.ravel(), ox.ravel() + FILL_STEP, oz.ravel() + FILL_STEP)
     paved = surfaces.intersection(box(bx0 - 1, bz0 - 1, bx1 + 1, bz1 + 1))
-    pieces = shapely.difference(boxes, paved)
-    tris = []
-    for g in pieces:
-        for part in getattr(g, "geoms", [g]):
-            if part.geom_type == "Polygon" and part.area > 1e-5:
-                tris += [np.array(t.exterior.coords)[:3] for t in shapely.constrained_delaunay_triangles(part).geoms]
-    if not tris:
+    shapely.prepare(paved)
+    pieces = shapely.box(ox.ravel(), oz.ravel(), ox.ravel() + FILL_STEP, oz.ravel() + FILL_STEP, ccw=False)     # a box the paved surfaces miss stays
+    touched = shapely.intersects(paved, boxes)                                             # whole (wound as the difference would give it)
+    pieces[touched] = shapely.difference(boxes[touched], paved)
+    parts = shapely.get_parts(pieces)
+    parts = parts[(shapely.get_type_id(parts) == shapely.GeometryType.POLYGON) & (shapely.area(parts) > 1e-9)]
+    if not len(parts):
         return np.zeros((0, 3, 3)), np.zeros((0, 3))
-    pts = np.array(tris)
+    triangles = shapely.get_parts(shapely.constrained_delaunay_triangles(parts))
+    pts = shapely.get_coordinates(triangles).reshape(len(triangles), 4, 2)[:, :3]
+    a, b, c = (pts[:, k].astype(np.float32) for k in range(3))                        # a triangle with two corners at one point as written (float32:
+    pts = pts[~((a == b).all(1) | (b == c).all(1) | (c == a).all(1))]                 # a road edge through a fill point) covers nothing; its zero-length edge reads as open
+    if not len(pts):
+        return np.zeros((0, 3, 3)), np.zeros((0, 3))
     xy = pts.reshape(-1, 2)
     y, f = field(xy)
     on_paved = shapely.dwithin(paved, shapely.points(xy), SNAP) if not paved.is_empty else np.zeros(len(xy), bool)
