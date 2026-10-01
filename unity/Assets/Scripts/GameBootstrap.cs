@@ -541,6 +541,12 @@ public class GameBootstrap : MonoBehaviour
             ("top", new Vector3(x, g + 60f, z - 0.1f), new Vector3(x, g, z)),
             ("oblique", new Vector3(x - 22f, g + 16f, z - 22f), new Vector3(x, g, z)),
             ("road", new Vector3(x - rdir.x * 22f, g + 2.2f, z - rdir.y * 22f), new Vector3(x + rdir.x * 20f, g + 1f, z + rdir.y * 20f)) };
+        if (float.TryParse(System.Environment.GetEnvironmentVariable("BERAT_SHOT_HEADING"), out float hd))
+        {   // a chase-camera view from the player's spot and heading (the coordinate box's `heading`, degrees from north towards east)
+            Vector3 f = new Vector3(Mathf.Sin(hd * Mathf.Deg2Rad), 0f, Mathf.Cos(hd * Mathf.Deg2Rad));
+            System.Array.Resize(ref views, views.Length + 1);
+            views[views.Length - 1] = ("player", new Vector3(x, g, z) - f * 6f + Vector3.up * 2.2f, new Vector3(x, g, z) + f * 25f);
+        }
         foreach (var v in views)
         {
             camera.transform.position = v.p; camera.transform.LookAt(v.look); shotFocus = v.p; world.ForceStream();

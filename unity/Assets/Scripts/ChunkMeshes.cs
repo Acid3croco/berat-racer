@@ -106,7 +106,7 @@ public class ChunkMeshes
                 if (j.mouth[e]) continue;
                 Vector3 a = mb.V[first + j.edge[e * 2]], b = mb.V[first + j.edge[e * 2 + 1]], along = Flat(b - a);
                 if (along.sqrMagnitude < 1e-6f) continue;
-                if (d.Seam.Length > 0) { Skirt(mb, b, a, col); continue; }
+                if (d.Seam.Length > 0) { Skirt(mb, a, b, col); continue; }
                 if (j.ribbon != null) continue;
                 Vector3 outward = new Vector3(along.z, 0f, -along.x).normalized;      // the surface lies on the left of the edge
                 Verge(mb, d, a, b, outward, outward, !j.dirt);
@@ -117,11 +117,14 @@ public class ChunkMeshes
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
 
     const float SkirtDepth = 0.35f;
-    /// <summary>A strip hanging from a paved edge a -> b, seen from both sides: the ground meets the edge at its own vertices, which the
-    /// road mesh does not share, so hairline cracks would show the sky through.</summary>
+    /// <summary>A strip from a paved edge a -> b down and out at 45 degrees (outward is to the right of a -> b), seen from both sides:
+    /// the ground meets the edge at its own vertices, which the road mesh does not share, so hairline cracks would show the sky
+    /// through. Sloped, it slips under the ground beside the road instead of standing as a dark wall.</summary>
     static void Skirt(MeshBuilder mb, Vector3 a, Vector3 b, Color32 col)
     {
-        Vector3 dn = Vector3.down * SkirtDepth;
+        Vector3 along = Flat(b - a); if (along.sqrMagnitude < 1e-8f) return;
+        Vector3 outward = new Vector3(along.z, 0f, -along.x).normalized;
+        Vector3 dn = (Vector3.down + outward) * SkirtDepth;
         int i0 = mb.Vertex(a, col), i1 = mb.Vertex(b, col), i2 = mb.Vertex(b + dn, col), i3 = mb.Vertex(a + dn, col);
         mb.Quad(i0, i1, i2, i3); mb.Quad(i0, i3, i2, i1);
     }
@@ -395,13 +398,59 @@ public class ChunkMeshes
             mb.Tri(i0, i1, s1); mb.Tri(i0, s1, s0); mb.Tri(i0, s1, i1); mb.Tri(i0, s0, s1);
         }
         bool south = d.cj > 0, north = d.cj < WorldData.NCZ - 1, west = d.ci > 0, east = d.ci < WorldData.NCX - 1;      // none on the world's own border
+        Underlayer(d, mb);
+        bool Cut(int cx, int cz) => d.Holes != null && d.Holes[cz * (CV - 1) + cx];            // a cut cell: no terrain, so no terrain skirt (it would stand up through the ground drawn there)
         for (int i = 0; i < CV - 1; i++)
         {
-            if (south) Skirt(i, i + 1);
-            if (north) Skirt((CV - 1) * CV + i, (CV - 1) * CV + i + 1);
-            if (west) Skirt(i * CV, (i + 1) * CV);
-            if (east) Skirt(i * CV + CV - 1, (i + 1) * CV + CV - 1);
+            if (south && !Cut(i, 0)) Skirt(i, i + 1);
+            if (north && !Cut(i, CV - 2)) Skirt((CV - 1) * CV + i, (CV - 1) * CV + i + 1);
+            if (west && !Cut(0, i)) Skirt(i * CV, (i + 1) * CV);
+            if (east && !Cut(CV - 2, i)) Skirt(i * CV + CV - 1, (i + 1) * CV + CV - 1);
         }
+    }
+
+    const float UnderDepth = 0.4f;
+    /// <summary>A safety net under the near ground: the 4 m grid again, UnderDepth below the lowest of everything drawn in the 3 x 3 cells
+    /// around each vertex (terrain, the seam's ground, road edges), in a dark earth colour. Should any hairline open between the ground's
+    /// pieces, it shows earth instead of the sky (tools/check_gaps.py measures them).</summary>
+    static void Underlayer(ChunkData d, MeshBuilder mb)
+    {
+        if (d.Seam.Length == 0) return;                                                   // older worlds: the terrain is whole
+        const int CV = ChunkData.CV;
+        var low = (float[])d.H.Clone();
+        void Lower(float x, float z, float y)
+        {
+            int cx = Mathf.FloorToInt((x - d.x0) / WorldData.Cell), cz = Mathf.FloorToInt((z - d.z0) / WorldData.Cell);
+            for (int dz = -1; dz <= 2; dz++)
+                for (int dx = -1; dx <= 2; dx++)
+                {
+                    int vx = cx + dx, vz = cz + dz;
+                    if (vx < 0 || vz < 0 || vx >= CV || vz >= CV) continue;
+                    if (y < low[vz * CV + vx]) low[vz * CV + vx] = y;
+                }
+        }
+        for (int k = 0; k + 2 < d.Seam.Length; k += 3) Lower(d.Seam[k], d.Seam[k + 2], d.Seam[k + 1]);
+        foreach (var r in d.Roads)
+        {
+            if (r.bridge || r.tunnel) continue;
+            for (int i = 0; i < r.Count; i++) { Vector3 l = r.P(r.left, i), q = r.P(r.right, i); Lower(l.x, l.z, l.y); Lower(q.x, q.z, q.y); }
+        }
+        foreach (var j in d.Junctions)
+            for (int i = 0; i * 3 < j.v.Length; i++) Lower(j.v[i * 3], j.v[i * 3 + 2], j.v[i * 3 + 1]);
+        int first = mb.V.Count;
+        for (int z = 0; z < CV; z++)
+            for (int x = 0; x < CV; x++)
+            {
+                int gi = z * CV + x;
+                var col = new Color32((byte)(d.Col[gi * 3] * 0.55f), (byte)(d.Col[gi * 3 + 1] * 0.5f), (byte)(d.Col[gi * 3 + 2] * 0.45f), 255);
+                mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, low[gi] - UnderDepth, d.z0 + z * WorldData.Cell), col);
+            }
+        for (int z = 0; z < CV - 1; z++)
+            for (int x = 0; x < CV - 1; x++)
+            {
+                int a = first + z * CV + x, b = a + CV, c2 = a + 1, e = b + 1;
+                if (((x + z) & 1) == 0) { mb.Tri(a, b, e); mb.Tri(a, e, c2); } else { mb.Tri(a, b, c2); mb.Tri(c2, b, e); }
+            }
     }
 
     /// <summary>BN02: 1 where all four neighbours of grid vertex (x, z) share its class, else 0: a pattern fades out at a patch's border
@@ -965,6 +1014,11 @@ public class ChunkMeshes
             int b = Paved.V.Count;
             for (int i = 0; i * 3 < p.v.Length; i++) Paved.Vertex(p.V(i), Asphalt);
             for (int k = 0; k + 2 < p.t.Length; k += 3) Paved.Tri(b + p.t[k], b + p.t[k + 1], b + p.t[k + 2]);
+            var count = new Dictionary<long, int>();                                         // outline edges: used by one triangle only
+            for (int k = 0; k + 2 < p.t.Length; k += 3)
+                for (int e = 0; e < 3; e++) { int u = p.t[k + e], w = p.t[k + (e + 1) % 3]; long key = (long)Mathf.Min(u, w) << 32 | (uint)Mathf.Max(u, w); count.TryGetValue(key, out int n); count[key] = n + 1; }
+            for (int k = 0; k + 2 < p.t.Length; k += 3)                                      // triangles wound clockwise seen from above: outward is to the left of u -> w
+                for (int e = 0; e < 3; e++) { int u = p.t[k + e], w = p.t[k + (e + 1) % 3]; if (count[(long)Mathf.Min(u, w) << 32 | (uint)Mathf.Max(u, w)] == 1) Skirt(Paved, p.V(w), p.V(u), Asphalt); }
         }
         for (int i = 0; i + 3 < d.Bays.Length; i += 4)
         {

@@ -49,6 +49,13 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 | Hairline sky line along road edges | the road is drawn 1.2 cm above its height and the fill adds vertices along its edge the road mesh lacks | - | a 0.35 m skirt under every paved edge | - |
 | Field patterns saw-toothed at their borders (5793, 2001) | the class is flat per triangle | - | a pattern weight per vertex (1 inside a patch, 0 on its border and on the verge), interpolated | - |
 
+| Slices on chunk borders (0, -111), (-1255, -2000), (48, 0) | a 2 m terrain skirt stood up along chunk borders through cut cells, where the ground drawn is lower than the natural terrain | - | no terrain skirt along cut cells | gone in the player-view shots |
+| Shards along road edges in cuttings | the field's pull was diluted by far samples (0.93 instead of 1 on the edge): 35 cm above the road in a 5 m cutting | - | the pull is the strongest edge's, the height the f^4-weighted mix of the near edges | - |
+| Other hairlines (T-junctions) | fill points on edges shared with kept cells, car-park outlines meshed with more points than the fill knew, fill points taking a car park's height where a road below meets it | - | kept-cell edges take the cell's height; the fill cuts around each car park's own triangles; the paved height at outline points is the lowest of every surface there; 45-degree skirts under car-park edges too | `tools/check_gaps.py`: 453 -> 6 of 1.81 M open ground edges (0 holes, 2 cracks of 1 - 5 cm, 4 car-park steps of 2 - 4 cm) |
+| Safety net | - | - | a dark copy of the 4 m grid 0.4 m under the lowest of everything drawn around each vertex: a gap left shows earth, not the sky | roadtest jolt 0.40, harshness 0.28 m/s², 14 hops; 450 MB managed, ready in 3.0 s |
+
+`tools/check_gaps.py WORLD` rebuilds the near ground as the game draws it and looks across every open edge (holes, cracks, steps against paved edges); it exits 1 on any gap.
+
 Shots: [ground field](shots/datainv/fix_ground_field.jpg), [road seam](shots/datainv/fix_road_seam.jpg), [car park entrance](shots/datainv/fix_parking_entrance.jpg), [roundabout](shots/datainv/fix_roundabout_island.jpg), [pond bank](shots/datainv/fix_pond_bank.jpg), [car park](shots/datainv/step10_parking_lot.jpg), [village car park](shots/datainv/step10_parking_village.jpg). Headless test runs now ignore gamepads (a game being played on the same machine steered them).
 
 ### Final report (2026-10-01, branch `data-inventory`, 10 commits on master `136bc6a9`)

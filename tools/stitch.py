@@ -2,7 +2,7 @@
 
 The paved surfaces (carriageways, junctions, car parks) are drawn by themselves. Around them the ground is a height field:
 
-  y(p) = g(p) + sum_i w_i f_i (e_i - g(p)),   f_i = 1 - smoothstep(d_i / W_i),   w_i = f_i^4 / sum_j f_j^4
+  y(p) = g(p) + F (e(p) - g(p)),   F = max_i f_i,   e(p) = sum_i f_i^4 e_i / sum_i f_i^4,   f_i = 1 - smoothstep(d_i / W_i)
 
 over the paved edge samples i near p (edge height e_i, distance d_i, blend width W_i), g the terrain surface itself (the 4 m mesh).
 On a paved edge the field is the edge's height, it leaves it level and meets the terrain tangent to it at W, and where several edges
@@ -87,8 +87,9 @@ class EdgeField:
         e, f = self.influence(p)
         w = f ** 4
         total = w.sum(axis=1)
-        mix = np.where(total > 0, (w * f * (e - g[:, None])).sum(axis=1) / np.maximum(total, 1e-12), 0.0)
-        return g + mix, f.max(axis=1)
+        edge = np.where(total > 0, (w * e).sum(axis=1) / np.maximum(total, 1e-12), g)          # the near edges' heights, the nearest weighing most
+        strength = f.max(axis=1)                                                                 # the pull of the strongest edge: 1 on it
+        return g + strength * (edge - g), strength
 
 
 def paved_edges(pieces, meshes, park_meshes):
@@ -141,7 +142,7 @@ def paved_triangles(pieces, meshes, park_meshes, junction_triangles):
 
 class PavedHeight:
     """Height of the paved surfaces at plan points on their outline: a vertex within SNAP, else the triangle edge through the point
-    (the highest where several meet: the one drawn on top)."""
+    (the lowest where several meet: the ground then never stands above a paved edge, and the higher one's skirt closes the gap)."""
 
     def __init__(self, tris):
         self.tris = tris
@@ -156,10 +157,7 @@ class PavedHeight:
         if self.vtree is None:
             return out
         for i, hit in enumerate(self.vtree.query_ball_point(xy, SNAP)):
-            if hit:
-                out[i] = self.vy[hit].max()
-                continue
-            best = -np.inf
+            best = self.vy[hit].min() if hit else np.inf                                    # every surface meeting there counts, vertex or not
             for t in self.ctree.query_ball_point(xy[i], self.reach + SNAP):
                 a, b, c = self.tris[t]
                 det = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
@@ -168,7 +166,7 @@ class PavedHeight:
                 wb = ((xy[i, 0] - a[0]) * (c[1] - a[1]) - (xy[i, 1] - a[1]) * (c[0] - a[0])) / det
                 wc = ((b[0] - a[0]) * (xy[i, 1] - a[1]) - (b[1] - a[1]) * (xy[i, 0] - a[0])) / det
                 if min(wb, wc, 1 - wb - wc) >= -1e-3:
-                    best = max(best, a[2] + wb * (b[2] - a[2]) + wc * (c[2] - a[2]))
+                    best = min(best, a[2] + wb * (b[2] - a[2]) + wc * (c[2] - a[2]))
             out[i] = best if np.isfinite(best) else np.nan
         return out
 
@@ -226,6 +224,24 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     gx, gz = (xy[:, 0] - x0) / cell, (xy[:, 1] - z0) / cell
     corner = (np.abs(gx - np.round(gx)) < 1e-6) & (np.abs(gz - np.round(gz)) < 1e-6) & (f <= 0) & ~on_paved
     y[corner] = H[np.round(gz[corner]).astype(int), np.round(gx[corner]).astype(int)]         # where the field is the terrain: the grid's own height
+    # a point on an edge shared with a kept cell takes that cell's edge height (the straight line between its corners), or the two
+    # would leave a hairline crack (a T-junction)
+    rows, cols = cut.shape
+    def kept(r, c):
+        inside = (r >= 0) & (r < rows) & (c >= 0) & (c < cols)
+        return inside & ~cut[np.clip(r, 0, rows - 1), np.clip(c, 0, cols - 1)]
+    on_x = (np.abs(gx - np.round(gx)) < 1e-6) & ~on_paved                                     # on a vertical grid line (x constant)
+    cx, rz = np.round(gx).astype(int), np.floor(gz).astype(int)
+    vx = on_x & (kept(rz, cx - 1) | kept(rz, cx))
+    if vx.any():
+        t = gz[vx] - rz[vx]
+        y[vx] = H[rz[vx], cx[vx]] * (1 - t) + H[np.minimum(rz[vx] + 1, H.shape[0] - 1), cx[vx]] * t
+    on_z = (np.abs(gz - np.round(gz)) < 1e-6) & ~on_paved & ~vx                               # on a horizontal grid line (z constant)
+    rz2, cx2 = np.round(gz).astype(int), np.floor(gx).astype(int)
+    vz = on_z & (kept(rz2 - 1, cx2) | kept(rz2, cx2))
+    if vz.any():
+        t = gx[vz] - cx2[vz]
+        y[vz] = H[rz2[vz], cx2[vz]] * (1 - t) + H[rz2[vz], np.minimum(cx2[vz] + 1, H.shape[1] - 1)] * t
     out = np.dstack([pts, y.reshape(-1, 3)])
     a, b, c = out[:, 0, :2], out[:, 1, :2], out[:, 2, :2]
     ccw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
