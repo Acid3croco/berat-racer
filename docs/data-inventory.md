@@ -30,6 +30,51 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 | 9 | Widen the fetch: OSM landuse / parking / control nodes, BD TOPO vegetation zones / transport equipment / linear structures, RPG, BD Haie | done | `tools/fetch_ground.py` (per sector, same grid as the other vectors) and `check_ground.py` (share of the small map's 92 km²). RPG parcels cover 66.7 % (maize MIS 22.7 %, soft wheat BTH 7.5 %, fallow JAC 6.7 %, permanent meadow PPH 6.3 %, sunflower TRN 3.0 %, vines VRG 0.13 %); BD TOPO vegetation 14.6 % (closed broadleaf forest 9.4 %, hedge areas 2.9 %, vines 0.05 %, orchards 0.03 %); BD Haie 292 km of hedgerows; car parks: 11 BD TOPO `Parking` polygons + 52 vehicle services, 127 OSM `amenity=parking` (29 in the map: 55 surface, 13 street side, none underground), 1.6 km of parking aisles; BD TOPO walls: 0.2 km of retaining walls, 0.9 km bridges, 0.8 km dams. OSM land use from Overpass: farmland 38 %, residential 9.3 %, forest 7.1 %, meadow 3.2 % (4,654 features, 24.5 km of `barrier=hedge`); the mace OSM database is a filtered import with no landuse (170 polygons over 16 km), so it could not be used. Control nodes were fetched in step 3. OCS GE is published only for the Gers (32) on the WFS: not available here. No chunk change |
 | 10 | Ground class per 4 m vertex driving the shader and the scatter: vine rows, crop furrows, car parks with bays and cars, hedges, tree kind | done | `tools/ground.py`, exported in the near files (BN02: BN01 still reads). Precedence OSM / BD TOPO specific areas > RPG crop > OSM generic land use > the photo's colour (OCS GE is not published for the 31 on the WFS, OSO not fetched): classed vertices 0 -> 87.2 % of the small map (row crops 28.0 %, meadow 15.4 %, cereals 15.4 %, forest 12.5 %, gardens 8.2 %, fallow 6.4 %, scrub, yards, orchards, pitches, vineyards 0.06 %, cemeteries, car parks 0.02 %). Row direction on 43.6 % of the vertices: measured on the 20 cm orthophoto for 631 parcels (of 1,749 sampled, 1,090 clear: 70 % along the long axis, 15 % across, 15 % oblique), long axis for 434 more. 26.7 km of vine rows (posts every 5 m, clear of roads by 1.5 m, the LiDAR shrubs inside vineyards dropped), 178 bays with 82 parked cars (solid), 251 km of hedges from BD Haie where the LiDAR still sees them (shrubs on them dropped), tree kind from the vegetation zone for 61,869 of 111,924 trees (61,112 broadleaf, 260 conifer, 296 poplar, 201 fruit). The shader draws furrows (0.8 m), drill lines and tramlines (24 m), soil between vine rows, mown orchard alleys, asphalt, gravel, leaf litter, pitch stripes; the embankment ribbons carry the class from their toe out. `check_ground.py --world`. Roadtest / autotest unchanged (2,484 m, 0 stuck), 337 MB, ready in 1.9 s. Shots: [vineyard](shots/datainv/step10_vineyard.jpg), [vineyard 2](shots/datainv/step10_vineyard2.jpg), [car park](shots/datainv/step10_parking_lot.jpg), [maize](shots/datainv/step10_maize.jpg), [wheat](shots/datainv/step10_wheat.jpg) |
 
+### Final report (2026-10-01, branch `data-inventory`, 10 commits on master `136bc6a9`)
+
+Before / after per step, small map (`world_small`), baseline = master:
+
+| # | Metric | Before | After |
+|---|---|---|---|
+| 1 | One-way conflicts BD TOPO / OSM settled; crossings on Herbettes decided by LiDAR / OSM / survey | 0; LiDAR + survey only | 24 (20 to one-way, 4 reversed); 39 / 9 / 3 |
+| 2 | Centre line painted; lane transitions | 243 km; 12 m moving average | 107 km (as measured on the ortho); 101 smooth-step zones |
+| 3 | Traffic kinks; autotest distance / cells | 18.5 / km; 2,242 m / 19 | 0.9 / km; 2,484 m / 28, 0 stuck |
+| 4 | Tunnels cut as trenches (Herbettes) | 7 BD TOPO tunnels in the terrain | 3 kept by the LiDAR (185 m), 106 portal cells; car drives through at 88 km/h |
+| 5 | Verge roughness p99; steps > 0.25 m; asphalt bleed near / far | 0.162 m; 0.43 %; 130 / 126 | 0.112 m; 0.22 %; 125 / 125 |
+| 6 | Bends R < 300 m banked >= 1 %; max junction plane slope | 0; 10.2 % | 89 - 91 %; 8.4 % |
+| 7 | Pitched roofs; roof area outside the footprint | 18 %; 4,514 m² | 79 %; 0 |
+| 8 | Free walls >= 2 m with no ground-floor opening; gabled roofs (per 5,075) | 6,422 / 33,939 (18.9 %); 1,571 | 0 / 34,041; 2,052 (shared walls) |
+| 9 | Ground data cached for the small map | none | RPG 66.7 %, BD TOPO vegetation 14.6 %, 292 km BD Haie, 63 + 127 car parks, OSM land use (Overpass) |
+| 10 | Ground vertices with a class; vine rows; bays / parked cars; hedges; trees with a kind | 0; 0; 0; 0; 0 | 87.2 %; 26.7 km; 178 / 82; 251 km; 61,869 of 111,924 |
+
+Unchanged throughout: road overlap 0 m², terrain above any road 0, every road end meets its junction, every lane leads on
+(`check_roads.py`), LiDAR fit p90 unchanged, roadtest harshness 0.40 - 0.43 m/s², autotest 0 stuck, no exceptions. Cost: load
+1.2 -> 1.9 s and managed memory 109 -> 337 MB (step 5's ribbons are most of it).
+
+**Online play**: the chunk format moved to BM07 (roads, lanes, holes, ribbons, roofs, facades) and the near files to BN02 (ground).
+BM05 / BM06 / BN01 still load, but a player on an older build cannot read this map: hosts and players need the new build and map
+together.
+
+**LiDAR intensity for centreline snapping (investigated, not implemented)**: the IGN publishes no intensity raster, only the
+classified point clouds (COPC LAZ per km², `url_npl` of the `IGNF_LIDAR-HD_METADONNEE:metadata` WFS layer, 86 MB for tile
+0550_6257, flown June 2022). On Route de Rieumes (407 sections every 2 m, ~14.5 ground points / m²): the dashed centre line, plain on
+the ortho, does not show in the intensity at all (a peak in 14 % of the sections, at ±1.7 m: the wheel tracks), so paint cannot be
+snapped to. The asphalt itself is much darker than the verges: both edges are found on 78 % of the sections, and the centre between
+them lies 0.4 m (p50) / 1.1 m (p90) from BD TOPO's centreline, 0.2 / 0.8 m after a 30 m median, with 1 m of jitter between
+sections. That is no better than what the drawn width and the LiDAR surface already give; a snap would need the whole map's point
+clouds (~90 MB / km²) for a fraction of a metre. Not worth it now; asphalt-edge widths from intensity would be the useful part if
+road widths become the limit.
+
+**What is left**:
+- OCS GE is not published for the Haute-Garonne on the WFS, and OSO is not fetched: 12.8 % of the ground keeps the photo colour.
+- Parked-car occupancy is a fixed share (45 %), not data; car parks with `parking=underground` (none on the small map) are not cut.
+- Ground classes switch per triangle (flat over 4 m), so field edges are saw-toothed; a per-class blend would need weights per vertex.
+- Hedges are rebuilt from BD Haie and the LiDAR; BD TOPO `construction_lineaire` (0.2 km of retaining walls, bridges, dams) is fetched
+  but not drawn.
+- Party walls give gables only where the end face is a triangle; long shared sides still get a hip.
+- The region world (`world/`) is still on LegacyChunk; none of this is built for it yet.
+- `J981` keeps an invalid junction mouth (as on master).
+
 Legend for the *Status* column: **used**: read and has an effect · **dropped**: fetched or present, then ignored ·
 **absent**: not fetched at all.
 
