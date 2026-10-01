@@ -408,48 +408,60 @@ GROUND_FILTERS = ('wr["landuse"]', 'wr["natural"]', 'wr["leisure"]', 'wr["amenit
 PLACE_RANK = {"city": 0, "town": 1, "village": 2, "suburb": 2, "hamlet": 3}
 OVERPASS_SERVERS = ("https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
                     "https://overpass.kumi.systems/api/interpreter")
-_servers = [dict(url=u, lock=threading.Lock(), last=0.0) for u in OVERPASS_SERVERS]
+_servers = [dict(url=u, lock=threading.Lock(), last=0.0, seconds=10.0) for u in OVERPASS_SERVERS]
 _pick = threading.Lock()
 
 
 def overpass(query, service="overpass", gap=2.0):
     """POST a query to a public Overpass instance: at most one query at a time on each and `gap` seconds apart (their courtesy rules),
-    the next instance after a refusal, with back-off."""
+    the one that has been answering fastest (waiting for it when it is busy, unless another is less than half as slow; a refusal or a
+    time-out counts as 300 s), with back-off."""
     import requests
     for attempt in range(12):
-        with _pick:                                                             # the instance free for the longest
-            server = min(_servers, key=lambda s: (s["lock"].locked(), s["last"]))
-        with server["lock"]:
+        with _pick:
+            server = min(_servers, key=lambda s: s["seconds"] * (2 if s["lock"].locked() else 1))     # a busy fast one beats a free slow one
+        server["lock"].acquire()
+        try:
             wait = server["last"] + gap - time.time()
             if wait > 0:
                 time.sleep(wait)
             t = time.time()
             try:
-                r = requests.post(server["url"], data={"data": query}, timeout=600, headers={"User-Agent": USER_AGENT})
+                r = requests.post(server["url"], data={"data": query}, timeout=300, headers={"User-Agent": USER_AGENT})
                 COUNT.add(service, len(r.content), time.time() - t)
                 ok = r.ok and r.text.lstrip().startswith("{")
             except Exception:
                 ok = False
-            server["last"] = time.time() + (0 if ok else 30 * (attempt + 1))  # a refusing instance rests a while
+            took = time.time() - t if ok else 300.0
+            server["seconds"] = 0.7 * server["seconds"] + 0.3 * took
+            server["last"] = time.time() + (0 if ok else 15 * (attempt + 1))
+        finally:
+            server["lock"].release()
         if ok:
             return r.json()["elements"]
     raise RuntimeError("overpass: no answer")
 
 
-def fetch_overpass(si, sj):
-    """Every Overpass kind of a tile in one query; `out count` separates the five answers."""
+OVERPASS_PARTS = ("osm_ground", "osm_roofs", "osm_restrictions", "osm_pois", "osm_places")
+
+
+def fetch_overpass(si, sj, kinds=OVERPASS_PARTS):
+    """The Overpass kinds of a tile in one query (`out count` separates the answers). The turn restrictions alone are a light query:
+    the road build asks for them first."""
     from pyproj import Transformer
     to_wgs = Transformer.from_crs(2154, 4326, always_xy=True)
     to_l93 = Transformer.from_crs(4326, 2154, always_xy=True)
     rect = tile_rect(si, sj)
     lons, lats = to_wgs.transform([rect[0], rect[2], rect[0], rect[2]], [rect[1], rect[1], rect[3], rect[3]])
     bb = f"({min(lats):.6f},{min(lons):.6f},{max(lats):.6f},{max(lons):.6f})"
-    query = ("[out:json][timeout:300];"
-             "(" + "".join(f"{f}{bb};" for f in GROUND_FILTERS) + ");out tags geom;out count;"
-             f'(way["building"]["roof:shape"]{bb};way["building"]["building:levels"]{bb};way["building"]["roof:orientation"]{bb};);out tags geom;out count;'
-             f'rel["type"="restriction"]{bb};out body;node(r:"via");out skel;out count;'
-             f'(nwr["amenity"~"{POI_AMENITY}"]{bb};nwr["shop"]{bb};);out center tags;out count;'
-             f'node["place"~"^(city|town|village|hamlet|suburb)$"]["name"]{bb};out;out count;')
+    statements = {
+        "osm_ground": "(" + "".join(f"{f}{bb};" for f in GROUND_FILTERS) + ");out tags geom;",
+        "osm_roofs": f'(way["building"]["roof:shape"]{bb};way["building"]["building:levels"]{bb};way["building"]["roof:orientation"]{bb};);out tags geom;',
+        "osm_restrictions": f'rel["type"="restriction"]{bb};out body;node(r:"via");out skel;',
+        "osm_pois": f'(nwr["amenity"~"{POI_AMENITY}"]{bb};nwr["shop"]{bb};);out center tags;',
+        "osm_places": f'node["place"~"^(city|town|village|hamlet|suburb)$"]["name"]{bb};out;'}
+    kinds = [k for k in OVERPASS_PARTS if k in kinds]
+    query = "[out:json][timeout:300];" + "".join(statements[k] + "out count;" for k in kinds)
     parts, current = [], []
     for e in overpass(query):
         if e["type"] == "count":
@@ -457,14 +469,19 @@ def fetch_overpass(si, sj):
             current = []
         else:
             current.append(e)
-    if len(parts) != 5:
+    if len(parts) != len(kinds):
         raise RuntimeError(f"overpass: {len(parts)} answers for tile {si} {sj}")
-    ground, roofs_, restrictions, pois, places = parts
-    write_tile("osm_ground", si, sj, osm_ground_features(ground, to_l93, rect))
-    write_tile("osm_roofs", si, sj, osm_roof_records(roofs_, to_l93, rect))
-    write_tile("osm_restrictions", si, sj, osm_restriction_records(restrictions, to_l93, (si, sj)))
-    write_tile("osm_pois", si, sj, [e for e in pois if tile_of_point(*to_l93.transform(*_lonlat(e))) == (si, sj)])
-    write_tile("osm_places", si, sj, [p for p in osm_place_records(places, to_l93) if tile_of_point(p["x"] + CX, p["z"] + CY) == (si, sj)])
+    answer = dict(zip(kinds, parts))
+    if "osm_ground" in answer:
+        write_tile("osm_ground", si, sj, osm_ground_features(answer["osm_ground"], to_l93, rect))
+    if "osm_roofs" in answer:
+        write_tile("osm_roofs", si, sj, osm_roof_records(answer["osm_roofs"], to_l93, rect))
+    if "osm_restrictions" in answer:
+        write_tile("osm_restrictions", si, sj, osm_restriction_records(answer["osm_restrictions"], to_l93, (si, sj)))
+    if "osm_pois" in answer:
+        write_tile("osm_pois", si, sj, [e for e in answer["osm_pois"] if tile_of_point(*to_l93.transform(*_lonlat(e))) == (si, sj)])
+    if "osm_places" in answer:
+        write_tile("osm_places", si, sj, [p for p in osm_place_records(answer["osm_places"], to_l93) if tile_of_point(p["x"] + CX, p["z"] + CY) == (si, sj)])
 
 
 def _lonlat(e):
@@ -627,8 +644,16 @@ def ensure(sectors, kinds=BUILD_KINDS, log=print):
             jobs += [("wfs", fetch_wfs, (kind, si, sj)) for si, sj in tiles]
         elif kind in MACE_KINDS:
             jobs += [("mace", fetch_mace, (kind, tiles[k:k + 40])) for k in range(0, len(tiles), 40)]
-    over = sorted({t for kind in OVERPASS_KINDS for t in gaps.get(kind, [])})
-    jobs += [("overpass", fetch_overpass, t) for t in over]
+    over = {}                                                                   # tile -> the Overpass kinds it lacks
+    for kind in OVERPASS_KINDS:
+        for t in gaps.get(kind, []):
+            over.setdefault(t, set()).add(kind)
+    light = [(t, k) for t, k in sorted(over.items()) if k == {"osm_restrictions"}]
+    heavy = [(t, k) for t, k in sorted(over.items()) if k != {"osm_restrictions"}]
+    if heavy and "osm_restrictions" in gaps:                                   # restrictions first, for the road build, in light queries
+        light += [(t, {"osm_restrictions"}) for t, k in heavy if "osm_restrictions" in k]
+        heavy = [(t, k - {"osm_restrictions"}) for t, k in heavy if k - {"osm_restrictions"}]
+    jobs = [("overpass", fetch_overpass, (*t, tuple(k))) for t, k in light] + jobs + [("overpass", fetch_overpass, (*t, tuple(k))) for t, k in heavy]
     failures = []
     pools = {s: ThreadPoolExecutor(n) for s, n in SERVICE_THREADS.items()}
     futures = {pools[s].submit(fn, *args): (s, fn.__name__, args) for s, fn, args in jobs}
