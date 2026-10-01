@@ -25,6 +25,7 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 | 4 | Tunnels out of the terrain, portals, hole mask (BM07) | done | OSM `tunnel` / service `layer<0` read; LiDAR keeps a tunnel only under 3 m of cover: small map 0 of 2 (both BD TOPO tunnels at grade under trees, so nothing changes there), Herbettes 3 of 7 kept (185 m): the ring road is no longer cut as a trench through the hill; 106 portal cells cut; `check_roads`: 0 tunnel points under terrain within headroom; a car drives through at 88 km/h without leaving the road. `parking=underground` polygons wait for step 9's fetch |
 | 5 | Terrain-road edge: ribbon + bench under it, crest-aware sink, lowest road, skirts, road pixels out of the ortho | done | verge roughness p99 0.162 -> 0.112 m, steps > 0.25 m 0.43 % -> 0.22 % (4 - 8 m from the edge: 0.21 - 0.24 -> 0.11 - 0.14); the drape takes the lowest ribbon (nearby roads), ribbons stop a metre before another road; crest sink cell^2 / 2R (16 m and 4 m mesh: still 0 points above a road); asphalt bleed: luminance near / far 130 / 126 -> 125 / 125; roadtest input 6.7 -> 5.6 m/s², hops 18 -> 19, harshness 0.43 -> 0.40; autotest 2,505 m, 0 stuck. Conforming triangulation not needed. Load 1.2 -> 1.8 s, managed memory 109 -> 329 MB (ribbon meshes) |
 | 6 | Superelevation in the profile QP | done | cross slope per sample solved with the heights; bends under 300 m radius banked >= 1 % inward on 89 - 91 % of their length (banked classes), max 8.4 %; junction planes max 10.2 -> 8.4 %; LiDAR fit p90 unchanged (p99 +0.03 - 0.04 m on local / collector); terrain above road 0; roadtest input 6.5 m/s², hops 19; autotest 2,346 m, 0 stuck |
+| 7 | Roofs: straight skeleton on the real footprint (courtyards), hip / gable from the LiDAR, BD TOPO roof and ground altitudes, OSM roof:shape, material colour, robust triangulation, collision and chimneys on the real roof | done | pitched roofs 18 % -> 79 % of buildings (2,421 hipped, 1,571 gabled per 5,075 sampled); roof area outside the footprint 4,514 m² (645 buildings) -> 0; skeleton fails on 0.3 % and does not tile on 0.8 % (flat fallback, 99 of 10,600); heights from BD TOPO on 8,465 buildings, LiDAR on 2,131 (survey missing or > 2.5 m off); roof material codes checked on the 20 cm ortho (code 1 red-orange 53 % vs 30 % for unknown, code 2 0 / 4); OSM roof:shape on 1 building of the small map; roadtest and autotest unchanged |
 
 Legend for the *Status* column: **used**: read and has an effect · **dropped**: fetched or present, then ignored ·
 **absent**: not fetched at all.
@@ -175,7 +176,7 @@ Failure modes found:
    leave holes in caps of self-touching rings.
 9. **Collision box and chimneys** are fitted to the longest edge or the MRR, not the footprint, so they float over voids.
 
-Target:
+Target (**done**, step 7: `tools/roofs.py`):
 
 - **Straight-skeleton roofs on the real footprint** (holes included). They give hips by default and gables by turning chosen ends into
   vertical faces. Valleys on L / T shapes come out naturally.

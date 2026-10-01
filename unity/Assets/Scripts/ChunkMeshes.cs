@@ -234,7 +234,54 @@ public class ChunkMeshes
         var rng = new System.Random((int)(bd.p[0] * 100f) * 73856093 ^ (int)(bd.p[1] * 100f) * 19349663);
         var style = Facade.Pick(bd, rng);
         Color32 orthoRoof = C(bd.c[0], bd.c[1], bd.c[2]);
-        return new Look { rng = rng, style = style, wall = style.wall, roof = style.hasRoof ? style.roof : Facade.RoofTile(orthoRoof, rng) };
+        Color32 roof = style.hasRoof ? style.roof : Facade.RoofTile(orthoRoof, rng);
+        switch (bd.roofMaterial)                                                              // BD TOPO's roof material where it gives one (1: tiles keep the photo's tint)
+        {
+            case 2: roof = Jitter(C(74, 76, 84), rng); break;                                 // slate
+            case 3: roof = Jitter(C(146, 150, 154), rng); break;                              // zinc, metal sheet
+            case 4: roof = Jitter(C(162, 158, 150), rng); break;                              // concrete
+        }
+        return new Look { rng = rng, style = style, wall = style.wall, roof = roof };
+    }
+
+    static Color32 Jitter(Color32 c, System.Random rng)
+    {
+        float k = 0.92f + 0.16f * (float)rng.NextDouble();
+        return new Color32((byte)Mathf.Clamp(c.r * k, 0, 255), (byte)Mathf.Clamp(c.g * k, 0, 255), (byte)Mathf.Clamp(c.b * k, 0, 255), 255);
+    }
+
+    /// <summary>The rings of a building (BM07: its outline and courtyards from the collision rings; older worlds: the outline).</summary>
+    static List<List<Vector2>> Rings(BuildingData bd)
+    {
+        var rings = new List<List<Vector2>>();
+        if (bd.roofT != null && bd.cn != null && bd.cp != null)
+        {
+            int off = 0;
+            foreach (int n in bd.cn) { var r = new List<Vector2>(n); for (int k = 0; k < n; k++) r.Add(new Vector2(bd.cp[(off + k) * 2], bd.cp[(off + k) * 2 + 1])); rings.Add(r); off += n; }
+            return rings;
+        }
+        var outline = new List<Vector2>(); for (int i = 0; i < bd.p.Length / 2; i++) outline.Add(new Vector2(bd.p[i * 2], bd.p[i * 2 + 1]));
+        rings.Add(outline);
+        return rings;
+    }
+
+    /// <summary>The roof mesh the world builder made (BM07): slopes and flat caps facing up in the roof colour, gable walls in the wall colour seen from both sides.</summary>
+    static void Roof(MeshBuilder mb, BuildingData bd, Color32 roof, Color32 wall)
+    {
+        var v = bd.roofV;
+        Vector3 P(int i) => new Vector3(v[i * 3], v[i * 3 + 1], v[i * 3 + 2]);
+        for (int t = 0; t < bd.roofGable.Length; t++)
+        {
+            Vector3 a = P(bd.roofT[t * 3]), b = P(bd.roofT[t * 3 + 1]), c = P(bd.roofT[t * 3 + 2]);
+            if (bd.roofGable[t])
+            {
+                int i = mb.Vertex(a, wall), j = mb.Vertex(b, wall), k = mb.Vertex(c, wall);
+                mb.Tri(i, j, k); mb.Tri(i, k, j);
+                continue;
+            }
+            if ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x) > 0f) { var x = b; b = c; c = x; }      // clockwise from above: facing up
+            mb.Tri(mb.Vertex(a, roof), mb.Vertex(b, roof), mb.Vertex(c, roof));
+        }
     }
 
     void BuildBuildingShells(ChunkData d)
@@ -246,14 +293,16 @@ public class ChunkMeshes
             pts.Clear(); for (int i = 0; i < n; i++) pts.Add(new Vector2(bd.p[i * 2], bd.p[i * 2 + 1]));
             float y0 = bd.b, y1 = bd.b + bd.h;
             var look = LookOf(bd); Color32 wall = look.wall, roof = look.roof;
-            for (int i = 0; i < n; i++)
-            {
-                Vector2 a = pts[i], b = pts[(i + 1) % n];
-                int v0 = mb.Vertex(new Vector3(a.x, y0, a.y), wall), v1 = mb.Vertex(new Vector3(b.x, y0, b.y), wall);
-                int v2 = mb.Vertex(new Vector3(b.x, y1, b.y), wall), v3 = mb.Vertex(new Vector3(a.x, y1, a.y), wall);
-                mb.Quad(v0, v1, v2, v3);
-            }
-            if (bd.r > 0 && bd.rc != null && bd.rc.Length == 6)       // gable roof over the oriented bounding rectangle
+            foreach (var ring in Rings(bd))
+                for (int i = 0; i < ring.Count; i++)
+                {
+                    Vector2 a = ring[i], b = ring[(i + 1) % ring.Count];
+                    int v0 = mb.Vertex(new Vector3(a.x, y0, a.y), wall), v1 = mb.Vertex(new Vector3(b.x, y0, b.y), wall);
+                    int v2 = mb.Vertex(new Vector3(b.x, y1, b.y), wall), v3 = mb.Vertex(new Vector3(a.x, y1, a.y), wall);
+                    mb.Quad(v0, v1, v2, v3);
+                }
+            if (bd.roofT != null && bd.roofT.Length > 0) Roof(mb, bd, roof, wall);
+            else if (bd.r > 0 && bd.rc != null && bd.rc.Length == 6)       // older worlds: gable roof over the oriented bounding rectangle
             {
                 Vector2 c = new Vector2(bd.rc[0], bd.rc[1]), u = new Vector2(bd.rc[2], bd.rc[3]), v = new Vector2(-u.y, u.x);
                 float hl = bd.rc[4] * 0.5f, hw = bd.rc[5] * 0.5f + 0.3f;
@@ -575,9 +624,31 @@ public class ChunkMeshes
             float yg = Mathf.Clamp(d.Height(fm.x, fm.y), y0 + 0.4f, y1 - 2f);      // doors sit on the ground at the road-facing wall
             Facade.Build(bd, pts, look.style, yg, y1, Facades, look.rng, local.EdgeClearance);
             boxes.Add(FitBox(pts, y0, y1 + Mathf.Max(bd.r, 0)));
-            AddCollisionPrism(bd, Collision, y0, y1 + Mathf.Max(bd.r, 0));
+            bool meshRoof = bd.roofT != null && bd.roofT.Length > 0;
+            AddCollisionPrism(bd, Collision, y0, meshRoof ? y1 : y1 + Mathf.Max(bd.r, 0));           // BM07: walls to the eaves, the roof as it is drawn
+            if (meshRoof) RoofExtras(bd, look, Facades, Collision);
         }
         return boxes;
+    }
+
+    /// <summary>The roof is solid where it is drawn (both sides: nothing gets under it), and a chimney stands on its ridge.</summary>
+    static void RoofExtras(BuildingData bd, Look look, MeshBuilder facades, MeshBuilder collision)
+    {
+        var v = bd.roofV; var white = new Color32(255, 255, 255, 255);
+        Vector3 P(int i) => new Vector3(v[i * 3], v[i * 3 + 1], v[i * 3 + 2]);
+        for (int t = 0; t < bd.roofGable.Length; t++)
+        {
+            int a = collision.Vertex(P(bd.roofT[t * 3]), white), b = collision.Vertex(P(bd.roofT[t * 3 + 1]), white), c = collision.Vertex(P(bd.roofT[t * 3 + 2]), white);
+            collision.Tri(a, b, c); collision.Tri(a, c, b);
+        }
+        if (!look.style.chimney || bd.r < 0.5f || look.rng.NextDouble() >= 0.75) return;
+        int top = 0; for (int i = 1; i < v.Length / 3; i++) if (v[i * 3 + 1] > v[top * 3 + 1]) top = i;                 // on the ridge
+        Vector3 p = P(top); float centreX = 0, centreZ = 0; int n = bd.p.Length / 2;
+        for (int i = 0; i < n; i++) { centreX += bd.p[i * 2] / n; centreZ += bd.p[i * 2 + 1] / n; }
+        Vector3 toward = new Vector3(centreX - p.x, 0, centreZ - p.z); if (toward.sqrMagnitude > 1f) p += toward.normalized * 1.0f;   // off the end of the ridge
+        Color32 brick = new Color32((byte)(look.wall.r * 0.78f), (byte)(look.wall.g * 0.78f), (byte)(look.wall.b * 0.78f), 255);
+        facades.Box(new Vector3(p.x, p.y - 0.1f, p.z), new Vector3(0.55f, 1.3f, 0.55f), brick);
+        facades.Box(new Vector3(p.x, p.y + 0.6f, p.z), new Vector3(0.7f, 0.12f, 0.7f), new Color32(110, 108, 104, 255));
     }
 
     const float WallDepth = 1.2f;

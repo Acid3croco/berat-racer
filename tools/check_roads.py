@@ -101,8 +101,14 @@ def parse_mid(raw):
     d["bld"] = r.i()
     d["bld_list"] = []
     for _ in range(d["bld"]):
-        outline = r.fl(2 * r.i()).reshape(-1, 2); base, height, rise = r.fl(3); r.fl(r.i()); r.take(6); kind = r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)
-        d["bld_list"].append(dict(outline=outline, base=float(base), height=float(height), rise=float(rise), kind=kind))
+        outline = r.fl(2 * r.i()).reshape(-1, 2); base, height, rise = r.fl(3); r.fl(r.i()); r.take(6); kind = r.st(); r.st(); r.i(); r.fl(r.i())
+        rings = r.fl(2 * r.i()).reshape(-1, 2); n = r.i(); counts = np.frombuffer(r.take(4 * n), "<i4")
+        b = dict(outline=outline, base=float(base), height=float(height), rise=float(rise), kind=kind, rings=np.split(rings, np.cumsum(counts)[:-1]))
+        if version >= 7:
+            b["material"] = r.u8()
+            b["roof_v"] = r.fl(3 * r.i()).reshape(-1, 3)
+            nt = r.i(); b["roof_t"] = np.frombuffer(r.take(12 * nt), "<i4").reshape(-1, 3); b["roof_gable"] = np.frombuffer(r.take(nt), np.uint8).astype(bool)
+        d["bld_list"].append(b)
     assert r.o == len(raw), (r.o, len(raw))
     return d
 

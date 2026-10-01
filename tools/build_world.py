@@ -45,6 +45,7 @@ import pyproj
 import rasterio
 import fetch
 import rasters
+import roofs
 import vec_io
 from fetch import CX, CY
 from rasters import BIG, HALF, SECTOR, Mosaic
@@ -307,6 +308,7 @@ def poi_kind(t):
 # ------------------------------------------------------------------ water
 
 LINE_WIDTH = {"Entre 0 et 5 m": 2.6, "Entre 5 et 15 m": 8.0, "Entre 15 et 50 m": 24.0}      # full width of BD TOPO width classes (m)
+HEIGHT_CHECK = 2.5                 # m: a BD TOPO roof or ground altitude further than this from the LiDAR surface model is not used
 WATER_DEPTH = 0.45
 CARRIED_WATER = 1.5             # water standing this far above the ground under it, with a road passing under it, is carried by a structure (an aqueduct)
 TROUGH_REACH = WATER_DEPTH + 0.15   # ... and its trough goes on as long as the ground under the water lies deeper than this (deeper than a bed)
@@ -494,7 +496,7 @@ def put_junctions(buf, items, ribbons):
 @functools.lru_cache(maxsize=1)
 def code_key():
     """What this process builds sectors with: the code, its tuning, the libraries and the points of interest."""
-    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain]
+    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs]
     return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
 
 def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes):
@@ -608,7 +610,8 @@ def process_sector(args):
     # ---- buildings
     road_tree = cKDTree(road_pts[:, :2]) if len(road_pts) else None
     owned = box(ox, oz, ox + SECTOR, oz + SECTOR); owned_wide = owned.buffer(6)
-    buildings, bpolys = [], []
+    buildings, bpolys, roof_stats = [], [], {}
+    osm_roofs = roofs.osm_buildings(road_tag)
     reach_lo, reach_hi = (ox + CX - 8, oz + CY - 8), (ox + CX + SECTOR + 8, oz + CY + SECTOR + 8)      # `owned_wide` and a bit, in the features' coordinates
     for f in load_vectors("buildings", si, sj):
         bx0, by0, bx1, by1 = feature_bounds(f)
@@ -638,6 +641,7 @@ def process_sector(args):
             inside = shapely.contains_xy(around, gxs.ravel(), gzs.ravel())
             gpts = np.c_[gxs.ravel()[inside], gzs.ravel()[inside]]
             ground = float(min(win.sample(win.mnt, ring[:, 0], ring[:, 1], 2).min(), win.sample(win.mnt, gpts[:, 0], gpts[:, 1], 2).min() if len(gpts) else 1e9))
+            dsm = lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2) + win.sample(win.mnh, xy[:, 0], xy[:, 1], 2)
             c = poly.centroid
             mnh_c = float(win.sample(win.mnh, [c.x], [c.y], 2)[0])
             inner = poly.buffer(-1.2)
@@ -646,10 +650,22 @@ def process_sector(args):
             hh = p.get("hauteur")
             wall = float(hh) if isinstance(hh, (int, float)) and hh > 0 else (
                 3.0 * p["nombre_d_etages"] if isinstance(p.get("nombre_d_etages"), (int, float)) else max(3.0, min(mnh_edge, 12.0)))
+            # heights: BD TOPO's roof and ground altitudes, the LiDAR surface model as the check (it wins where the survey is missing or off)
+            sol = p.get("altitude_minimale_sol")
+            if isinstance(sol, (int, float)) and abs(sol - ground) <= HEIGHT_CHECK: ground = min(ground, float(sol))
+            inside_pts = gpts[shapely.contains_xy(poly, gpts[:, 0], gpts[:, 1])] if len(gpts) else np.zeros((0, 2))
+            lidar_ridge = float(dsm(inside_pts).max()) if len(inside_pts) else ground + wall
+            lidar_eave = float(np.median(dsm(ipts))) if len(ipts) else ground + wall
+            eave_bd, ridge_bd = p.get("altitude_minimale_toit"), p.get("altitude_maximale_toit")
+            eave = float(eave_bd) if isinstance(eave_bd, (int, float)) and abs(eave_bd - lidar_eave) <= HEIGHT_CHECK else min(lidar_eave, lidar_ridge)
+            ridge = float(ridge_bd) if isinstance(ridge_bd, (int, float)) and abs(ridge_bd - lidar_ridge) <= HEIGHT_CHECK else lidar_ridge
+            height_source = "bdtopo" if isinstance(eave_bd, (int, float)) and abs(eave_bd - lidar_eave) <= HEIGHT_CHECK else "lidar"
+            wall = max(eave - ground, 2.2)
+            eave = ground + wall
             kind = bd_kind(p, poly.area)
             tower = []
             if kind in ("church", "chapel"):
-                wall = float(np.clip(mnh_edge, 5.0, 10.0))
+                wall = float(np.clip(mnh_edge, 5.0, 10.0)); eave = ground + wall
                 ins = shapely.contains_xy(poly, gxs.ravel(), gzs.ravel())
                 if ins.any():
                     hx, hz = gxs.ravel()[ins], gzs.ravel()[ins]
@@ -660,23 +676,30 @@ def process_sector(args):
             e1, e2 = rect[1] - rect[0], rect[2] - rect[1]
             L, Wd = np.linalg.norm(e1), np.linalg.norm(e2)
             axis, long_, short = (e1 / L, L, Wd) if L >= Wd else (e2 / Wd, Wd, L)
-            fit = 1.0 - mrr.symmetric_difference(poly).area / poly.area
-            pitched = (mnh_c - mnh_edge) > 0.8 and fit > 0.86 and poly.area < 900 and short > 3
-            rise = float(np.clip(mnh_c - wall, 0.8, 5.0)) if pitched else 0.0
-            if kind in ("church", "chapel") and fit > 0.6 and short > 4: pitched, rise = True, max(rise, float(short) * 0.32)
+            rise = max(ridge - eave, 0.0)
+            if kind in ("church", "chapel"): rise = max(rise, float(short) * 0.32)
+            osm_shape = next((t.get("roof:shape") for q, t in osm_roofs if q.contains(poly.representative_point())), None) if osm_roofs else None
+            shaped = roofs.building_roof(poly, eave, rise, dsm, osm_shape)
+            roof_stats[shaped["shape"]] = roof_stats.get(shaped["shape"], 0) + 1
+            roof_stats["height_" + height_source] = roof_stats.get("height_" + height_source, 0) + 1
+            rv, rt = np.unique(np.round(shaped["tris"].reshape(-1, 3), 3), axis=0, return_inverse=True)
+            rise = float(shaped["tris"][:, :, 2].max() - eave) if len(shaped["tris"]) else 0.0
             seed = int(hashlib.md5(p["cleabs"].encode()).hexdigest()[:8], 16)
             mids = (ring + np.roll(ring, -1, axis=0)) / 2
             fe = int(road_tree.query(mids)[0].argmin()) if road_tree is not None else 0
-            # collision rings: footprint minus road corridors (already cut above, so the ring is the visual footprint)
-            cp = np.round(ring, 2).ravel().tolist()
+            # collision rings: footprint minus road corridors (already cut above, so the ring is the visual footprint), courtyards after it
+            courtyards = [np.array(h.coords)[:-1] for h in poly.interiors]
+            cp = np.round(np.vstack([ring] + courtyards), 2).ravel().tolist()
             # roof colour from the orthophoto
             minx, minz, maxx, maxz = poly.bounds
             rxs, rzs = np.meshgrid(np.arange(minx, maxx, 2.0), np.arange(minz, maxz, 2.0))
             mk = shapely.contains_xy(poly, rxs.ravel(), rzs.ravel())
             px, pz = (rxs.ravel()[mk], rzs.ravel()[mk]) if mk.any() else ([poly.centroid.x], [poly.centroid.y])
             roof = np.clip(np.array([win.sample(band, px, pz, 4) for band in ortho]).mean(axis=1) * 1.1, 0, 255).astype(int).tolist()
-            buildings.append(dict(k=kind, n="", fe=fe, tw=tower, cp=cp, cn=[len(ring)], p=np.round(ring, 2).ravel().tolist(), b=round(ground - 0.8, 2), h=round(wall + 0.8, 2),
-                                  r=round(rise, 2), rc=[round(float(v), 2) for v in (*mrr.centroid.coords[0], *axis, long_, short)] if pitched else [], c=roof, w=list(WALLS[seed % len(WALLS)])))
+            roof_code = str(p.get("materiaux_de_la_toiture") or "")
+            buildings.append(dict(k=kind, n="", fe=fe, tw=tower, cp=cp, cn=[len(ring)] + [len(h) for h in courtyards], p=np.round(ring, 2).ravel().tolist(), b=round(ground - 0.8, 2), h=round(wall + 0.8, 2),
+                                  r=round(rise, 2), rc=[], c=roof, w=list(WALLS[seed % len(WALLS)]),
+                                  rm=int(roof_code[0]) if roof_code[:1].isdigit() else 255, rv=rv, rt=rt.reshape(-1, 3), rg=shaped["wall"]))
             bpolys.append(poly)
 
     # ---- collision rings proper (a building crossing a road keeps the road corridor free, computed against the uncut original in export_world; here the visual is already cut)
@@ -812,6 +835,8 @@ def process_sector(args):
                 wi(buf, len(b["p"]) // 2); wfa(buf, b["p"]); wf(buf, b["b"], b["h"], b["r"]); wi(buf, len(b["rc"])); wfa(buf, b["rc"])
                 buf += bytes(b["c"]) + bytes(b["w"]); wstr(buf, b["k"]); wstr(buf, b["n"]); wi(buf, b["fe"]); wi(buf, len(b["tw"])); wfa(buf, b["tw"])
                 wi(buf, len(b["cp"]) // 2); wfa(buf, b["cp"]); wi(buf, len(b["cn"])); buf += np.asarray(b["cn"], "<i4").tobytes()
+                buf.append(b["rm"]); wi(buf, len(b["rv"])); wfa(buf, b["rv"][:, [0, 2, 1]])                 # BM07: roof material, roof mesh (x, height, north) ...
+                wi(buf, len(b["rt"])); buf += b["rt"].astype("<i4").tobytes(); buf += b["rg"].astype(np.uint8).tobytes()     # ... its triangles and which are gable walls
             write_gz(out_dir / f"m_{ci - ci0}_{cj - cj0}.bin.gz", buf)
             nb = bytearray(b"BN01"); ti, sh = tree_b.get(key, []), shrub_b.get(key, [])
             wi(nb, len(ti)); wfa(nb, trees[ti].ravel()); wi(nb, len(sh)); wfa(nb, shrubs[sh].ravel())
@@ -827,7 +852,7 @@ def process_sector(args):
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
     stamp.parent.mkdir(exist_ok=True)
     stamp.write_text(made_from)
-    stats = dict(sector=(si, sj), chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
+    stats = dict(sector=(si, sj), roofs=roof_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
 
 # ------------------------------------------------------------------ assemble

@@ -101,7 +101,13 @@ public class LaneElem
         dist = Mathf.Sqrt(best); return bestS;
     }
 }
-public class BuildingData { public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; public float[] cp; public int[] cn; }
+public class BuildingData
+{
+    public float[] p; public float b, h, r; public float[] rc; public int[] c; public int[] w; public string k, n; public int fe; public float[] tw; public float[] cp; public int[] cn;
+    // BM07: the roof as the world builder made it (tools/roofs.py: straight skeleton over the footprint and its courtyards)
+    public int roofMaterial = 255;           // BD TOPO roof material: 1 tiles, 2 slate, 3 zinc / metal, 4 concrete; 255 unknown
+    public float[] roofV; public int[] roofT; public bool[] roofGable;      // vertices (x, height, z), triangles, gable-wall triangles
+}
 [Serializable] public class WorldInfo { public float x0, z0; public int ncx, ncz; }
 [Serializable] public class SpawnData { public float x, y, z, heading; public string road; }
 public class WaterArea { public float level; public float[] ring; public float[] ys; }      // ring = x,z pairs; ys = surface height per vertex; level = their mean
@@ -208,6 +214,11 @@ public class ChunkData
                 b.c = new[] { (int)br.ReadByte(), br.ReadByte(), br.ReadByte() }; b.w = new[] { (int)br.ReadByte(), br.ReadByte(), br.ReadByte() };
                 b.k = Str(br); b.n = Str(br); b.fe = br.ReadInt32(); b.tw = Floats(br, br.ReadInt32());
                 b.cp = Floats(br, br.ReadInt32() * 2); b.cn = Ints(br, br.ReadInt32());
+                if (version >= 7)
+                {
+                    b.roofMaterial = br.ReadByte(); b.roofV = Floats(br, br.ReadInt32() * 3);
+                    int nt = br.ReadInt32(); b.roofT = Ints(br, nt * 3); var g = br.ReadBytes(nt); b.roofGable = new bool[nt]; for (int k = 0; k < nt; k++) b.roofGable[k] = g[k] != 0;
+                }
                 d.Buildings[i] = b;
             }
             return d;

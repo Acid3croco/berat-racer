@@ -161,7 +161,12 @@ two-way / one-way and the direction of a one-way road.
   each portal, and treats the tunnel road like a deck: it carries whatever is under its ceiling, not the hill above. A triangle whose corners are all below the road's tangent planes is below the road, so this holds for the 4 m mesh
   and for the 16 m mesh drawn beyond 1.6 km alike. The game no longer cuts terrain at run time.
 
-Buildings are cut out of the real surface polygons and plants keep clear of them (a 1 m raster of the surface).
+Buildings are cut out of the real surface polygons and plants keep clear of them (a 1 m raster of the surface). Their roofs
+(`tools/roofs.py`) are straight skeletons of the footprint and its courtyards: hipped by default, an end becomes a gable where the
+LiDAR surface model stands within 40 % of the ridge just inside it (or OSM tags `roof:shape`), flat under 0.5 m of rise; eave and
+ridge from BD TOPO's roof altitudes, checked against the LiDAR (it wins beyond 2.5 m); the colour from BD TOPO's roof material
+(1 tiles, 2 slate, 3 metal, 4 concrete). A BM07 building record ends with the roof material and the roof mesh (vertices,
+triangles, which are gable walls); its collision rings carry the courtyards.
 
 ## Chunk format (BM07)
 
