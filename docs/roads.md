@@ -191,7 +191,7 @@ and after the carried water a BM07 chunk lists the lane graph elements passing t
 attributes, points with their speed, successors, the lanes beside, the connectors it gives way to), then the terrain cells cut away
 (tunnel portals). The road flags byte has bit 8 for a tunnel piece. Road records end with the ribbon profile of each point and
 side (shoulder, toe distance / height, outer distance / height, apron heights and width), junctions with each vertex's kerb normal
-and profile. Then (BM07) the seam: triangles (x, y, z) joining the road band (roads, junctions, car parks, ribbons out to their end) to the 4 m cells kept around it; the cells the band touches are in the hole list (`tools/stitch.py`), and ribbons have no apron or lip. The 4 m terrain has skirts against its neighbours (not on the world's border). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+and profile. Then (BM07) the ground around the paved surfaces: one height field blending the paved edges into the terrain (`tools/stitch.py`), as triangles (x, y, z) and per vertex its weight (1 on a paved edge, 0 where it is the terrain); the 4 m cells it reaches are in the hole list. Road and junction records carry no ribbon any more. The 4 m terrain has skirts against its neighbours (not on the world's border). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
 
 Near files (`n_*.bin.gz`) are BN02: after the trees and shrubs (BN01), the kind of every tree (unknown, broadleaf, conifer,

@@ -34,15 +34,16 @@ Shader "Berat/FlatColor"
 
             float _Noise, _NoiseScale, _Emission, _HoleRadius, _Detail; float4 _HoleCenter;
 
-            struct appdata { float4 vertex : POSITION; fixed4 color : COLOR; float2 ground : TEXCOORD1; };
-            // ground: the terrain's class (tools/ground.py) and row direction byte, flat over each triangle (a mix of two classes means nothing)
-            struct v2f { float4 pos : SV_POSITION; fixed4 col : COLOR; float3 wp : TEXCOORD0; SHADOW_COORDS(1) UNITY_FOG_COORDS(2) nointerpolation float2 ground : TEXCOORD3; };
+            struct appdata { float4 vertex : POSITION; fixed4 color : COLOR; float3 ground : TEXCOORD1; };
+            // ground: the terrain's class (tools/ground.py) and row direction byte, flat over each triangle (a mix of two classes means nothing);
+            // gw: the pattern's weight, interpolated (0 at a patch's border and on the verge, so patterns fade out instead of ending on triangle edges)
+            struct v2f { float4 pos : SV_POSITION; fixed4 col : COLOR; float3 wp : TEXCOORD0; SHADOW_COORDS(1) UNITY_FOG_COORDS(2) nointerpolation float2 ground : TEXCOORD3; float gw : TEXCOORD4; };
 
             v2f vert (appdata v)
             {
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
-                o.col = v.color; o.ground = v.ground;
+                o.col = v.color; o.ground = v.ground.xy; o.gw = v.ground.z;
                 // camera-relative position: large world coordinates (tens of km from the origin) have too little float precision for the screen-space-derivative normals
                 o.wp = mul((float3x3)unity_ObjectToWorld, v.vertex.xyz) + (float3(unity_ObjectToWorld[0].w, unity_ObjectToWorld[1].w, unity_ObjectToWorld[2].w) - _WorldSpaceCameraPos);
                 TRANSFER_SHADOW(o);
@@ -77,14 +78,14 @@ Shader "Berat/FlatColor"
                 return (1.0 - smoothstep(w, w + 0.15, 1.0 - f)) * saturate(1.0 - fwidth(t) * 2.5);
             }
 
-            float3 GroundMaterial(float3 albedo, float2 ground, float3 wabs, float3 wq, float camDist)
+            float3 GroundMaterial(float3 albedo, float2 ground, float gw, float3 wabs, float3 wq, float camDist)
             {
                 int cls = (int)round(ground.x);
                 float ang = (ground.y - 1.0) / 254.0 * 3.14159265;
                 float2 along = float2(cos(ang), sin(ang)), side = float2(-along.y, along.x);
                 float across = dot(wabs.xz, side);                               // metres across the rows (world position: stripes stay continuous)
                 float3 soil = GammaToLinearSpace(float3(0.47, 0.38, 0.29)), asphalt = GammaToLinearSpace(float3(0.36, 0.36, 0.37));
-                float near = saturate(1.0 - (camDist - 30.0) / 250.0);
+                float near = saturate(1.0 - (camDist - 30.0) / 250.0) * gw;
                 if (cls == G_ROWCROP && ground.y > 0.5)
                 {   // maize / sunflower: crop rows 0.8 m apart, bare soil showing between them
                     float r = Rows(across, 0.8, 0.45);
@@ -95,8 +96,8 @@ Shader "Berat/FlatColor"
                     float drill = Rows(across, 0.17, 0.5);
                     float t = frac(across / 24.0) * 24.0;
                     float tram = (1.0 - smoothstep(0.25, 0.4, abs(t - 0.9))) + (1.0 - smoothstep(0.25, 0.4, abs(t - 2.7)));
-                    albedo *= 1.0 - drill * 0.08 * saturate(1.0 - (camDist - 10.0) / 40.0);
-                    albedo = lerp(albedo, soil, tram * 0.35 * saturate(1.0 - fwidth(across / 24.0) * 40.0));
+                    albedo *= 1.0 - drill * 0.08 * gw * saturate(1.0 - (camDist - 10.0) / 40.0);
+                    albedo = lerp(albedo, soil, tram * 0.35 * gw * saturate(1.0 - fwidth(across / 24.0) * 40.0));
                 }
                 else if (cls == G_VINEYARD && ground.y > 0.5)
                 {   // bare or grassed strips between the vine rows (the rows themselves are meshes)
@@ -109,7 +110,7 @@ Shader "Berat/FlatColor"
                 }
                 else if (cls == G_FALLOW)
                 {
-                    albedo *= 1.0 + (vnoise(wq * 0.35) - 0.5) * 0.25;
+                    albedo *= 1.0 + (vnoise(wq * 0.35) - 0.5) * 0.25 * gw;
                 }
                 else if (cls == G_PARKING)
                 {   // asphalt, whatever the photo caught on it (parked cars)
@@ -127,7 +128,7 @@ Shader "Berat/FlatColor"
                 }
                 else if (cls == G_PITCH)
                 {   // mowing stripes 5 m wide
-                    albedo *= 1.0 + (step(0.5, frac(wabs.x / 10.0)) - 0.5) * 0.10;
+                    albedo *= 1.0 + (step(0.5, frac(wabs.x / 10.0)) - 0.5) * 0.10 * gw;
                 }
                 return albedo;
             }
@@ -178,7 +179,7 @@ Shader "Berat/FlatColor"
                                       + (1.0 - isWarm * smoothstep(0.12, 0.25, mx)) * (vnoise(float3(wt * 1.5, wq.y * 0.35, 0.0)) - 0.5) * 0.10);
                     albedo *= d;
                 }
-                if (_Detail > 0 && i.ground.x > 0.5) albedo = GroundMaterial(albedo, i.ground, wabs, wq, camDist);
+                if (_Detail > 0 && i.ground.x > 0.5) albedo = GroundMaterial(albedo, i.ground, saturate(i.gw), wabs, wq, camDist);
                 float gloss = 1.0 - i.col.a;                                    // alpha 255 = matte
                 float3 L = normalize(_WorldSpaceLightPos0.xyz);
                 UNITY_LIGHT_ATTENUATION(atten, i, i.wp);

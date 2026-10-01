@@ -84,6 +84,10 @@ public class ChunkMeshes
                     mb.Quad(mb.Vertex(l0, Concrete), mb.Vertex(l1, Concrete), mb.Vertex(l1 + dn, Concrete), mb.Vertex(l0 + dn, Concrete));
                     mb.Quad(mb.Vertex(r0, Concrete), mb.Vertex(r0 + dn, Concrete), mb.Vertex(r1 + dn, Concrete), mb.Vertex(r1, Concrete));
                 }
+                else if (d.Seam.Length > 0)                      // BM07 field ground: a skirt under each edge closes the hairline between road and ground
+                {
+                    Skirt(mb, l1, l0, col); Skirt(mb, r0, r1, col);
+                }
                 else if (r.ribbon == null)                       // BM07 worlds draw the embankment ribbon with the terrain instead
                 {
                     Vector3 out0 = Flat(l0 - r0).normalized, out1 = Flat(l1 - r1).normalized;
@@ -99,9 +103,11 @@ public class ChunkMeshes
             for (int t = 0; t + 2 < j.tri.Length; t += 3) mb.Tri(first + j.tri[t], first + j.tri[t + 1], first + j.tri[t + 2]);
             for (int e = 0; e < j.mouth.Length; e++)              // kerb edges get the verge, road mouths do not
             {
-                if (j.mouth[e] || j.ribbon != null) continue;
+                if (j.mouth[e]) continue;
                 Vector3 a = mb.V[first + j.edge[e * 2]], b = mb.V[first + j.edge[e * 2 + 1]], along = Flat(b - a);
                 if (along.sqrMagnitude < 1e-6f) continue;
+                if (d.Seam.Length > 0) { Skirt(mb, b, a, col); continue; }
+                if (j.ribbon != null) continue;
                 Vector3 outward = new Vector3(along.z, 0f, -along.x).normalized;      // the surface lies on the left of the edge
                 Verge(mb, d, a, b, outward, outward, !j.dirt);
             }
@@ -109,6 +115,16 @@ public class ChunkMeshes
     }
 
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
+
+    const float SkirtDepth = 0.35f;
+    /// <summary>A strip hanging from a paved edge a -> b, seen from both sides: the ground meets the edge at its own vertices, which the
+    /// road mesh does not share, so hairline cracks would show the sky through.</summary>
+    static void Skirt(MeshBuilder mb, Vector3 a, Vector3 b, Color32 col)
+    {
+        Vector3 dn = Vector3.down * SkirtDepth;
+        int i0 = mb.Vertex(a, col), i1 = mb.Vertex(b, col), i2 = mb.Vertex(b + dn, col), i3 = mb.Vertex(a + dn, col);
+        mb.Quad(i0, i1, i2, i3); mb.Quad(i0, i3, i2, i1);
+    }
 
     const float TunnelHeight = 5.0f, PortalMargin = 2.0f, PortalTop = 2.5f;      // headroom (the builder's TUNNEL_CLEARANCE); the portal's frame around the opening
     static readonly Color32 TunnelInside = new Color32(58, 58, 62, 255);
@@ -352,7 +368,7 @@ public class ChunkMeshes
             {
                 int gi = z * CV + x;
                 int v = mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, d.H[gi], d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
-                if (d.GroundClass != null && d.GroundClass[gi] != 0) mb.Uv(v, new Vector2(d.GroundClass[gi], d.RowDir[gi]));     // BN02: the shader's ground material
+                if (d.GroundClass != null && d.GroundClass[gi] != 0) mb.Uv(v, new Vector3(d.GroundClass[gi], d.RowDir[gi], PatchWeight(d, x, z)));     // BN02: the shader's ground material
             }
         for (int z = 0; z < CV - 1; z++)
             for (int x = 0; x < CV - 1; x++)
@@ -361,13 +377,17 @@ public class ChunkMeshes
                 int a = z * CV + x, b = a + CV, c = a + 1, e = b + 1;
                 if (((x + z) & 1) == 0) { mb.Tri(a, b, e); mb.Tri(a, e, c); } else { mb.Tri(a, b, c); mb.Tri(c, b, e); }
             }
-        for (int k = 0; k + 8 < d.Seam.Length; k += 9)                                   // the seam between the road band and the kept cells: shares both sides' vertices
+        for (int t = 0; t * 9 + 8 < d.Seam.Length; t++)                                  // the ground around the paved surfaces (stitch.py): shares the kept cells' corners
         {
-            int a = mb.Vertex(new Vector3(d.Seam[k], d.Seam[k + 1], d.Seam[k + 2]), GroundColour(d, d.Seam[k], d.Seam[k + 2]));
-            int b = mb.Vertex(new Vector3(d.Seam[k + 3], d.Seam[k + 4], d.Seam[k + 5]), GroundColour(d, d.Seam[k + 3], d.Seam[k + 5]));
-            int e = mb.Vertex(new Vector3(d.Seam[k + 6], d.Seam[k + 7], d.Seam[k + 8]), GroundColour(d, d.Seam[k + 6], d.Seam[k + 8]));
-            GroundUv(d, mb, a); GroundUv(d, mb, b); GroundUv(d, mb, e);
-            mb.Tri(a, b, e);
+            int[] v = new int[3];
+            for (int q = 0; q < 3; q++)
+            {
+                int k = t * 9 + q * 3; float f = d.SeamF[t * 3 + q];                         // f: 1 on a paved edge, 0 where the field is the terrain
+                var ground = GroundColour(d, d.Seam[k], d.Seam[k + 2]);
+                v[q] = mb.Vertex(new Vector3(d.Seam[k], d.Seam[k + 1], d.Seam[k + 2]), Color32.Lerp(ground, Shoulder, Mathf.SmoothStep(0f, 1f, (f - 0.86f) / 0.12f)));     // a gravel edge
+                GroundUv(d, mb, v[q], 1f - f);                                                // no field pattern on the verge
+            }
+            mb.Tri(v[0], v[1], v[2]);
         }
         void Skirt(int i0, int i1)                                                       // hides the cracks against a neighbour drawn with the 16 m mesh
         {
@@ -384,14 +404,27 @@ public class ChunkMeshes
         }
     }
 
-    /// <summary>BN02: gives vertex v the ground class and row direction of the nearest 4 m grid vertex (none where the chunk has none).</summary>
-    static void GroundUv(ChunkData d, MeshBuilder mb, int v)
+    /// <summary>BN02: 1 where all four neighbours of grid vertex (x, z) share its class, else 0: a pattern fades out at a patch's border
+    /// instead of ending on the saw-tooth of whole triangles.</summary>
+    static float PatchWeight(ChunkData d, int x, int z)
+    {
+        const int CV = ChunkData.CV; byte c = d.GroundClass[z * CV + x];
+        if (x > 0 && d.GroundClass[z * CV + x - 1] != c) return 0f;
+        if (x < CV - 1 && d.GroundClass[z * CV + x + 1] != c) return 0f;
+        if (z > 0 && d.GroundClass[(z - 1) * CV + x] != c) return 0f;
+        if (z < CV - 1 && d.GroundClass[(z + 1) * CV + x] != c) return 0f;
+        return 1f;
+    }
+
+    /// <summary>BN02: gives vertex v the ground class and row direction of the nearest 4 m grid vertex (none where the chunk has none),
+    /// its pattern scaled by `weight`.</summary>
+    static void GroundUv(ChunkData d, MeshBuilder mb, int v, float weight = 1f)
     {
         if (d.GroundClass == null) return;
         const int CV = ChunkData.CV; Vector3 p = mb.V[v];
         int ix = Mathf.Clamp(Mathf.RoundToInt((p.x - d.x0) / WorldData.Cell), 0, CV - 1), iz = Mathf.Clamp(Mathf.RoundToInt((p.z - d.z0) / WorldData.Cell), 0, CV - 1);
         int gi = iz * CV + ix;
-        if (d.GroundClass[gi] != 0) mb.Uv(v, new Vector2(d.GroundClass[gi], d.RowDir[gi]));
+        if (d.GroundClass[gi] != 0) mb.Uv(v, new Vector3(d.GroundClass[gi], d.RowDir[gi], weight * PatchWeight(d, ix, iz)));
     }
 
     /// <summary>Ground colour of the 4 m grid at (x, z), bilinear (clamped to the chunk).</summary>

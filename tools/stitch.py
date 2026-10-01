@@ -1,40 +1,130 @@
-"""The seam between the roads and the 4 m terrain, made watertight.
+"""The ground along the roads: one smooth height field from the paved surfaces to the terrain, cut into the 4 m grid without a step.
 
-Along every road the ground is drawn by the road band: carriageways, junctions, car parks and the embankment ribbons out to their
-outer edge (roads/terrain.py). The 4 m terrain cells that band touches are cut out of the grid (BM07 hole list), and the gap
-between the band's outline and the remaining cells is filled with triangles whose vertices are exactly the band's outline points
-(at the band's height) and the grid corners (at the terrain's height). Nothing is lowered, lifted or overlapped: the terrain keeps
-its own heights everywhere it is drawn, and the band meets it without a step.
+The paved surfaces (carriageways, junctions, car parks) are drawn by themselves. Around them the ground is a height field:
 
-  band_polygons   plan outline of the band
-  band_surface    its triangles (x, north, height), for the heights of the outline points
-  cut_cells       the 4 m cells to drop
-  fill            per chunk, the triangles between the band and the kept cells, wound clockwise seen from above
+  y(p) = g(p) + sum_i w_i f_i (e_i - g(p)),   f_i = 1 - smoothstep(d_i / W_i),   w_i = f_i^4 / sum_j f_j^4
+
+over the paved edge samples i near p (edge height e_i, distance d_i, blend width W_i), g the terrain surface itself (the 4 m mesh).
+On a paved edge the field is the edge's height, it leaves it level and meets the terrain tangent to it at W, and where several edges
+are near (junction corners, roads side by side) it blends them instead of overlapping: no crease, crack or fold. W is the narrowest
+of RIBBON_MIN .. RIBBON_REACH keeping the steepest part (1.5 x the height difference / W) at BLEND_SLOPE or less.
+
+The 4 m cells the field or the paved surfaces touch are cut out of the grid (BM07 hole list) and filled with triangles: the paved
+outline's points (at the paved height), a FILL_STEP grid inside, and the kept cells' corners, where the field equals the terrain.
+
+  EdgeField      the field, from the paved edges
+  surfaces       plan outline of the paved surfaces; PavedHeight, their height at outline points
+  cut_cells      the 4 m cells to drop
+  fill           per chunk, the triangles (and per vertex the field's weight f, for the verge colour), clockwise seen from above
 """
 import numpy as np
 import shapely
 from rasterio import features
 from rasterio.transform import from_origin
 from scipy.spatial import cKDTree
-from shapely.geometry import Polygon, box
+from shapely.geometry import box
 
-SNAP = 0.01            # m: an outline point this close to a band vertex takes its height
+from roads import config
+from roads.terrain import smoothstep
 
-
-def band_polygons(footprints, ribbons, park_polygons):
-    """Plan polygons of the band: road and junction footprints, car parks, and each ribbon side from its edge to its outer end."""
-    out = list(footprints) + list(park_polygons)
-    for _, side, edge, o, prof, segs in ribbons:
-        outer = edge[:, :2] + o * prof[:, 0:1]
-        for a, b in segs:
-            quad = Polygon([edge[a, :2], edge[b, :2], outer[b], outer[a]])
-            if quad.area > 1e-4:
-                out.append(quad if quad.is_valid else quad.buffer(0))
-    return shapely.union_all([p for p in out if not p.is_empty]).buffer(0)
+SNAP = 0.01            # m: a fill point this close to a paved outline takes the paved height
+FILL_STEP = 2.0        # m between the fill's inner points
+NEIGHBOURS = 16        # edge samples blended at each point
+SAMPLE_STEP = 1.0      # m between edge samples
 
 
-def band_surface(pieces, meshes, ribbons, park_meshes, ribbon_triangles, junction_triangles):
-    """Triangles (t, 3, 3) (x, north, height) of everything the band draws."""
+def _densify(points, step):
+    out = [points[:1]]
+    for a, b in zip(points[:-1], points[1:]):
+        n = max(int(np.ceil(np.hypot(*(b[:2] - a[:2])) / step)), 1)
+        out.append(a[None, :] + (b - a)[None, :] * (np.arange(1, n + 1) / n)[:, None])
+    return np.vstack(out)
+
+
+def blend_width(xy, y, out, ground):
+    """W per edge sample: the narrowest of RIBBON_MIN .. RIBBON_REACH (0.5 m steps) where the terrain lies within BLEND_SLOPE x W / 1.5
+    of the edge's height, measured along `out`; RIBBON_REACH where none does."""
+    d = np.arange(config.RIBBON_MIN, config.RIBBON_REACH + 0.01, 0.5)
+    p = xy[:, None, :] + out[:, None, :] * d[None, :, None]
+    g = ground(p.reshape(-1, 2)).reshape(len(xy), len(d))
+    ok = 1.5 * np.abs(g - y[:, None]) <= config.BLEND_SLOPE * d[None, :]
+    return np.where(ok.any(axis=1), d[np.argmax(ok, axis=1)], config.RIBBON_REACH)
+
+
+class EdgeField:
+    """The height field around the paved edges. `edges`: [(points (n, 3) x, north, height along the edge, outward (n, 2))]."""
+
+    def __init__(self, edges, ground):
+        xy, y, out = [], [], []
+        for pts, o in edges:
+            if len(pts) < 2:
+                continue
+            dense = _densify(np.c_[pts, o], SAMPLE_STEP)
+            xy.append(dense[:, :2]); y.append(dense[:, 2])
+            n = dense[:, 3:5]; out.append(n / np.maximum(np.hypot(n[:, 0], n[:, 1]), 1e-9)[:, None])
+        self.ground = ground
+        self.xy = np.vstack(xy) if xy else np.zeros((0, 2))
+        self.y = np.concatenate(y) if y else np.zeros(0)
+        self.width = blend_width(self.xy, self.y, np.vstack(out), ground) if xy else np.zeros(0)
+        self.tree = cKDTree(self.xy) if len(self.xy) else None
+
+    def influence(self, p):
+        """(heights of the near samples (m, k), their f (m, k)) at plan points p (m, 2)."""
+        k = min(NEIGHBOURS, len(self.xy))
+        d, i = self.tree.query(p, k=k, distance_upper_bound=config.RIBBON_REACH)
+        d, i = d.reshape(len(p), k), i.reshape(len(p), k)
+        real = i < len(self.xy)
+        ii = np.where(real, i, 0)
+        f = np.where(real, 1.0 - smoothstep(np.clip(d / self.width[ii], 0.0, 1.0)), 0.0)
+        return self.y[ii], f
+
+    def __call__(self, p, ground=None):
+        """(height, f = the strongest influence, 0 where only the terrain counts) at plan points p (m, 2); `ground`: the heights the
+        field blends to there instead of the terrain's (a car park's own)."""
+        g = self.ground(p) if ground is None else np.asarray(ground, float)
+        if self.tree is None or not len(p):
+            return g, np.zeros(len(p))
+        e, f = self.influence(p)
+        w = f ** 4
+        total = w.sum(axis=1)
+        mix = np.where(total > 0, (w * f * (e - g[:, None])).sum(axis=1) / np.maximum(total, 1e-12), 0.0)
+        return g + mix, f.max(axis=1)
+
+
+def paved_edges(pieces, meshes, park_meshes):
+    """Edges of the ground-level paved surfaces with their outward directions: both sides of every drawn road run, the kerbs of every
+    junction (mouths excluded: a road continues there), the outline of every car park."""
+    out = []
+    for p in pieces:
+        if p.bridge or p.tunnel or not p.drawn.any():
+            continue
+        across = p.left[:, :2] - p.right[:, :2]
+        o = across / np.maximum(np.hypot(across[:, 0], across[:, 1]), 1e-6)[:, None]
+        runs = np.split(np.flatnonzero(p.drawn), np.flatnonzero(np.diff(np.flatnonzero(p.drawn)) != 1) + 1)
+        for run in runs:
+            idx = np.r_[run, run[-1] + 1]
+            out += [(p.left[idx], o[idx]), (p.right[idx], -o[idx])]
+    for j, v in meshes:
+        kerb = j.boundary[j.boundary[:, 2] == 0][:, :2]
+        for a, b in kerb:
+            d = v[b, :2] - v[a, :2]
+            n = np.array([d[1], -d[0]]) / max(np.hypot(*d), 1e-9)                       # the surface lies on the left: outward is to the right
+            out.append((v[[a, b]], np.vstack([n, n])))
+    for v, t in park_meshes:
+        e = np.sort(np.c_[t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]].reshape(-1, 2), axis=1)
+        uniq, count = np.unique(e, axis=0, return_counts=True)
+        for a, b in uniq[count == 1]:                                                    # outline edges: used by one triangle
+            d = v[b, :2] - v[a, :2]
+            n = np.array([d[1], -d[0]]) / max(np.hypot(*d), 1e-9)
+            centre = v[t].reshape(-1, 3)[:, :2].mean(axis=0)
+            if n @ (0.5 * (v[a, :2] + v[b, :2]) - centre) < 0:
+                n = -n
+            out.append((v[[a, b]], np.vstack([n, n])))
+    return out
+
+
+def paved_triangles(pieces, meshes, park_meshes, junction_triangles):
+    """Triangles (t, 3, 3) (x, north, height) of the ground-level paved surfaces."""
     tris = []
     for p in pieces:
         if p.bridge or p.tunnel:
@@ -44,94 +134,102 @@ def band_surface(pieces, meshes, ribbons, park_meshes, ribbon_triangles, junctio
             tris += [(l0, r0, r1), (l0, r1, l1)]
     for j, v in meshes:
         tris += list(v[junction_triangles(j, v)])
-    for t in ribbon_triangles:
-        tris += list(t)
     for v, t in park_meshes:
         tris += list(v[t])
     return np.asarray(tris, float).reshape(-1, 3, 3)
 
 
-class BandHeight:
-    """Height of the band's surface at plan points on or near it: a band vertex within SNAP, else the triangle holding the point (the
-    highest where several do, the one drawn on top), else the nearest triangle's plane clamped to it."""
+class PavedHeight:
+    """Height of the paved surfaces at plan points on their outline: a vertex within SNAP, else the triangle edge through the point
+    (the highest where several meet: the one drawn on top)."""
 
     def __init__(self, tris):
         self.tris = tris
-        self.vertex_tree = cKDTree(tris.reshape(-1, 3)[:, :2]) if len(tris) else None
-        self.vertex_y = tris.reshape(-1, 3)[:, 2]
-        self.centre_tree = cKDTree(tris[:, :, :2].mean(axis=1)) if len(tris) else None
-        self.reach = float(np.max(np.hypot(*(tris[:, :, :2] - tris[:, :, :2].mean(axis=1)[:, None, :]).transpose(2, 0, 1)))) if len(tris) else 0.0
+        flat = tris.reshape(-1, 3)
+        self.vtree = cKDTree(flat[:, :2]) if len(flat) else None
+        self.vy = flat[:, 2]
+        self.ctree = cKDTree(tris[:, :, :2].mean(axis=1)) if len(tris) else None
+        self.reach = float(np.hypot(*(tris[:, :, :2] - tris[:, :, :2].mean(axis=1)[:, None, :]).transpose(2, 0, 1)).max()) if len(tris) else 0.0
 
     def __call__(self, xy):
         out = np.full(len(xy), np.nan)
-        if self.vertex_tree is None:
+        if self.vtree is None:
             return out
-        hits = self.vertex_tree.query_ball_point(xy, SNAP)
-        for i, h in enumerate(hits):
-            if h:
-                out[i] = self.vertex_y[h].max()
+        for i, hit in enumerate(self.vtree.query_ball_point(xy, SNAP)):
+            if hit:
+                out[i] = self.vy[hit].max()
                 continue
-            best, best_d = np.nan, np.inf
-            for t in self.centre_tree.query_ball_point(xy[i], self.reach + SNAP):
+            best = -np.inf
+            for t in self.ctree.query_ball_point(xy[i], self.reach + SNAP):
                 a, b, c = self.tris[t]
                 det = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
                 if abs(det) < 1e-9:
                     continue
                 wb = ((xy[i, 0] - a[0]) * (c[1] - a[1]) - (xy[i, 1] - a[1]) * (c[0] - a[0])) / det
                 wc = ((b[0] - a[0]) * (xy[i, 1] - a[1]) - (b[1] - a[1]) * (xy[i, 0] - a[0])) / det
-                wa = 1.0 - wb - wc
-                off = -min(wa, wb, wc, 0.0)                                              # 0 inside, grows outside
-                y = a[2] * wa + b[2] * wb + c[2] * wc
-                if off < best_d - 1e-9 or (abs(off - best_d) <= 1e-9 and y > best):
-                    w = np.clip([wa, wb, wc], 0.0, None); w /= w.sum()
-                    best, best_d = (y if off == 0 else a[2] * w[0] + b[2] * w[1] + c[2] * w[2]), off
-            out[i] = best
+                if min(wb, wc, 1 - wb - wc) >= -1e-3:
+                    best = max(best, a[2] + wb * (b[2] - a[2]) + wc * (c[2] - a[2]))
+            out[i] = best if np.isfinite(best) else np.nan
         return out
 
 
-def cut_cells(band, x0, z0, cell, rows, cols):
-    """(rows - 1, cols - 1) bool, row 0 south: the 4 m cells the band touches."""
+def cut_cells(surfaces, field, x0, z0, cell, rows, cols):
+    """(rows - 1, cols - 1) bool, row 0 south: the 4 m cells the paved surfaces touch or with a corner the field reaches."""
     transform = from_origin(x0, z0 + (rows - 1) * cell, cell, cell)
-    shapes = [band] if band.geom_type == "Polygon" else list(band.geoms)
-    return features.rasterize([(g, 1) for g in shapes], out_shape=(rows - 1, cols - 1), transform=transform, dtype=np.uint8,
-                              all_touched=True).astype(bool)[::-1]
+    shapes = [surfaces] if surfaces.geom_type == "Polygon" else list(getattr(surfaces, "geoms", []))
+    cut = features.rasterize([(g, 1) for g in shapes], out_shape=(rows - 1, cols - 1), transform=transform, dtype=np.uint8,
+                             all_touched=True).astype(bool)[::-1] if shapes else np.zeros((rows - 1, cols - 1), bool)
+    if field.tree is not None:
+        gz, gx = np.mgrid[0:rows, 0:cols]
+        corners = np.c_[x0 + gx.ravel() * cell, z0 + gz.ravel() * cell]
+        near = np.zeros(len(corners), bool)
+        close = field.tree.query(corners, k=1, distance_upper_bound=config.RIBBON_REACH)[0] < np.inf
+        if close.any():
+            _, f = field.influence(corners[close])
+            near[close] = (f > 0).any(axis=1)
+        near = near.reshape(rows, cols)
+        cut |= near[:-1, :-1] | near[1:, :-1] | near[:-1, 1:] | near[1:, 1:]
+    return cut
 
 
-def fill(band, cut, H, x0, z0, cell, chunk_box, band_height):
-    """Triangles (t, 3, 3) (x, north, height) filling the cut cells of one chunk around the band, wound clockwise seen from above.
-    Heights: band outline points from `band_height`, grid corners from `H`."""
+def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
+    """The ground of one chunk's cut cells around the paved surfaces: (triangles (t, 3, 3) x, north, height wound clockwise seen from
+    above, field weight f (t, 3) per vertex)."""
     bx0, bz0, bx1, bz1 = chunk_box
     c0, c1 = int(round((bx0 - x0) / cell)), int(round((bx1 - x0) / cell))
     r0, r1 = int(round((bz0 - z0) / cell)), int(round((bz1 - z0) / cell))
     rr, cc = np.nonzero(cut[r0:r1, c0:c1])
     if not len(rr):
-        return np.zeros((0, 3, 3))
-    cells = shapely.union_all([box(x0 + (c0 + c) * cell, z0 + (r0 + r) * cell, x0 + (c0 + c + 1) * cell, z0 + (r0 + r + 1) * cell) for r, c in zip(rr, cc)])
-    gap = cells.difference(band.intersection(box(bx0 - 1, bz0 - 1, bx1 + 1, bz1 + 1)))
-    parts = [g for g in getattr(gap, "geoms", [gap]) if g.geom_type == "Polygon" and g.area > 1e-4]
-    if not parts:
-        return np.zeros((0, 3, 3))
-    tri = shapely.constrained_delaunay_triangles(shapely.MultiPolygon(parts) if len(parts) > 1 else parts[0])
-    pts = np.array([np.array(t.exterior.coords)[:3] for t in tri.geoms])
-    if not len(pts):
-        return np.zeros((0, 3, 3))
+        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+    k = int(round(cell / FILL_STEP))
+    sx, sz = np.meshgrid(np.arange(k), np.arange(k))
+    ox = x0 + (c0 + cc[:, None]) * cell + sx.ravel()[None, :] * FILL_STEP
+    oz = z0 + (r0 + rr[:, None]) * cell + sz.ravel()[None, :] * FILL_STEP
+    boxes = shapely.box(ox.ravel(), oz.ravel(), ox.ravel() + FILL_STEP, oz.ravel() + FILL_STEP)
+    paved = surfaces.intersection(box(bx0 - 1, bz0 - 1, bx1 + 1, bz1 + 1))
+    pieces = shapely.difference(boxes, paved)
+    tris = []
+    for g in pieces:
+        for part in getattr(g, "geoms", [g]):
+            if part.geom_type == "Polygon" and part.area > 1e-5:
+                tris += [np.array(t.exterior.coords)[:3] for t in shapely.constrained_delaunay_triangles(part).geoms]
+    if not tris:
+        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+    pts = np.array(tris)
     xy = pts.reshape(-1, 2)
+    y, f = field(xy)
+    on_paved = shapely.dwithin(paved, shapely.points(xy), SNAP) if not paved.is_empty else np.zeros(len(xy), bool)
+    if on_paved.any():
+        py = paved_height(xy[on_paved])
+        y[on_paved] = np.where(np.isnan(py), y[on_paved], py)
+        f[on_paved] = 1.0
     gx, gz = (xy[:, 0] - x0) / cell, (xy[:, 1] - z0) / cell
-    on_grid = (np.abs(gx - np.round(gx)) < 1e-6) & (np.abs(gz - np.round(gz)) < 1e-6)
-    near_band = shapely.dwithin(band, shapely.points(xy), SNAP)
-    y = np.empty(len(xy))
-    grid = on_grid & ~near_band
-    y[grid] = H[np.round(gz[grid]).astype(int), np.round(gx[grid]).astype(int)]
-    rest = ~grid
-    if rest.any():
-        y[rest] = band_height(xy[rest])
-        bad = rest & np.isnan(y)
-        if bad.any():                                                                     # neither on the band nor on the grid: the terrain under it
-            from roads.terrain import _mesh_corners
-            r_, c_, w_ = _mesh_corners(H.shape[0], H.shape[1], x0, z0, cell, xy[bad])
-            y[bad] = (H[r_, c_] * w_).sum(axis=0)
+    corner = (np.abs(gx - np.round(gx)) < 1e-6) & (np.abs(gz - np.round(gz)) < 1e-6) & (f <= 0) & ~on_paved
+    y[corner] = H[np.round(gz[corner]).astype(int), np.round(gx[corner]).astype(int)]         # where the field is the terrain: the grid's own height
     out = np.dstack([pts, y.reshape(-1, 3)])
     a, b, c = out[:, 0, :2], out[:, 1, :2], out[:, 2, :2]
     ccw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
     out[ccw] = out[ccw][:, [0, 2, 1]]
-    return out
+    fw = f.reshape(-1, 3)
+    fw[ccw] = fw[ccw][:, [0, 2, 1]]
+    return out, fw

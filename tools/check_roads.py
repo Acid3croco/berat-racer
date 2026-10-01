@@ -98,7 +98,9 @@ def parse_mid(raw):
     d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if version >= 6 else []     # water carried by a structure
     d["lane_list"] = read_lanes(r) if version >= 7 else []
     d["holes"] = np.frombuffer(r.take(2 * r.i()), "<u2").astype(int) if version >= 7 else np.zeros(0, int)
-    d["seam"] = r.fl(9 * r.i()).reshape(-1, 3, 3) if version >= 7 else np.zeros((0, 3, 3))      # x, y, z: between the road band and the kept cells
+    ns = r.i() if version >= 7 else 0
+    d["seam"] = r.fl(9 * ns).reshape(-1, 3, 3)                                       # x, y, z: the ground around the paved surfaces
+    d["seam_f"] = r.fl(3 * ns).reshape(-1, 3)                                        # its field weight per vertex
     d["bld"] = r.i()
     d["bld_list"] = []
     for _ in range(d["bld"]):

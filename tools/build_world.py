@@ -204,41 +204,6 @@ def densify_pts(pts, step=0.5):
         t = (np.arange(n) / n)[:, None]; out.append(a[None, :] + (b - a)[None, :] * t)
     return np.vstack(out) if out else pts
 
-def road_ribbons(pieces, meshes, natural, footprint):
-    """Embankment ribbons (roads/terrain.py) of the roads and junction kerbs: [(owner, side, edge points (n, 3), outward (n, 2),
-    profile (n, 5), segments)], side 0 / 1 for a road's left / right, -1 for a junction's kerbs."""
-    out_list, normal_at = [], {}
-    for p in pieces:
-        if p.bridge or p.tunnel or not p.drawn.any(): continue
-        across = p.left[:, :2] - p.right[:, :2]
-        out = across / np.maximum(np.hypot(across[:, 0], across[:, 1]), 1e-6)[:, None]
-        drawn = np.flatnonzero(p.drawn)
-        for side, (edge, o) in enumerate(((p.left, out), (p.right, -out))):
-            out_list.append((p, side, edge, o, road_terrain.ribbon_profile(edge, o, natural, footprint), [(k, k + 1) for k in drawn]))
-            for k in {int(drawn[0]), int(drawn[-1]) + 1}:
-                normal_at[(edge[k, 0], edge[k, 1])] = o[k]
-    for j, v in meshes:
-        kerb = j.boundary[j.boundary[:, 2] == 0]
-        if not len(kerb): continue
-        out = np.zeros((len(v), 2))
-        for a, b in kerb[:, :2]:
-            d = v[b, :2] - v[a, :2]
-            out[a] += [d[1], -d[0]]; out[b] += [d[1], -d[0]]                          # the surface lies on the left: outward is to the right
-        out /= np.maximum(np.hypot(out[:, 0], out[:, 1]), 1e-9)[:, None]
-        for i in range(len(v)):                                                      # where a kerb meets a road edge, the road's ribbon continues
-            if (v[i, 0], v[i, 1]) in normal_at: out[i] = normal_at[(v[i, 0], v[i, 1])]
-        used = np.unique(kerb[:, :2])
-        prof = np.zeros((len(v), 8))
-        reach = road_terrain.kerb_reach(v, kerb[:, :2], out)
-        prof[used] = road_terrain.ribbon_profile(v[used], out[used], natural, footprint, reach[used])
-        out_list.append((j, -1, v, out, prof, [tuple(e) for e in kerb[:, :2]]))
-    return out_list
-
-def ribbon_tris(ribbons):
-    """The ribbons' triangles without their aprons: what the terrain is lowered under."""
-    tris = [road_terrain.ribbon_triangles(road_terrain.ribbon_points(edge, o, prof), segs) for _, _, edge, o, prof, segs in ribbons if segs]
-    return np.concatenate(tris) if tris else np.zeros((0, 3, 3))
-
 def tunnel_holes(H, pieces, x0, z0):
     """4 m cells cut out of the terrain over a tunnel road wherever the ground there is less than TUNNEL_CLEARANCE above the road
     (the portals: the hill face meets the road there). (rows, cols) of cells, True = hole."""
@@ -555,7 +520,7 @@ def process_sector(args):
     cloud = road_surface.cloud(pieces, meshes)
     corr = [g.buffer(0.35) for g in [q for q in (p.polygon() for p in pieces) if q is not None] + [j.polygon for j, _ in meshes]]
     corr_tree = shapely.STRtree(corr) if corr else None
-    # ---- ground areas (tools/ground.py); car parks are paved like the roads: the road-edge ribbons stop at them, the photo's colour skips them
+    # ---- ground areas (tools/ground.py); car parks are paved like the roads, and the photo's colour skips them
     to_local = lambda g: shapely.transform(shapely.force_2d(g), lambda c: c - np.array([CX, CY]))
     wx0, wz0, wx1, wz1 = win.x0, win.z0, win.x0 + win.size, win.z0 + win.size
     near_osm = [f for f in osm_ground(road_tag) if f["_bounds"][2] >= wx0 and f["_bounds"][0] <= wx1 and f["_bounds"][3] >= wz0 and f["_bounds"][1] <= wz1]
@@ -615,33 +580,26 @@ def process_sector(args):
         h[m] = np.minimum(h[m], seg[ii, 2] - drop)
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
     # the terrain stays natural beside the roads: the embankment ribbons are drawn over it, and it is lowered under them
-    h_dug = h.reshape(nv, nv).copy()
-    mnt_ribbon = gaussian_filter(win.mnt, road_config.RIBBON_GROUND_SIGMA / 2.0)       # the ground the ribbons follow: LiDAR (2 m) smoothed over a few metres
-    def ribbon_ground(xy):
-        """The LiDAR ground, except where the terrain is dug below it (water beds): there the terrain, so a ribbon going down a bank
-        meets the ground it will be drawn next to, not the bank top a 4 m cell further."""
-        lidar = win.sample(mnt_ribbon, xy[:, 0], xy[:, 1], 2)
-        rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
-        grid = (h_dug[rr, cc] * ww).sum(axis=0)
-        dug = np.clip((lidar - grid - road_config.DUG_BELOW) / road_config.DUG_BLEND, 0.0, 1.0)      # a gradual hand-over: no step between the two
-        return lidar - dug * (lidar - grid)
-    ribbons = road_ribbons(pieces, meshes, ribbon_ground, paved)
-    # the terrain keeps its own heights: the band along the roads (carriageways, junctions, car parks, ribbons) is cut out of the 4 m
-    # grid and the gap between the band and the kept cells is filled with triangles sharing both sides' vertices (stitch.py)
+    # the terrain keeps its own heights. Around the paved surfaces (carriageways, junctions, car parks) the ground is one smooth field
+    # from their edges to the terrain; the 4 m cells it reaches are cut out of the grid and filled from it (stitch.py)
     H = h.reshape(nv, nv).copy()
     def terrain_at(xy):
         rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
         return (H[rr, cc] * ww).sum(axis=0)
-    park_meshes = [m for m in (land.parking_mesh(q, terrain_at) for q in parks) if len(m[1])]
-    band = stitch.band_polygons(road_surface.footprints(pieces, meshes), ribbons, parks)
-    band_cut = stitch.cut_cells(band, win.x0, win.z0, CELL, nv, nv)
-    band_height = stitch.BandHeight(stitch.band_surface(pieces, meshes, ribbons, park_meshes, [ribbon_tris([r]) for r in ribbons if r[5]], road_surface.junction_triangles))
+    road_field = stitch.EdgeField(stitch.paved_edges(pieces, meshes, []), terrain_at)
+    park_meshes = []
+    for q in parks:                                                                   # a car park eases to the level of the roads it meets
+        v, t = land.parking_mesh(q, terrain_at)
+        if len(t):
+            v[:, 2] = road_field(v[:, :2], v[:, 2] - land.PARK_LIFT)[0] + land.PARK_LIFT
+            park_meshes.append((v, t))
+    field = stitch.EdgeField(stitch.paved_edges(pieces, meshes, park_meshes), terrain_at)
+    surfaces = shapely.union_all(road_surface.footprints(pieces, meshes) + parks) if (pieces or parks) else Polygon()
+    band_cut = stitch.cut_cells(surfaces, field, win.x0, win.z0, CELL, nv, nv)
+    paved_height = stitch.PavedHeight(stitch.paved_triangles(pieces, meshes, park_meshes, road_surface.junction_triangles))
     # the 16 m terrain, drawn far away without ribbons, keeps the old embankments: blended to the road, then benched under it
     H_far = road_terrain.bench(road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
-    ribbon_piece, ribbon_junction = {}, {}
-    for owner, side, _, o, prof, _ in ribbons:
-        if side < 0: ribbon_junction[id(owner)] = (o, prof)
-        else: ribbon_piece.setdefault(id(owner), [None, None])[side] = prof
+    ribbon_piece, ribbon_junction = {}, {}                                          # the field replaced the per-edge ribbons: none exported
     holes = tunnel_holes(H, pieces, win.x0, win.z0) | band_cut
     troughs = carried_water(areas, H, wmask, wlevel, pieces, win.x0, win.z0, nv)
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
@@ -940,8 +898,8 @@ def process_sector(args):
             put_lanes(buf, lane_b.get(key, []))                                         # BM07: the lane graph traffic drives on
             hole = np.flatnonzero(holes[r0:r0 + CV - 1, c0:c0 + CV - 1].ravel())         # BM07: terrain cells cut away (tunnel portals), row-major from the south-west
             wi(buf, len(hole)); buf += hole.astype("<u2").tobytes()
-            seam = stitch.fill(band, band_cut, H, win.x0, win.z0, CELL, (win.x0 + c0 * CELL, win.z0 + r0 * CELL, win.x0 + c0 * CELL + CHUNK, win.z0 + r0 * CELL + CHUNK), band_height)
-            wi(buf, len(seam)); wfa(buf, seam[:, :, [0, 2, 1]].ravel())                  # BM07: the triangles between the road band and the kept cells (x, y, z)
+            seam, seam_f = stitch.fill(surfaces, band_cut, H, win.x0, win.z0, CELL, (win.x0 + c0 * CELL, win.z0 + r0 * CELL, win.x0 + c0 * CELL + CHUNK, win.z0 + r0 * CELL + CHUNK), field, paved_height)
+            wi(buf, len(seam)); wfa(buf, seam[:, :, [0, 2, 1]].ravel()); wfa(buf, seam_f.ravel())   # BM07: the ground around the paved surfaces (x, y, z), its field weight per vertex
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
                 b = buildings[k]
