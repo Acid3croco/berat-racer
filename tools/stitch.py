@@ -213,14 +213,14 @@ def cut_cells(surfaces, field, x0, z0, cell, rows, cols):
 
 
 def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
-    """The ground of one chunk's cut cells around the paved surfaces: (triangles (t, 3, 3) x, north, height wound clockwise seen from
-    above, field weight f (t, 3) per vertex)."""
+    """The ground of one chunk's cut cells around the paved surfaces: (vertices (n, 3) x, north, height; their field weight f (n,);
+    triangles (t, 3) of vertex indices, wound clockwise seen from above)."""
     bx0, bz0, bx1, bz1 = chunk_box
     c0, c1 = int(round((bx0 - x0) / cell)), int(round((bx1 - x0) / cell))
     r0, r1 = int(round((bz0 - z0) / cell)), int(round((bz1 - z0) / cell))
     rr, cc = np.nonzero(cut[r0:r1, c0:c1])
     if not len(rr):
-        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+        return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
     k = int(round(cell / FILL_STEP))
     sx, sz = np.meshgrid(np.arange(k), np.arange(k))
     ox = x0 + (c0 + cc[:, None]) * cell + sx.ravel()[None, :] * FILL_STEP
@@ -236,13 +236,13 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     parts = shapely.get_parts(pieces)
     parts = parts[(shapely.get_type_id(parts) == shapely.GeometryType.POLYGON) & (shapely.area(parts) > 1e-9)]
     if not len(parts):
-        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+        return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
     triangles = shapely.get_parts(shapely.constrained_delaunay_triangles(parts))
     pts = shapely.get_coordinates(triangles).reshape(len(triangles), 4, 2)[:, :3]
     a, b, c = (pts[:, k].astype(np.float32) for k in range(3))                        # a triangle with two corners at one point as written (float32:
     pts = pts[~((a == b).all(1) | (b == c).all(1) | (c == a).all(1))]                 # a road edge through a fill point) covers nothing; its zero-length edge reads as open
     if not len(pts):
-        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+        return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
     xy, back = np.unique(pts.reshape(-1, 2), axis=0, return_inverse=True)            # a fill point is a corner of ~6 triangles: each is worked out once
     y, f = field(xy)
     on_paved = shapely.dwithin(paved, shapely.points(xy), SNAP) if not paved.is_empty else np.zeros(len(xy), bool)
@@ -271,11 +271,8 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     if vz.any():
         t = gx[vz] - cx2[vz]
         y[vz] = H[rz2[vz], cx2[vz]] * (1 - t) + H[rz2[vz], np.minimum(cx2[vz] + 1, H.shape[1] - 1)] * t
-    y, f = y[back], f[back]
-    out = np.dstack([pts, y.reshape(-1, 3)])
-    a, b, c = out[:, 0, :2], out[:, 1, :2], out[:, 2, :2]
+    tri = back.reshape(-1, 3)
+    a, b, c = xy[tri[:, 0]], xy[tri[:, 1]], xy[tri[:, 2]]
     ccw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
-    out[ccw] = out[ccw][:, [0, 2, 1]]
-    fw = f.reshape(-1, 3)
-    fw[ccw] = fw[ccw][:, [0, 2, 1]]
-    return out, fw
+    tri[ccw] = tri[ccw][:, [0, 2, 1]]
+    return np.c_[xy, y], f, tri
