@@ -108,6 +108,15 @@ def parse_mid(raw):
             b["material"] = r.u8()
             b["roof_v"] = r.fl(3 * r.i()).reshape(-1, 3)
             nt = r.i(); b["roof_t"] = np.frombuffer(r.take(12 * nt), "<i4").reshape(-1, 3); b["roof_gable"] = np.frombuffer(r.take(nt), np.uint8).astype(bool)
+            b["seed"] = r.i(); b["floors"], b["era"], b["wall_material"] = r.u8(), r.u8(), r.u8(); b["floor_h"] = float(r.fl(1)[0])
+            b["walls"] = []
+            for _ in range(r.i()):
+                first, count = r.i(), r.i(); flags = r.u8(); g0, g1 = r.fl(2)
+                openings = []
+                for _ in range(r.i()):
+                    floor, kind = r.u8(), r.u8(); t, width, height, sill = (float(v) for v in r.fl(4))
+                    openings.append((t, floor, kind, width, height, sill))                  # as tools/facades.py lays them out
+                b["walls"].append(dict(first=first, count=count, flags=flags, g0=float(g0), g1=float(g1), openings=openings))
         d["bld_list"].append(b)
     assert r.o == len(raw), (r.o, len(raw))
     return d

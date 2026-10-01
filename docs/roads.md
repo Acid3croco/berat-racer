@@ -165,8 +165,14 @@ Buildings are cut out of the real surface polygons and plants keep clear of them
 (`tools/roofs.py`) are straight skeletons of the footprint and its courtyards: hipped by default, an end becomes a gable where the
 LiDAR surface model stands within 40 % of the ridge just inside it (or OSM tags `roof:shape`), flat under 0.5 m of rise; eave and
 ridge from BD TOPO's roof altitudes, checked against the LiDAR (it wins beyond 2.5 m); the colour from BD TOPO's roof material
-(1 tiles, 2 slate, 3 metal, 4 concrete). A BM07 building record ends with the roof material and the roof mesh (vertices,
-triangles, which are gable walls); its collision rings carry the courtyards.
+(1 tiles, 2 slate, 3 metal, 4 concrete). A wall shared with a neighbour is a gable, so a terrace keeps one ridge. Facades
+(`tools/facades.py`) are laid out offline: nearly collinear outline edges are one wall, shared walls are blind, each wall has the
+ground at both ends, floors come from BD TOPO / OSM / the eave height, and every free wall gets at least one opening per floor in
+aligned columns (door on the road side, a garage after 1970, shopfronts, balconies on blocks of flats); the era and wall material
+choose shutters and finish, the seed comes from `cleabs`. A BM07 building record ends with the roof material, the roof mesh
+(vertices, triangles, which are gable walls), then the facade: seed, floors, era, wall material, floor height, and per wall its
+first outline point, edge count, flags (front, shared, blind, back), ground at both ends and openings (floor, kind, along, width,
+height, sill); its collision rings carry the courtyards.
 
 ## Chunk format (BM07)
 

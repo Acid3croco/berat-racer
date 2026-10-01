@@ -107,6 +107,26 @@ public class BuildingData
     // BM07: the roof as the world builder made it (tools/roofs.py: straight skeleton over the footprint and its courtyards)
     public int roofMaterial = 255;           // BD TOPO roof material: 1 tiles, 2 slate, 3 zinc / metal, 4 concrete; 255 unknown
     public float[] roofV; public int[] roofT; public bool[] roofGable;      // vertices (x, height, z), triangles, gable-wall triangles
+    // BM07: the facade as the world builder laid it out (tools/facades.py)
+    public int seed;                         // from BD TOPO cleabs: the look stays when the outline moves
+    public int floors, era, wallMaterial = 255;      // era 0 unknown, 1 before 1950, 2 1950 - 1970, 3 after; wall material 1 stone .. 6 wood, 9 other
+    public float floorH;
+    public FacadeWall[] walls;
+}
+
+/// <summary>A wall of a building: `count` outline edges from point `first` (nearly collinear), its flags, the ground at both ends, its openings.</summary>
+public class FacadeWall
+{
+    public const int Front = 1, Party = 2, Blind = 4, Back = 8;
+    public int first, count, flags; public float g0, g1;
+    public FacadeOpening[] openings;
+}
+
+/// <summary>A window or door: `t` metres along the wall from its first point (centre), its floor and kind, size, and its bottom above the local ground.</summary>
+public struct FacadeOpening
+{
+    public const int Window = 0, Door = 1, Garage = 2, Shopfront = 3, Balcony = 4;
+    public int floor, kind; public float t, width, height, sill;
 }
 [Serializable] public class WorldInfo { public float x0, z0; public int ncx, ncz; }
 [Serializable] public class SpawnData { public float x, y, z, heading; public string road; }
@@ -218,6 +238,16 @@ public class ChunkData
                 {
                     b.roofMaterial = br.ReadByte(); b.roofV = Floats(br, br.ReadInt32() * 3);
                     int nt = br.ReadInt32(); b.roofT = Ints(br, nt * 3); var g = br.ReadBytes(nt); b.roofGable = new bool[nt]; for (int k = 0; k < nt; k++) b.roofGable[k] = g[k] != 0;
+                    b.seed = br.ReadInt32(); b.floors = br.ReadByte(); b.era = br.ReadByte(); b.wallMaterial = br.ReadByte(); b.floorH = br.ReadSingle();
+                    b.walls = new FacadeWall[br.ReadInt32()];
+                    for (int w = 0; w < b.walls.Length; w++)
+                    {
+                        var fw = new FacadeWall { first = br.ReadInt32(), count = br.ReadInt32(), flags = br.ReadByte(), g0 = br.ReadSingle(), g1 = br.ReadSingle() };
+                        fw.openings = new FacadeOpening[br.ReadInt32()];
+                        for (int o = 0; o < fw.openings.Length; o++)
+                            fw.openings[o] = new FacadeOpening { floor = br.ReadByte(), kind = br.ReadByte(), t = br.ReadSingle(), width = br.ReadSingle(), height = br.ReadSingle(), sill = br.ReadSingle() };
+                        b.walls[w] = fw;
+                    }
                 }
                 d.Buildings[i] = b;
             }

@@ -363,10 +363,11 @@ def flat_cap(poly):
     return np.array([np.array(t.exterior.coords)[:3] for t in tris.geoms]) if not tris.is_empty else np.zeros((0, 3, 2))
 
 
-def building_roof(poly, eave, rise, dsm, osm_shape=None):
+def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
     """The roof of one building: dict(shape: "flat" / "hipped" / "gabled" / "flat fallback", tris (t, 3, 3) absolute (x, north,
     height), wall (t,) gable faces, pitch). `poly`: footprint (shapely, courtyards kept); `eave`, `rise`: metres; `dsm(xy)`: the
-    LiDAR surface (ground + height above ground) at plan points; `osm_shape`: OSM roof:shape, which wins over the LiDAR."""
+    LiDAR surface (ground + height above ground) at plan points; `osm_shape`: OSM roof:shape, which wins over the LiDAR; `party`: per
+    edge (outline, then courtyards), shared with a neighbour: an end there is a gable, so a terrace keeps one ridge."""
     shape = OSM_SHAPES.get(osm_shape) if osm_shape else None
     rings = [np.array(poly.exterior.coords)[:-1]] + [np.array(h.coords)[:-1] for h in poly.interiors]
 
@@ -403,7 +404,7 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None):
                 continue
             d = (b - a) / max(length, 1e-9)
             inside = 0.5 * (a + b) + np.array([-d[1], d[0]]) * GABLE_TEST_INSET
-            if shape == "gabled" or dsm(inside[None])[0] - eave >= GABLE_SHARE * rise:
+            if shape == "gabled" or (party is not None and party[e]) or dsm(inside[None])[0] - eave >= GABLE_SHARE * rise:
                 gables[e] = True
     shaped = roof(rings, pitch, gables) if gables.any() else (hip[0] * [1.0, 1.0, pitch], hip[1])
     if shaped is None or abs(_area(shaped[0][~shaped[1]]) - poly.area) > TILE_FIT * poly.area + 0.5:

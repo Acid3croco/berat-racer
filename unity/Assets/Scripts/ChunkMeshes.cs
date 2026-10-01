@@ -231,7 +231,7 @@ public class ChunkMeshes
     /// <summary>Deterministic per-building look: the same on the mid tier (shell) and the near tier (facade).</summary>
     static Look LookOf(BuildingData bd)
     {
-        var rng = new System.Random((int)(bd.p[0] * 100f) * 73856093 ^ (int)(bd.p[1] * 100f) * 19349663);
+        var rng = new System.Random(bd.walls != null ? bd.seed : (int)(bd.p[0] * 100f) * 73856093 ^ (int)(bd.p[1] * 100f) * 19349663);      // BM07: from cleabs
         var style = Facade.Pick(bd, rng);
         Color32 orthoRoof = C(bd.c[0], bd.c[1], bd.c[2]);
         Color32 roof = style.hasRoof ? style.roof : Facade.RoofTile(orthoRoof, rng);

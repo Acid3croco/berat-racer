@@ -3,6 +3,8 @@
   roofs        how many are pitched, hipped (no gable wall), gabled, flat; for BM07 worlds the exported roof meshes
   outside      roof area hanging outside the footprint (plan): the old gable over the oriented bounding rectangle, or the mesh
   courtyards   buildings with a courtyard kept
+  facades      BM07: walls, shared walls, free walls of 2 m or more with no opening on the ground floor (low walls apart, as in
+               tools/facades.py), openings off their wall or over the eaves
 
 Usage: uv run python check_buildings.py DIR [every]   (every n-th chunk; default 1)
 """
@@ -15,6 +17,7 @@ import numpy as np
 import shapely
 from shapely.geometry import Polygon
 
+import facades
 from check_roads import parse_mid
 
 
@@ -27,7 +30,8 @@ def plan_area(tris):
 
 def check(world_dir, every=1):
     world_dir = Path(world_dir)
-    totals = dict(buildings=0, pitched=0, gabled=0, hipped=0, flat=0, courtyards=0, roof_m2=0.0, outside_m2=0.0, outside_buildings=0)
+    totals = dict(buildings=0, pitched=0, gabled=0, hipped=0, flat=0, courtyards=0, roof_m2=0.0, outside_m2=0.0, outside_buildings=0,
+                  walls=0, party_walls=0, free_walls=0, bare_walls=0, low_walls=0, openings=0, openings_off_wall=0, openings_over_eave=0)
     for path in sorted((world_dir / "chunks").glob("m_*"))[::every]:
         d = parse_mid(gzip.open(path).read())
         for b in d["bld_list"]:
@@ -53,6 +57,19 @@ def check(world_dir, every=1):
             else:
                 totals["flat"] += 1
                 roof = foot
+            if "walls" in b:
+                ring, eave = b["outline"], b["base"] + b["height"]
+                free, bare, low = facades.unlit(b["walls"], ring, eave, b["kind"])
+                totals["walls"] += len(b["walls"]); totals["free_walls"] += free; totals["bare_walls"] += bare; totals["low_walls"] += low
+                for w in b["walls"]:
+                    totals["party_walls"] += bool(w["flags"] & facades.PARTY)
+                    pts = ring[[(w["first"] + j) % len(ring) for j in range(w["count"] + 1)]]
+                    length = np.hypot(*np.diff(pts, axis=0).T).sum()
+                    for t, floor, kind, width, height, sill in w["openings"]:
+                        totals["openings"] += 1
+                        totals["openings_off_wall"] += not (0 <= t <= length)
+                        ground = w["g0"] + (w["g1"] - w["g0"]) * t / max(length, 1e-9)
+                        totals["openings_over_eave"] += ground + sill + height > eave + 0.05
             outside = roof.difference(foot.buffer(0.05)).area
             totals["roof_m2"] += roof.area
             totals["outside_m2"] += outside

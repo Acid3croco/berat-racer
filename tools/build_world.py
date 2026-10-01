@@ -45,6 +45,7 @@ import pyproj
 import rasterio
 import fetch
 import rasters
+import facades
 import roofs
 import vec_io
 from fetch import CX, CY
@@ -468,6 +469,16 @@ def run_holds(p, a, b, arrow):
     i = int(np.argmin(np.hypot(p.xy[:, 0] - arrow[0], p.xy[:, 1] - arrow[1])))
     return a <= i < b - 1 or (i == b - 1 == len(p.xy) - 1)
 
+def put_facade(buf, b):
+    """BM07 facade of a building (tools/facades.py): seed, floors, floor height, era, wall material, then its walls (first outline point,
+    edge count, flags, ground at both ends) each with its openings (along, floor, type, width, height, sill)."""
+    wi(buf, b["fs"]); buf += bytes([min(b["ff"], 255), b["fa"], b["fm"]]); wf(buf, b["fh"]); wi(buf, len(b["fw"]))
+    for w in b["fw"]:
+        wi(buf, w["first"]); wi(buf, w["count"]); buf.append(w["flags"]); wf(buf, w["g0"], w["g1"]); wi(buf, len(w["openings"]))
+        for t, f, kind, width, height, sill in w["openings"]:
+            buf += bytes([f, kind]); wf(buf, t, width, height, sill)
+
+
 def put_lanes(buf, elements):
     """BM07 lane graph elements (roads/lanegraph.py) passing through a chunk: id, kind, control, limit, road attributes, the points
     (x, height, north) with the speed each allows, successors, the lanes beside it, and the connectors it gives way to."""
@@ -496,7 +507,7 @@ def put_junctions(buf, items, ribbons):
 @functools.lru_cache(maxsize=1)
 def code_key():
     """What this process builds sectors with: the code, its tuning, the libraries and the points of interest."""
-    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs]
+    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs, facades]
     return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
 
 def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes):
@@ -610,7 +621,7 @@ def process_sector(args):
     # ---- buildings
     road_tree = cKDTree(road_pts[:, :2]) if len(road_pts) else None
     owned = box(ox, oz, ox + SECTOR, oz + SECTOR); owned_wide = owned.buffer(6)
-    buildings, bpolys, roof_stats = [], [], {}
+    buildings, bpolys, roof_stats, candidates = [], [], {}, []
     osm_roofs = roofs.osm_buildings(road_tag)
     reach_lo, reach_hi = (ox + CX - 8, oz + CY - 8), (ox + CX + SECTOR + 8, oz + CY + SECTOR + 8)      # `owned_wide` and a bit, in the features' coordinates
     for f in load_vectors("buildings", si, sj):
@@ -634,73 +645,84 @@ def process_sector(args):
                 if cutp.geom_type != "Polygon": continue
             poly = shapely.geometry.polygon.orient(cutp, 1.0)
             ring = np.array(poly.exterior.coords)[:-1]
-            if not (ox <= ring[:, 0].mean() < ox + SECTOR and oz <= ring[:, 1].mean() < oz + SECTOR): continue      # the chunk is chosen from this same mean below
-            around = poly.buffer(1.0)
-            gx0, gz0, gx1, gz1 = around.bounds
-            gxs, gzs = np.meshgrid(np.arange(gx0, gx1 + 1e-6, 0.75), np.arange(gz0, gz1 + 1e-6, 0.75))
-            inside = shapely.contains_xy(around, gxs.ravel(), gzs.ravel())
-            gpts = np.c_[gxs.ravel()[inside], gzs.ravel()[inside]]
-            ground = float(min(win.sample(win.mnt, ring[:, 0], ring[:, 1], 2).min(), win.sample(win.mnt, gpts[:, 0], gpts[:, 1], 2).min() if len(gpts) else 1e9))
-            dsm = lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2) + win.sample(win.mnh, xy[:, 0], xy[:, 1], 2)
-            c = poly.centroid
-            mnh_c = float(win.sample(win.mnh, [c.x], [c.y], 2)[0])
-            inner = poly.buffer(-1.2)
-            ipts = np.array(inner.exterior.coords) if (not inner.is_empty and inner.geom_type == "Polygon") else ring
-            mnh_edge = float(win.sample(win.mnh, ipts[:, 0], ipts[:, 1], 2).mean())
-            hh = p.get("hauteur")
-            wall = float(hh) if isinstance(hh, (int, float)) and hh > 0 else (
-                3.0 * p["nombre_d_etages"] if isinstance(p.get("nombre_d_etages"), (int, float)) else max(3.0, min(mnh_edge, 12.0)))
-            # heights: BD TOPO's roof and ground altitudes, the LiDAR surface model as the check (it wins where the survey is missing or off)
-            sol = p.get("altitude_minimale_sol")
-            if isinstance(sol, (int, float)) and abs(sol - ground) <= HEIGHT_CHECK: ground = min(ground, float(sol))
-            inside_pts = gpts[shapely.contains_xy(poly, gpts[:, 0], gpts[:, 1])] if len(gpts) else np.zeros((0, 2))
-            lidar_ridge = float(dsm(inside_pts).max()) if len(inside_pts) else ground + wall
-            lidar_eave = float(np.median(dsm(ipts))) if len(ipts) else ground + wall
-            eave_bd, ridge_bd = p.get("altitude_minimale_toit"), p.get("altitude_maximale_toit")
-            eave = float(eave_bd) if isinstance(eave_bd, (int, float)) and abs(eave_bd - lidar_eave) <= HEIGHT_CHECK else min(lidar_eave, lidar_ridge)
-            ridge = float(ridge_bd) if isinstance(ridge_bd, (int, float)) and abs(ridge_bd - lidar_ridge) <= HEIGHT_CHECK else lidar_ridge
-            height_source = "bdtopo" if isinstance(eave_bd, (int, float)) and abs(eave_bd - lidar_eave) <= HEIGHT_CHECK else "lidar"
-            wall = max(eave - ground, 2.2)
-            eave = ground + wall
-            kind = bd_kind(p, poly.area)
-            tower = []
-            if kind in ("church", "chapel"):
-                wall = float(np.clip(mnh_edge, 5.0, 10.0)); eave = ground + wall
-                ins = shapely.contains_xy(poly, gxs.ravel(), gzs.ravel())
-                if ins.any():
-                    hx, hz = gxs.ravel()[ins], gzs.ravel()[ins]
-                    hv = win.sample(win.mnh, hx, hz, 2); k = int(hv.argmax())
-                    if hv[k] > wall + 2.5: tower = [round(float(hx[k]), 2), round(float(hz[k]), 2), round(float(hv[k]), 2)]
-            mrr = poly.minimum_rotated_rectangle
-            rect = np.array(mrr.exterior.coords)[:4]
-            e1, e2 = rect[1] - rect[0], rect[2] - rect[1]
-            L, Wd = np.linalg.norm(e1), np.linalg.norm(e2)
-            axis, long_, short = (e1 / L, L, Wd) if L >= Wd else (e2 / Wd, Wd, L)
-            rise = max(ridge - eave, 0.0)
-            if kind in ("church", "chapel"): rise = max(rise, float(short) * 0.32)
-            osm_shape = next((t.get("roof:shape") for q, t in osm_roofs if q.contains(poly.representative_point())), None) if osm_roofs else None
-            shaped = roofs.building_roof(poly, eave, rise, dsm, osm_shape)
-            roof_stats[shaped["shape"]] = roof_stats.get(shaped["shape"], 0) + 1
-            roof_stats["height_" + height_source] = roof_stats.get("height_" + height_source, 0) + 1
-            rv, rt = np.unique(np.round(shaped["tris"].reshape(-1, 3), 3), axis=0, return_inverse=True)
-            rise = float(shaped["tris"][:, :, 2].max() - eave) if len(shaped["tris"]) else 0.0
-            seed = int(hashlib.md5(p["cleabs"].encode()).hexdigest()[:8], 16)
-            mids = (ring + np.roll(ring, -1, axis=0)) / 2
-            fe = int(road_tree.query(mids)[0].argmin()) if road_tree is not None else 0
-            # collision rings: footprint minus road corridors (already cut above, so the ring is the visual footprint), courtyards after it
-            courtyards = [np.array(h.coords)[:-1] for h in poly.interiors]
-            cp = np.round(np.vstack([ring] + courtyards), 2).ravel().tolist()
-            # roof colour from the orthophoto
-            minx, minz, maxx, maxz = poly.bounds
-            rxs, rzs = np.meshgrid(np.arange(minx, maxx, 2.0), np.arange(minz, maxz, 2.0))
-            mk = shapely.contains_xy(poly, rxs.ravel(), rzs.ravel())
-            px, pz = (rxs.ravel()[mk], rzs.ravel()[mk]) if mk.any() else ([poly.centroid.x], [poly.centroid.y])
-            roof = np.clip(np.array([win.sample(band, px, pz, 4) for band in ortho]).mean(axis=1) * 1.1, 0, 255).astype(int).tolist()
-            roof_code = str(p.get("materiaux_de_la_toiture") or "")
-            buildings.append(dict(k=kind, n="", fe=fe, tw=tower, cp=cp, cn=[len(ring)] + [len(h) for h in courtyards], p=np.round(ring, 2).ravel().tolist(), b=round(ground - 0.8, 2), h=round(wall + 0.8, 2),
-                                  r=round(rise, 2), rc=[], c=roof, w=list(WALLS[seed % len(WALLS)]),
-                                  rm=int(roof_code[0]) if roof_code[:1].isdigit() else 255, rv=rv, rt=rt.reshape(-1, 3), rg=shaped["wall"]))
-            bpolys.append(poly)
+            candidates.append((p, poly, bool(ox <= ring[:, 0].mean() < ox + SECTOR and oz <= ring[:, 1].mean() < oz + SECTOR)))      # the chunk is chosen from this same mean below
+    neighbours = STRtree([q for _, q, _ in candidates]) if candidates else None
+    facade_stats = dict(walls=0, free_walls=0, bare_walls=0, low_walls=0, bare_floors=0, party_walls=0, openings=0, floors_bd=0, floors_osm=0, floors_height=0, free_edges_before=0, bare_edges_before=0)
+    for p, poly, mine in candidates:
+        if not mine: continue
+        ring = np.array(poly.exterior.coords)[:-1]
+        around = poly.buffer(1.0)
+        gx0, gz0, gx1, gz1 = around.bounds
+        gxs, gzs = np.meshgrid(np.arange(gx0, gx1 + 1e-6, 0.75), np.arange(gz0, gz1 + 1e-6, 0.75))
+        inside = shapely.contains_xy(around, gxs.ravel(), gzs.ravel())
+        gpts = np.c_[gxs.ravel()[inside], gzs.ravel()[inside]]
+        ground = float(min(win.sample(win.mnt, ring[:, 0], ring[:, 1], 2).min(), win.sample(win.mnt, gpts[:, 0], gpts[:, 1], 2).min() if len(gpts) else 1e9))
+        dsm = lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2) + win.sample(win.mnh, xy[:, 0], xy[:, 1], 2)
+        c = poly.centroid
+        mnh_c = float(win.sample(win.mnh, [c.x], [c.y], 2)[0])
+        inner = poly.buffer(-1.2)
+        ipts = np.array(inner.exterior.coords) if (not inner.is_empty and inner.geom_type == "Polygon") else ring
+        mnh_edge = float(win.sample(win.mnh, ipts[:, 0], ipts[:, 1], 2).mean())
+        hh = p.get("hauteur")
+        wall = float(hh) if isinstance(hh, (int, float)) and hh > 0 else (
+            3.0 * p["nombre_d_etages"] if isinstance(p.get("nombre_d_etages"), (int, float)) else max(3.0, min(mnh_edge, 12.0)))
+        # heights: BD TOPO's roof and ground altitudes, the LiDAR surface model as the check (it wins where the survey is missing or off)
+        sol = p.get("altitude_minimale_sol")
+        if isinstance(sol, (int, float)) and abs(sol - ground) <= HEIGHT_CHECK: ground = min(ground, float(sol))
+        inside_pts = gpts[shapely.contains_xy(poly, gpts[:, 0], gpts[:, 1])] if len(gpts) else np.zeros((0, 2))
+        lidar_ridge = float(dsm(inside_pts).max()) if len(inside_pts) else ground + wall
+        lidar_eave = float(np.median(dsm(ipts))) if len(ipts) else ground + wall
+        eave_bd, ridge_bd = p.get("altitude_minimale_toit"), p.get("altitude_maximale_toit")
+        eave = float(eave_bd) if isinstance(eave_bd, (int, float)) and abs(eave_bd - lidar_eave) <= HEIGHT_CHECK else min(lidar_eave, lidar_ridge)
+        ridge = float(ridge_bd) if isinstance(ridge_bd, (int, float)) and abs(ridge_bd - lidar_ridge) <= HEIGHT_CHECK else lidar_ridge
+        height_source = "bdtopo" if isinstance(eave_bd, (int, float)) and abs(eave_bd - lidar_eave) <= HEIGHT_CHECK else "lidar"
+        wall = max(eave - ground, 2.2)
+        eave = ground + wall
+        kind = bd_kind(p, poly.area)
+        tower = []
+        if kind in ("church", "chapel"):
+            wall = float(np.clip(mnh_edge, 5.0, 10.0)); eave = ground + wall
+            ins = shapely.contains_xy(poly, gxs.ravel(), gzs.ravel())
+            if ins.any():
+                hx, hz = gxs.ravel()[ins], gzs.ravel()[ins]
+                hv = win.sample(win.mnh, hx, hz, 2); k = int(hv.argmax())
+                if hv[k] > wall + 2.5: tower = [round(float(hx[k]), 2), round(float(hz[k]), 2), round(float(hv[k]), 2)]
+        mrr = poly.minimum_rotated_rectangle
+        rect = np.array(mrr.exterior.coords)[:4]
+        e1, e2 = rect[1] - rect[0], rect[2] - rect[1]
+        L, Wd = np.linalg.norm(e1), np.linalg.norm(e2)
+        axis, long_, short = (e1 / L, L, Wd) if L >= Wd else (e2 / Wd, Wd, L)
+        rise = max(ridge - eave, 0.0)
+        if kind in ("church", "chapel"): rise = max(rise, float(short) * 0.32)
+        osm_tags = next((t for q, t in osm_roofs if q.contains(poly.representative_point())), {}) if osm_roofs else {}
+        near = [candidates[i][1] for i in neighbours.query(poly.buffer(facades.PARTY_DISTANCE)) if candidates[i][1] is not poly]
+        party = facades.party_edges(ring, near)
+        courtyard_n = sum(len(h.coords) - 1 for h in poly.interiors)
+        shaped = roofs.building_roof(poly, eave, rise, dsm, osm_tags.get("roof:shape"), np.r_[party, np.zeros(courtyard_n, bool)])
+        roof_stats[shaped["shape"]] = roof_stats.get(shaped["shape"], 0) + 1
+        roof_stats["height_" + height_source] = roof_stats.get("height_" + height_source, 0) + 1
+        rv, rt = np.unique(np.round(shaped["tris"].reshape(-1, 3), 3), axis=0, return_inverse=True)
+        rise = float(shaped["tris"][:, :, 2].max() - eave) if len(shaped["tris"]) else 0.0
+        seed = int(hashlib.md5(p["cleabs"].encode()).hexdigest()[:8], 16)
+        mids = (ring + np.roll(ring, -1, axis=0)) / 2
+        free_mids = np.where(party[:, None], 1e6, mids)                                   # the front is never a shared wall
+        fe = int(road_tree.query(free_mids)[0].argmin()) if road_tree is not None and not party.all() else 0
+        facade_in = dict(p=p, ring=ring, party=party, eave=eave, wall=wall, levels=osm_tags.get("building:levels"))      # laid out once the POIs gave the kind
+        # collision rings: footprint minus road corridors (already cut above, so the ring is the visual footprint), courtyards after it
+        courtyards = [np.array(h.coords)[:-1] for h in poly.interiors]
+        cp = np.round(np.vstack([ring] + courtyards), 2).ravel().tolist()
+        # roof colour from the orthophoto
+        minx, minz, maxx, maxz = poly.bounds
+        rxs, rzs = np.meshgrid(np.arange(minx, maxx, 2.0), np.arange(minz, maxz, 2.0))
+        mk = shapely.contains_xy(poly, rxs.ravel(), rzs.ravel())
+        px, pz = (rxs.ravel()[mk], rzs.ravel()[mk]) if mk.any() else ([poly.centroid.x], [poly.centroid.y])
+        roof = np.clip(np.array([win.sample(band, px, pz, 4) for band in ortho]).mean(axis=1) * 1.1, 0, 255).astype(int).tolist()
+        roof_code = str(p.get("materiaux_de_la_toiture") or "")
+        buildings.append(dict(k=kind, n="", fe=fe, tw=tower, cp=cp, cn=[len(ring)] + [len(h) for h in courtyards], p=np.round(ring, 2).ravel().tolist(), b=round(ground - 0.8, 2), h=round(wall + 0.8, 2),
+                              r=round(rise, 2), rc=[], c=roof, w=list(WALLS[seed % len(WALLS)]),
+                              rm=int(roof_code[0]) if roof_code[:1].isdigit() else 255, rv=rv, rt=rt.reshape(-1, 3), rg=shaped["wall"],
+                              facade_in=facade_in))
+        bpolys.append(poly)
 
     # ---- collision rings proper (a building crossing a road keeps the road corridor free, computed against the uncut original in export_world; here the visual is already cut)
     # ---- POIs -> kind + name
@@ -723,6 +745,27 @@ def process_sector(args):
             for h_j, j in towers:
                 if j != i and buildings[j]["tw"] and h_j < h_i and np.hypot(buildings[i]["tw"][0] - buildings[j]["tw"][0], buildings[i]["tw"][1] - buildings[j]["tw"][1]) < 15:
                     buildings[j]["tw"] = []
+
+    # ---- facades: walls, shared walls, floors, openings (tools/facades.py)
+    ground_at = lambda xy: win.sample(win.mnt, xy[:, 0], xy[:, 1], 2)
+    for b in buildings:
+        f = b.pop("facade_in")
+        p, ring, party, eave, kind = f["p"], f["ring"], f["party"], f["eave"], b["k"]
+        floors, floor_h = facades.floors_of(p, f["levels"], f["wall"], kind)
+        source = "floors_bd" if isinstance(p.get("nombre_d_etages"), (int, float)) and p["nombre_d_etages"] >= 1 else "floors_osm" if f["levels"] else "floors_height"
+        facade_stats[source] += 1
+        light = bool(p.get("construction_legere")) and kind in ("shed", "barn")
+        era, wall_mat = facades.era_of(p), facades.material_of(p)
+        apartment = isinstance(p.get("nombre_de_logements"), (int, float)) and p["nombre_de_logements"] > 2
+        seed = facades.seed_of(p["cleabs"])
+        fw = facades.layout(ring, facades.walls(ring), party, ground_at, eave, kind, floors, floor_h, b["fe"], era, seed, apartment, light)
+        free, bare, low = facades.unlit(fw, ring, eave, kind, light)
+        free0, bare0 = facades.legacy_unlit(ring, party, kind, f["wall"], b["fe"], seed, ground_at, eave)
+        for key, v in dict(walls=len(fw), free_walls=free, bare_walls=bare, low_walls=low, free_edges_before=free0, bare_edges_before=bare0,
+                           bare_floors=facades.bare_floors(fw, ring, eave, floors, floor_h, kind, light),
+                           party_walls=sum(1 for w in fw if w["flags"] & facades.PARTY), openings=sum(len(w["openings"]) for w in fw)).items():
+            facade_stats[key] += v
+        b.update(fs=seed, ff=floors, fh=floor_h, fa=era, fm=wall_mat, fw=fw)
 
     # ---- trees and shrubs (LiDAR canopy height maxima, 2 m raster)
     tr_ = from_origin(win.x0, win.z1, 2.0, 2.0)
@@ -837,6 +880,7 @@ def process_sector(args):
                 wi(buf, len(b["cp"]) // 2); wfa(buf, b["cp"]); wi(buf, len(b["cn"])); buf += np.asarray(b["cn"], "<i4").tobytes()
                 buf.append(b["rm"]); wi(buf, len(b["rv"])); wfa(buf, b["rv"][:, [0, 2, 1]])                 # BM07: roof material, roof mesh (x, height, north) ...
                 wi(buf, len(b["rt"])); buf += b["rt"].astype("<i4").tobytes(); buf += b["rg"].astype(np.uint8).tobytes()     # ... its triangles and which are gable walls
+                put_facade(buf, b)                                                                           # BM07: walls and openings
             write_gz(out_dir / f"m_{ci - ci0}_{cj - cj0}.bin.gz", buf)
             nb = bytearray(b"BN01"); ti, sh = tree_b.get(key, []), shrub_b.get(key, [])
             wi(nb, len(ti)); wfa(nb, trees[ti].ravel()); wi(nb, len(sh)); wfa(nb, shrubs[sh].ravel())
@@ -852,7 +896,7 @@ def process_sector(args):
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
     stamp.parent.mkdir(exist_ok=True)
     stamp.write_text(made_from)
-    stats = dict(sector=(si, sj), roofs=roof_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
+    stats = dict(sector=(si, sj), roofs=roof_stats, facades=facade_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
 
 # ------------------------------------------------------------------ assemble

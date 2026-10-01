@@ -75,10 +75,34 @@ public static class Facade
                 if (r.NextDouble() < 0.3) s.mode = 1;               // some houses have no shutters (modern roller shutters)
                 break;
         }
+        if (s.kind == "house" && bd.walls != null) Finish(s, bd, r);
         if (s.kind != "house") s.wall = Tint(s.wall, F(r, 0.96f, 1.03f));
         if (s.sign.a == 0) s.sign = C(120, 120, 120);
         s.plinth = s.kind == "house" ? C(168, 160, 148) : Tint(s.wall, 0.72f);
         return s;
+    }
+
+    static readonly Color32 Stone = C(196, 182, 156), Millstone = C(178, 146, 104), Wood = C(146, 108, 74);
+
+    /// <summary>BM07 houses: the wall finish from BD TOPO's wall material and the joinery from the era. Brick is the structure of 68% of
+    /// the small map's houses, but the photos show it bare on about 30% of buildings: brick is left exposed when built before 1970 (14%
+    /// of houses), rendered with brick surrounds after. Old houses have shutters, post-1970 ones roller shutters.</summary>
+    static void Finish(FacadeStyle s, BuildingData bd, System.Random r)
+    {
+        bool old = bd.era == 1 || bd.era == 2;
+        switch (bd.wallMaterial)
+        {
+            case 1: s.wall = Tint(Stone, F(r, 0.92f, 1.06f)); s.frame = C(222, 214, 198); break;
+            case 2: s.wall = Tint(Millstone, F(r, 0.92f, 1.06f)); s.frame = C(222, 214, 198); break;
+            case 3: case 5: s.wall = Tint(Pick(r, HouseWalls), F(r, 0.96f, 1.03f)); s.frame = C(244, 242, 236); break;
+            case 4:
+                if (old) { s.wall = Tint(Brick, F(r, 0.9f, 1.1f)); s.frame = C(216, 210, 198); }
+                else { s.wall = Tint(Pick(r, HouseWalls), F(r, 0.96f, 1.03f)); s.frame = Tint(BrickTrim, F(r, 0.95f, 1.05f)); }
+                break;
+            case 6: s.wall = Tint(Wood, F(r, 0.9f, 1.1f)); s.frame = C(232, 226, 212); break;
+        }
+        if (bd.era == 1) s.mode = 0;
+        else if (bd.era == 3) { s.mode = 1; s.frame = r.NextDouble() < 0.5 ? C(244, 242, 236) : C(70, 72, 76); }
     }
 
     // ---- geometry helpers: a point on wall edge (a -> a + d*t), lifted to height y, pushed off the wall by `off` along n
@@ -157,7 +181,8 @@ public static class Facade
         if (s.mode == 3 && s.kind != "shed" && s.kind != "barn") floors = 0;
         int fe = Mathf.Clamp(bd.fe, 0, n - 1);
 
-        for (int i = 0; i < n; i++)
+        if (bd.walls != null) BuildWalls(bd, ring, cen, s, top, mb);
+        else for (int i = 0; i < n; i++)
         {
             Vector2 a = ring[i], b = ring[(i + 1) % n];
             float L = (b - a).magnitude; if (L < 1.4f) continue;
@@ -223,6 +248,72 @@ public static class Facade
         if (s.flag) Flag(mb, ring, fe, yg, top, roadClearance);
     }
 
+    static Edge EdgeOf(List<Vector2> ring, int i, Vector2 cen, bool front)
+    {
+        Vector2 a = ring[i], b = ring[(i + 1) % ring.Count];
+        float L = (b - a).magnitude; Vector2 d = L > 1e-6f ? (b - a) / L : Vector2.right, nrm = new Vector2(d.y, -d.x);      // CCW polygon: outward is to the right
+        if (Vector2.Dot(nrm, (a + b) * 0.5f - cen) < 0) nrm = -nrm;
+        return new Edge { a = a, d = d, n = nrm, len = L, front = front };
+    }
+
+    /// <summary>BM07: the walls and openings the world builder laid out (tools/facades.py). Each opening stands on the ground at its own
+    /// place along the wall; an opening is drawn on the outline edge holding its centre, kept within that edge.</summary>
+    static void BuildWalls(BuildingData bd, List<Vector2> ring, Vector2 cen, FacadeStyle s, float top, MeshBuilder mb)
+    {
+        int n = ring.Count;
+        var edges = new List<Edge>(); var starts = new List<float>();
+        foreach (var w in bd.walls)
+        {
+            edges.Clear(); starts.Clear(); float total = 0;
+            for (int j = 0; j < w.count; j++) { var e = EdgeOf(ring, (w.first + j) % n, cen, (w.flags & FacadeWall.Front) != 0); edges.Add(e); starts.Add(total); total += e.len; }
+            float Ground(float t) => Mathf.Lerp(w.g0, w.g1, total > 0 ? t / total : 0f);
+            bool blind = (w.flags & FacadeWall.Blind) != 0;
+            for (int j = 0; j < edges.Count; j++)
+            {
+                var e = edges[j]; if (e.len < 0.05f) continue;
+                float gl = Mathf.Min(Ground(starts[j]), Ground(starts[j] + e.len)), gh = Mathf.Max(Ground(starts[j]), Ground(starts[j] + e.len));
+                Slab(mb, e, 0, e.len, gl - 0.3f, gh + 0.55f, 0f, 0.07f, s.plinth);
+                if (top - gh > 3f) Slab(mb, e, 0, e.len, top - 0.25f, top, 0f, 0.22f, Tint(s.wall, 1.06f));
+                if (blind) continue;
+                for (int f = 1; f < bd.floors; f++)
+                {
+                    float fy = gh + f * bd.floorH; if (fy > top - 0.6f) break;
+                    Slab(mb, e, 0, e.len, fy - 0.08f, fy + 0.08f, 0f, 0.08f, Tint(s.wall, 0.92f));          // floor string course
+                }
+            }
+            foreach (var o in w.openings)
+            {
+                int j = edges.Count - 1; while (j > 0 && starts[j] > o.t) j--;
+                var e = edges[j];
+                float half = Mathf.Min(o.width / 2, e.len / 2 - 0.15f); if (half < 0.2f) continue;
+                float t = Mathf.Clamp(o.t - starts[j], half + 0.15f, e.len - half - 0.15f), g = Ground(o.t);
+                switch (o.kind)
+                {
+                    case FacadeOpening.Door: Door(mb, e, t, g, half * 2, o.height, s, s.mode == 2); break;
+                    case FacadeOpening.Garage: GarageDoor(mb, e, t, g, half * 2, o.height, s); break;
+                    case FacadeOpening.Shopfront: Shopfront(mb, e, t - half, t + half, g, top, s); break;
+                    case FacadeOpening.Balcony:
+                        Window(mb, e, t, g + o.sill, half * 2, o.height, s, s.mode == 0, false);
+                        Slab(mb, e, t - half - 0.35f, t + half + 0.35f, g + o.sill - 0.25f, g + o.sill - 0.1f, 0f, 0.9f, s.sill);                   // balcony slab
+                        Slab(mb, e, t - half - 0.35f, t + half + 0.35f, g + o.sill + 0.8f, g + o.sill + 0.86f, 0.84f, 0.9f, C(60, 62, 66));      // railing
+                        break;
+                    default:
+                        Window(mb, e, t, g + o.sill, half * 2, o.height, s, s.mode == 0, s.mode == 2);
+                        if (s.mode == 1 && bd.era == 3) Slab(mb, e, t - half - 0.07f, t + half + 0.07f, g + o.sill + o.height + 0.07f, g + o.sill + o.height + 0.3f, 0f, 0.12f, s.frame);   // roller shutter box
+                        break;
+                }
+            }
+        }
+    }
+
+    static void GarageDoor(MeshBuilder mb, Edge e, float tc, float yg, float dw, float dh, FacadeStyle s)
+    {
+        Color32 dc = s.kind == "barn" ? C(96, 78, 62) : s.door;
+        Ring(mb, e, tc - dw / 2 - 0.1f, tc + dw / 2 + 0.1f, yg, yg + dh + 0.1f, 0.1f, 0.16f, 0.09f, s.frame);
+        Q(mb, e, tc - dw / 2, tc + dw / 2, yg + 0.1f, yg + dh, 0.09f, dc);
+        for (int k = 1; k < 4; k++) Slab(mb, e, tc - dw / 2, tc + dw / 2, yg + dh * k / 4f - 0.03f, yg + dh * k / 4f + 0.03f, 0.09f, 0.14f, Tint(dc, 0.8f));   // door panels
+    }
+
     // ---------------------------------------------------------------- special edges
     static void BlindEdge(MeshBuilder mb, Edge e, FacadeStyle s, float yg, float top, System.Random rng)
     {
@@ -256,11 +347,16 @@ public static class Facade
                 }
             return;
         }
-        float t0 = 0.5f, t1 = e.len - 0.5f;
+        Shopfront(mb, e, 0.5f, e.len - 0.5f, yg, top, s);
+    }
+
+    static void Shopfront(MeshBuilder mb, Edge e, float t0, float t1, float yg, float top, FacadeStyle s)
+    {
+        float wallH = top - yg;
         if (t1 - t0 < 1.5f) return;
         float dh = Mathf.Min(2.35f, wallH - 0.9f);
         Color32 glass = Tint(s.glass, 1.35f);
-        float doorT = e.len * 0.5f;
+        float doorT = (t0 + t1) * 0.5f;
         Ring(mb, e, t0 - 0.08f, t1 + 0.08f, yg + 0.2f, yg + dh + 0.08f, 0.08f, 0.16f, 0.09f, s.frame);
         Q(mb, e, t0, doorT - 0.55f, yg + 0.3f, yg + dh, 0.09f, glass);
         Q(mb, e, doorT + 0.55f, t1, yg + 0.3f, yg + dh, 0.09f, glass);
