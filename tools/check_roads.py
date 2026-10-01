@@ -1,4 +1,4 @@
-"""Verify the roads of a built world (BM05 chunks) against its terrain, the way the game sees them:
+"""Verify the roads of a built world (BM05 / BM06 chunks) against its terrain, the way the game sees them:
 
   - the 4 m terrain mesh and the 16 m one never stand above a road surface (sampled on every road quad and junction triangle)
   - the 4 m terrain mesh never stands above a bridge deck either (the ground falls away under it)
@@ -49,7 +49,8 @@ def read_junctions(r):
 def parse_mid(raw):
     """One m_ chunk: terrain grids, roads, junctions, and the counts of everything else (parsed to the last byte)."""
     r = R(raw)
-    assert r.take(4) == b"BM05", "not a BM05 chunk: rebuild the world with tools/build_world.py"
+    magic = r.take(4)
+    assert magic in (b"BM05", b"BM06"), "not a BM05 / BM06 chunk: rebuild the world with tools/build_world.py"
     d = dict(ci=r.i(), cj=r.i())
     assert r.i() == CV
     base, step = r.f(), r.f()
@@ -64,6 +65,7 @@ def parse_mid(raw):
     for _ in range(d["areas"]): r.fl(3 * r.i())
     d["lines"] = r.i()
     for _ in range(d["lines"]): r.f(); r.u8(); r.u8(); r.fl(3 * r.i())
+    d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if magic == b"BM06" else []     # water carried by a structure
     d["bld"] = r.i()
     for _ in range(d["bld"]):
         r.fl(2 * r.i()); r.fl(3); r.fl(r.i()); r.take(6); r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)

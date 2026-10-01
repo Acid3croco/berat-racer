@@ -122,6 +122,39 @@ public class ChunkMeshes
         mb.Quad(mb.Vertex(a1, Wall), mb.Vertex(b1, Wall), mb.Vertex(b2, Wall), mb.Vertex(a2, Wall));
     }
 
+    const float TroughDepth = 1.8f, TroughRim = 0.5f;        // the channel's floor below the water surface, its walls above it
+
+    /// <summary>
+    /// The concrete channel carrying water over a void (BM06 troughs: a canal on an aqueduct over a road): walls from the rim down to the floor where
+    /// the water stops (not where the trough ends and the canal goes on, nor where the builder cut it at the chunk border), and the floor, both seen
+    /// from either side.
+    /// </summary>
+    static void Trough(MeshBuilder mb, ChunkData d, WaterArea t)
+    {
+        int n = t.ring.Length / 2; if (n < 3) return;
+        var pts = new List<Vector2>(n); for (int i = 0; i < n; i++) pts.Add(new Vector2(t.ring[i * 2], t.ring[i * 2 + 1]));
+        Vector3 rim = Vector3.up * TroughRim, floor = Vector3.down * TroughDepth;
+        for (int i = 0; i < n; i++)
+        {
+            int k = (i + 1) % n;
+            if (WaterBeyond(d, pts[i], pts[k])) continue;
+            Vector3 a = new Vector3(pts[i].x, t.ys[i], pts[i].y), b = new Vector3(pts[k].x, t.ys[k], pts[k].y);
+            int a0 = mb.Vertex(a + rim, Concrete), b0 = mb.Vertex(b + rim, Concrete), b1 = mb.Vertex(b + floor, Concrete), a1 = mb.Vertex(a + floor, Concrete);
+            mb.Quad(a0, b0, b1, a1); mb.Quad(a0, a1, b1, b0);
+        }
+        var tri = MeshBuilder.Triangulate(pts); int bi = mb.V.Count;
+        for (int i = 0; i < n; i++) mb.Vertex(new Vector3(pts[i].x, t.ys[i], pts[i].y) + floor, Concrete);
+        for (int i = 0; i + 2 < tri.Count; i += 3) { mb.Tri(bi + tri[i], bi + tri[i + 1], bi + tri[i + 2]); mb.Tri(bi + tri[i], bi + tri[i + 2], bi + tri[i + 1]); }
+    }
+
+    /// <summary>Is there water just outside the edge a -> b of a counter-clockwise outline (the chunk's water polygons reach 1 m past its border)?</summary>
+    static bool WaterBeyond(ChunkData d, Vector2 a, Vector2 b)
+    {
+        Vector2 along = (b - a).normalized, p = (a + b) * 0.5f + new Vector2(along.y, -along.x) * 0.5f;
+        foreach (var w in d.Areas) if (InRing(w.ring, p.x, p.y)) return true;
+        return false;
+    }
+
     void BuildWater(ChunkData d)
     {
         var mb = Water;
@@ -133,6 +166,7 @@ public class ChunkMeshes
             for (int i = 0; i < n; i++) mb.Vertex(new Vector3(pts[i].x, a.ys[i], pts[i].y), WaterCol);
             for (int i = 0; i + 2 < tri.Count; i += 3) mb.Tri(bi + tri[i], bi + tri[i + 1], bi + tri[i + 2]);
         }
+        foreach (var t in d.Troughs) Trough(Roads, d, t);
         foreach (var l in d.Lines)
         {
             int n = l.pts.Length / 3; float w = l.hw + 0.25f;

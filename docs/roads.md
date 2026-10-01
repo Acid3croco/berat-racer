@@ -101,13 +101,17 @@ two-way / one-way and the direction of a one-way road.
 
 Buildings are cut out of the real surface polygons and plants keep clear of them (a 1 m raster of the surface).
 
-## Chunk format (BM05)
+## Chunk format (BM06)
 
 After the terrain grids a chunk now carries the 16 m heights (26 x 26 floats), then per road piece: flags, class data, surveyed width,
 mean half width, distance along its link, name, per point the centre and both edges (x, y, z), a drawn flag per segment and the
 points where a give-way line is painted;
-then the junction meshes (vertices, triangles, outline edges with a mouth flag). `WorldData.cs` reads it; `LegacyChunk.cs` adapts
-older worlds (BM02 - BM04) so they still load with their old look.
+then the junction meshes (vertices, triangles, outline edges with a mouth flag), the water areas and stream lines, and (BM06) the
+outlines of the water carried by a structure: a canal on an aqueduct over a road. The builder finds them (`carried_water` in
+`build_world.py`: water standing 1.5 m or more above the ground, with a road on the ground passing under it); the game draws their
+concrete channel (walls where the water stops, a floor 1.8 m under the surface) and keeps the ground under them dry. A BM05 chunk
+is a BM06 chunk without that list; `WorldData.cs` reads both, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+load with their old look.
 
 The physics surface is the drawn one: `RoadIndex` hashes the very triangles that are rendered.
 

@@ -72,6 +72,7 @@ public class ChunkData
     public RoadData[] Roads, Ctx;     // Ctx: roads of neighbouring chunks within 25 m (ground height and obstacle clearance near the border)
     public JunctionData[] Junctions, CtxJunctions;
     public WaterArea[] Areas; public WaterLine[] Lines;
+    public WaterArea[] Troughs = new WaterArea[0];       // BM06: water carried by a structure (a canal on an aqueduct over a road): drawn with its channel, dry below
     public BuildingData[] Buildings;
     public float[] Trees, Shrubs;
     public bool HasNear;
@@ -106,6 +107,19 @@ public class ChunkData
         }
     }
 
+    /// <summary>Water polygons: per polygon its vertices (x, surface height, z).</summary>
+    static WaterArea[] ReadWater(BinaryReader br)
+    {
+        var out_ = new WaterArea[br.ReadInt32()];
+        for (int i = 0; i < out_.Length; i++)
+        {
+            int n = br.ReadInt32(); var t = Floats(br, n * 3); var a = new WaterArea { ring = new float[n * 2], ys = new float[n] };
+            for (int k = 0; k < n; k++) { a.ring[k * 2] = t[k * 3]; a.ys[k] = t[k * 3 + 1]; a.ring[k * 2 + 1] = t[k * 3 + 2]; a.level += t[k * 3 + 1] / n; }
+            out_[i] = a;
+        }
+        return out_;
+    }
+
     public static ChunkData ParseMid(string path)
     {
         using (var br = Open(path))
@@ -118,7 +132,7 @@ public class ChunkData
             d.H = new float[CV * CV]; var q = br.ReadBytes(CV * CV * 2);
             for (int i = 0; i < d.H.Length; i++) d.H[i] = baseH + (q[i * 2] | q[i * 2 + 1] << 8) * step;
             d.Col = br.ReadBytes(CV * CV * 3); d.LowCol = br.ReadBytes(LV * LV * 3);
-            if (magic == "BM05")
+            if (magic == "BM05" || magic == "BM06")
             {
                 d.LowH = Floats(br, LV * LV);
                 d.Roads = ReadRoads(br); d.Ctx = ReadRoads(br);
@@ -126,15 +140,10 @@ public class ChunkData
             }
             else if (magic == "BM02" || magic == "BM03" || magic == "BM04") LegacyChunk.ReadRoads(br, magic, d);      // worlds built before the road pipeline
             else throw new InvalidDataException(path);
-            int na = br.ReadInt32(); d.Areas = new WaterArea[na];
-            for (int i = 0; i < na; i++)
-            {
-                int n = br.ReadInt32(); var t = Floats(br, n * 3); var a = new WaterArea { ring = new float[n * 2], ys = new float[n] };
-                for (int k = 0; k < n; k++) { a.ring[k * 2] = t[k * 3]; a.ys[k] = t[k * 3 + 1]; a.ring[k * 2 + 1] = t[k * 3 + 2]; a.level += t[k * 3 + 1] / n; }
-                d.Areas[i] = a;
-            }
+            d.Areas = ReadWater(br);
             int nl = br.ReadInt32(); d.Lines = new WaterLine[nl];
             for (int i = 0; i < nl; i++) { var l = new WaterLine { hw = br.ReadSingle(), lead = br.ReadByte(), trail = br.ReadByte() }; int n = br.ReadInt32(); l.pts = Floats(br, n * 3); d.Lines[i] = l; }
+            if (magic == "BM06") d.Troughs = ReadWater(br);
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)
             {
@@ -291,6 +300,7 @@ public class WorldData
     {
         int k = ChunkKey(x, z);
         if (k < 0 || !Chunks.TryGetValue(k, out var c)) return float.NaN;
+        foreach (var t in c.Troughs) if (InRing(t.ring, x, z)) return float.NaN;          // under an aqueduct: dry
         foreach (var a in c.Areas) if (InRing(a.ring, x, z)) return a.level;
         foreach (var l in c.Lines)
         {

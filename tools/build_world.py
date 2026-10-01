@@ -37,7 +37,7 @@ import shapely
 from pyproj import Transformer
 from rasterio import features
 from rasterio.transform import from_origin
-from scipy.ndimage import (correlate, distance_transform_edt, gaussian_filter, map_coordinates, maximum_filter, uniform_filter, uniform_filter1d)
+from scipy.ndimage import (correlate, distance_transform_edt, gaussian_filter, label, map_coordinates, maximum_filter, uniform_filter, uniform_filter1d)
 from scipy.spatial import cKDTree
 from shapely.geometry import Point, box, shape
 from shapely.strtree import STRtree
@@ -242,6 +242,7 @@ def poi_kind(t):
 
 LINE_WIDTH = {"Entre 0 et 5 m": 2.6, "Entre 5 et 15 m": 8.0, "Entre 15 et 50 m": 24.0}      # full width of BD TOPO width classes (m)
 WATER_DEPTH = 0.45
+CARRIED_WATER = 1.5             # water standing this far above the ground under it, with a road passing under it, is carried by a structure (an aqueduct)
 
 def water_features(win, wbox, area_feats, line_feats):
     """Standing water polygons (ponds, reservoirs, river surfaces; levels are added later from a smooth field) and streams / canals with a level per vertex."""
@@ -274,20 +275,56 @@ def water_features(win, wbox, area_feats, line_feats):
 
 def water_level_field(areas, h0, vx0, vz0, nv):
     """Smooth water-surface height on the vertex grid (row = z south->north): the mean LiDAR ground over ~120 m of water, held below the local bank height.
-    A function of position only, so adjacent sectors and chunks agree, and a long river follows its own slope."""
+    A function of position only, so adjacent sectors and chunks agree, and a long river follows its own slope.
+    Ground lying CARRIED_WATER or more below that level, under the water or on its bank, is a void the water is carried over (a canal on an
+    aqueduct over a road trench): it is left out and the level is taken again from the rest."""
     mask = np.zeros((nv, nv), bool)
     if areas:
         tr = from_origin(vx0 - CELL / 2, vz0 + (nv - 0.5) * CELL, CELL, CELL)               # north-up raster of the same cells
         mask = features.rasterize([(a["poly"], 1) for a in areas], out_shape=(nv, nv), transform=tr, dtype=np.uint8, all_touched=True).astype(bool)[::-1]
     from scipy.ndimage import binary_dilation
     box_ = 31
-    w = mask.astype(np.float32); den = uniform_filter(w, box_, mode="constant")
-    inside = uniform_filter(h0 * w, box_, mode="constant") / np.maximum(den, 1e-6)
     bank = binary_dilation(mask, iterations=3) & ~binary_dilation(mask, iterations=1)
-    wb = bank.astype(np.float32); denb = uniform_filter(wb, box_, mode="constant")
-    bankh = uniform_filter(h0 * wb, box_, mode="constant") / np.maximum(denb, 1e-6)
-    level = np.where(denb > 2e-3, np.minimum(inside, bankh - 0.15), inside)
+
+    def level_of(wet, dry):
+        w = wet.astype(np.float32); den = uniform_filter(w, box_, mode="constant")
+        inside = uniform_filter(h0 * w, box_, mode="constant") / np.maximum(den, 1e-6)
+        wb = dry.astype(np.float32); denb = uniform_filter(wb, box_, mode="constant")
+        bankh = uniform_filter(h0 * wb, box_, mode="constant") / np.maximum(denb, 1e-6)
+        return np.where(denb > 2e-3, np.minimum(inside, bankh - 0.15), inside), den
+
+    level, _ = level_of(mask, bank)
+    void = h0 < level - CARRIED_WATER
+    if (mask & void).any():
+        again, den = level_of(mask & ~void, bank & ~void)
+        level = np.where(den > 1e-3, again, level)                                  # (no water left within the box: keep the first level)
     return mask, level.astype(np.float32)
+
+def carried_water(areas, h0, mask, level, pieces, vx0, vz0, nv):
+    """Plan polygons of the water carried by a structure (a canal on an aqueduct over a road trench): the parts of the water polygons over ground
+    lying CARRIED_WATER or more below the water level, where a road on the ground passes under the water at least that far below it (water merely
+    levelled too high over a sloping shore has no road under it), widened by a cell to reach the banks. The game draws their trough and keeps the
+    ground under them dry."""
+    void = mask & (h0 < level - CARRIED_WATER)
+    if not void.any(): return []
+    labels, _ = label(void)
+    keep = set()
+    for p in pieces:
+        if p.bridge: continue
+        c = np.round((p.xy - (vx0, vz0)) / CELL).astype(int)
+        inside = ((c >= 0) & (c < nv)).all(axis=1)
+        c, z = c[inside], p.z[inside]
+        under = labels[c[:, 1], c[:, 0]]
+        keep.update(under[(under > 0) & (z < level[c[:, 1], c[:, 0]] - CARRIED_WATER)].tolist())
+    if not keep: return []
+    cells = np.isin(labels, sorted(keep))[::-1]                                       # north-up, like the raster the water mask was burnt from
+    tr = from_origin(vx0 - CELL / 2, vz0 + (nv - 0.5) * CELL, CELL, CELL)
+    region = shapely.union_all([shape(g) for g, v in features.shapes(cells.astype(np.uint8), mask=cells, transform=tr) if v == 1]).buffer(CELL, join_style="mitre")
+    out = []
+    for a in areas:
+        part = a["poly"].intersection(region)
+        out += [q for q in getattr(part, "geoms", [part]) if q.geom_type == "Polygon" and q.area > 4]
+    return out
 
 # ------------------------------------------------------------------ binary writers
 
@@ -405,6 +442,7 @@ def process_sector(args):
     h = win.sample(mnt_s, gx.ravel(), gz.ravel(), 2)
     pts = np.c_[gx.ravel(), gz.ravel()]
     wmask, wlevel = water_level_field(areas, h.reshape(nv, nv), win.x0, win.z0, nv)
+    troughs = carried_water(areas, h.reshape(nv, nv), wmask, wlevel, pieces, win.x0, win.z0, nv)
     if wmask.any():                                                                  # scoop the bed below the surface, deeper away from the shore
         shore = distance_transform_edt(wmask) * CELL
         bed = wlevel - WATER_DEPTH * np.clip(0.35 + shore / 4.0, 0.35, 1.0)
@@ -599,18 +637,22 @@ def process_sector(args):
         lo, hi = v[:, :2].min(axis=0), v[:, :2].max(axis=0)
         for nk in {(home[0] + dx, home[1] + dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1)} - {home}:
             if own(nk) and road_surface.touches(lo, hi, apron(nk)): jctx_b[nk].append((j, v))
-    area_b, wline_b = collections.defaultdict(list), collections.defaultdict(list)
-    for a in areas:
-        minx, minz, maxx, maxz = a["poly"].bounds
-        for cj in range(int((minz + HALF) // CHUNK), int((maxz + HALF) // CHUNK) + 1):
-            for ci in range(int((minx + HALF) // CHUNK), int((maxx + HALF) // CHUNK) + 1):
-                if not (ox <= -HALF + ci * CHUNK < ox + SECTOR and oz <= -HALF + cj * CHUNK < oz + SECTOR): continue
-                piece = a["poly"].intersection(box(-HALF + ci * CHUNK - 1, -HALF + cj * CHUNK - 1, -HALF + (ci + 1) * CHUNK + 1, -HALF + (cj + 1) * CHUNK + 1))
-                for q in ([piece] if piece.geom_type == "Polygon" else [x for x in getattr(piece, "geoms", []) if x.geom_type == "Polygon"]):
-                    if q.area <= 4: continue
-                    ring = np.asarray(shapely.geometry.polygon.orient(q, 1.0).exterior.coords)[:-1]
-                    ly = map_coordinates(wlevel, [(ring[:, 1] - win.z0) / CELL, (ring[:, 0] - win.x0) / CELL], order=1, mode="nearest")
-                    area_b[(ci, cj)].append(np.c_[ring[:, 0], ly, ring[:, 1]])
+    def rings_by_chunk(polygons):
+        """Each polygon cut to the owned chunks it touches (1 m beyond their border), as rings of (x, water level, z), counter-clockwise."""
+        out = collections.defaultdict(list)
+        for poly in polygons:
+            minx, minz, maxx, maxz = poly.bounds
+            for cj in range(int((minz + HALF) // CHUNK), int((maxz + HALF) // CHUNK) + 1):
+                for ci in range(int((minx + HALF) // CHUNK), int((maxx + HALF) // CHUNK) + 1):
+                    if not (ox <= -HALF + ci * CHUNK < ox + SECTOR and oz <= -HALF + cj * CHUNK < oz + SECTOR): continue
+                    piece = poly.intersection(box(-HALF + ci * CHUNK - 1, -HALF + cj * CHUNK - 1, -HALF + (ci + 1) * CHUNK + 1, -HALF + (cj + 1) * CHUNK + 1))
+                    for q in ([piece] if piece.geom_type == "Polygon" else [x for x in getattr(piece, "geoms", []) if x.geom_type == "Polygon"]):
+                        if q.area <= 4: continue
+                        ring = np.asarray(shapely.geometry.polygon.orient(q, 1.0).exterior.coords)[:-1]
+                        ly = map_coordinates(wlevel, [(ring[:, 1] - win.z0) / CELL, (ring[:, 0] - win.x0) / CELL], order=1, mode="nearest")
+                        out[(ci, cj)].append(np.c_[ring[:, 0], ly, ring[:, 1]])
+        return out
+    area_b, trough_b, wline_b = rings_by_chunk([a["poly"] for a in areas]), rings_by_chunk(troughs), collections.defaultdict(list)
     for w in wlines:
         a = np.c_[w["xy"][:, 0], w["y"], w["xy"][:, 1]]
         for key, s0, e0 in runs_by_chunk(w["xy"]):
@@ -625,7 +667,7 @@ def process_sector(args):
             th = H[r0:r0 + CV, c0:c0 + CV]; tc = C[r0:r0 + CV, c0:c0 + CV]
             base = float(th.min()); step = max(0.005, math.ceil((float(th.max()) - base) / 65535 * 1000 - 1e-9) / 1000)
             q = np.clip(np.round((th - base) / step), 0, 65535).astype("<u2")
-            buf = bytearray(b"BM05"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
+            buf = bytearray(b"BM06"); wi(buf, ci - ci0); wi(buf, cj - cj0); wi(buf, CV); wf(buf, base, step)
             buf += q.tobytes(); buf += tc.astype(np.uint8).tobytes()
             buf += np.clip(low_col[r0:r0 + CV:4, c0:c0 + CV:4], 0, 255).astype(np.uint8).tobytes()
             wfa(buf, LOW[r0 // 4:r0 // 4 + LV, c0 // 4:c0 // 4 + LV])                 # heights of the 16 m terrain (already kept below the roads)
@@ -635,6 +677,8 @@ def process_sector(args):
             for ring in area_b.get(key, []): wi(buf, len(ring)); wfa(buf, ring.ravel())
             wi(buf, len(wline_b.get(key, [])))
             for hw, seg, lead, trail in wline_b.get(key, []): wf(buf, hw); buf.append(lead); buf.append(trail); wi(buf, len(seg)); wfa(buf, seg.ravel())
+            wi(buf, len(trough_b.get(key, [])))                                         # BM06: outlines of the water carried by a structure
+            for ring in trough_b.get(key, []): wi(buf, len(ring)); wfa(buf, ring.ravel())
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
                 b = buildings[k]
@@ -656,7 +700,7 @@ def process_sector(args):
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
     stamp.parent.mkdir(exist_ok=True)
     stamp.write_text(made_from)
-    stats = dict(sector=(si, sj), chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), secs=round(time.time() - t0, 1))
+    stats = dict(sector=(si, sj), chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
 
 # ------------------------------------------------------------------ assemble
