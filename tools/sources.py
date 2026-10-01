@@ -291,6 +291,16 @@ def _get(url, params, service, tries=8, expect="json"):
     raise RuntimeError(f"{service}: {err}")
 
 
+def _image(url, params, service):
+    """Image bytes of a WMS request (an error page served with 200 is retried as a failure)."""
+    for k in range(6):
+        r = _get(url, params, service, expect="image")
+        if r.headers.get("content-type", "").startswith("image/"):
+            return r.content
+        time.sleep(10 * (k + 1))
+    raise RuntimeError(f"{service}: no image")
+
+
 def wfs_features(layer, rect):
     x0, y0, x1, y1 = rect
     feats, start = [], 0
@@ -603,7 +613,10 @@ def fetch_rows(si, sj):
     for pid, poly in todo:                                                      # one crop at a time per tile (the WMS pool is shared)
         inner = poly.buffer(-10)
         p = (inner if not inner.is_empty else poly).representative_point()
-        out[pid] = list(ground.measure_rows(p.x + CX, p.y + CY, lambda params: _get(WMS, params, "wms_rows", expect="image").content))
+        try:
+            out[pid] = list(ground.measure_rows(p.x + CX, p.y + CY, lambda params: _image(WMS, params, "wms_rows")))
+        except Exception:                                                       # not measured: the parcel's long axis (ground.row_angle)
+            COUNT.add("wms_rows_failed", 0, 0.0)
     write_tile("rows", si, sj, out)
 
 
