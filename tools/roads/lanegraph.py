@@ -157,6 +157,7 @@ class Builder:
         self.applied = set()          # restrictions found on the network (their ways at their junction)
         self.node_xy = np.array([(n["x"], n["z"]) for n in self.controls["nodes"]]).reshape(-1, 2)
         self.owner = None                                                   # what the elements being made belong to
+        self.per_junction = {}                                              # junction index -> its share of some of the stats
 
     def add(self, kind, pts, limit, road, **kw):
         e = Element(id=len(self.elements), kind=kind, xyz=pts, limit=int(limit), road=road, owner=self.owner, **kw)
@@ -541,8 +542,12 @@ def build(network, controls, junctions=None):
     for ji, junction in enumerate(network.junctions):
         if junctions is None or ji in junctions:
             b.owner = ("junction", ji)
+            before = dict(b.stats)
             b.junction(ji, junction)
+            b.per_junction[ji] = {k: b.stats[k] - before[k] for k in ("restricted", "by_turn_lanes", "around_islands")}
     b.dead_ends()
     b.lane_ends()
     b.speeds()
-    return b.elements, b.report()
+    report = b.report()
+    report["per_junction"] = b.per_junction
+    return b.elements, report

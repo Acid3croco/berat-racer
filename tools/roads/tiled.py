@@ -692,7 +692,9 @@ def surface_tile(job):
     network = assemble(area, links, junctions, records.edges(links, junctions), (z, planes))
     own_l = [k for k, link in enumerate(network.links) if link.owner == t]
     own_j = [i for i, j in enumerate(network.junctions) if j.owner == t and j.plane is not None]
-    need = set(own_l) | {a.link for i in own_j for a in network.junctions[i].arms if a.link >= 0}
+    ends_j = {j for k in own_l for j in network.links[k].junction if j >= 0 and network.junctions[j].plane is not None}
+    connect = set(own_j) | ends_j                                       # its links' lanes lead into the connectors of the junctions at their ends,
+    need = set(own_l) | {a.link for i in connect for a in network.junctions[i].arms if a.link >= 0}      # wherever those are owned
     if own_l:                                                            # lanes ending inside an owned link turn round onto lanes up to 12 m away
         import shapely
         heads = shapely.STRtree([shapely.Point(*link.xy[0]) for link in network.links] + [shapely.Point(*link.xy[-1]) for link in network.links])
@@ -704,7 +706,7 @@ def surface_tile(job):
             link.lanes = None
     stats = lanes.layout_all([network.links[k] for k in sorted(need)], network.edges)
     window = sorted({(t[0] + di, t[1] + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1)})
-    elements, elements_stats = lanegraph.build(network, controls_stage.load(window), set(own_j))
+    elements, elements_stats = lanegraph.build(network, controls_stage.load(window), connect)
     # numbering: what each element belongs to, and its rank among the elements made for it
     kinds = {"link": network.links, "junction": network.junctions}
     sig, count = [], {}
@@ -735,7 +737,8 @@ def surface_tile(job):
     mine_j = [i for i, j in enumerate(network.junctions) if j.owner == t]
     names = {lanegraph.LANE: "lanes", lanegraph.CHANGE: "changes", lanegraph.CONNECTOR: "connectors", lanegraph.UTURN: "uturns"}
     graph_stats = {name: sum(1 for e in out if e.kind == k) for k, name in names.items()}
-    graph_stats.update({k: elements_stats[k] for k in ("restricted", "by_turn_lanes", "around_islands")}, elements=len(out),
+    graph_stats.update({k: sum(elements_stats["per_junction"].get(i, {}).get(k, 0) for i in own_j) for k in ("restricted", "by_turn_lanes", "around_islands")},
+                       elements=len(out),
                        yields=sum(len(e.yields) for e in out),
                        controls={name: sum(1 for e in out if e.kind == lanegraph.CONNECTOR and e.control == c) for c, name in enumerate(lanegraph.CONTROL_NAMES)})
     report = dict(surface=metrics.surface_parts(network, set(own_l), set(mine_j)), classes=metrics.profile_parts(network, own_l, mine_j),
