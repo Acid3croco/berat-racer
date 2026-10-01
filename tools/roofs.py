@@ -253,9 +253,12 @@ class Skeleton:
                 out.append(None)
                 continue
             # unique nodes, ordered along the edge from its end back to its start (the face is monotone along its edge)
-            key = np.round(np.c_[pts, hs], 6)
-            _, keep = np.unique(key, axis=0, return_index=True)
-            pts, hs = pts[np.sort(keep)], hs[np.sort(keep)]
+            seen, keep = set(), []
+            for i, row in enumerate(map(tuple, np.round(np.c_[pts, hs], 6).tolist())):     # first of each, in order
+                if row not in seen:
+                    seen.add(row)
+                    keep.append(i)
+            pts, hs = pts[keep], hs[keep]
             t = (pts - self.p0[e]) @ self.d[e]
             on_edge = hs < 1e-9
             top = np.flatnonzero(~on_edge)
@@ -297,9 +300,10 @@ def _triangulate(poly2d):
     return tris
 
 
-def roof(rings, pitch, gables=None):
+def roof(rings, pitch, gables=None, keep=None):
     """Triangles of a roof over `rings` (outline counter-clockwise, holes clockwise; local metres): (t, 3, 3) points (x, north, height
-    above the eaves) and per triangle True where it is a gable wall (vertical face of an edge with speed 0). None if it fails."""
+    above the eaves) and per triangle True where it is a gable wall (vertical face of an edge with speed 0). None if it fails.
+    `keep`: a dict that receives the skeleton's faces (when no ring had to be turned round: they are the faces of `rings` as given)."""
     def signed(r):
         r = np.asarray(r, float)
         return 0.5 * np.sum(r[:, 0] * np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) * r[:, 1])
@@ -320,7 +324,10 @@ def roof(rings, pitch, gables=None):
     except (RuntimeError, StopIteration, ValueError):
         return None
     tris, wall = [], []
-    for e, face in enumerate(sk.faces_3d(pitch)):
+    faces = sk.faces_3d(pitch)
+    if keep is not None and not any(flips):
+        keep["faces"] = faces
+    for e, face in enumerate(faces):
         if face is None:
             continue
         gable = sk.speed[e] == 0.0
@@ -372,7 +379,8 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
 
     if shape == "flat" or (shape is None and rise < FLAT_RISE):
         return flat("flat")
-    hip = roof(rings, 1.0)                                                    # unit pitch: heights are the wavefront's times
+    kept = {}
+    hip = roof(rings, 1.0, keep=kept)                                         # unit pitch: heights are the wavefront's times
     if hip is None or abs(_area(hip[0]) - poly.area) > TILE_FIT * poly.area + 0.5:
         return flat("flat fallback")
     depth = float(hip[0][:, :, 2].max())
@@ -386,12 +394,14 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
     edges = [(r[i], r[(i + 1) % len(r)]) for r in rings for i in range(len(r))]
     gables = np.zeros(len(edges), bool)
     if shape != "hipped":
-        sk = Skeleton([r if k == 0 else r for k, r in enumerate(rings)])
-        try:
-            sk.run()
-            faces = sk.faces_3d(1.0)
-        except (RuntimeError, StopIteration, ValueError):
-            faces = [None] * len(edges)
+        faces = kept.get("faces")                                             # the unit-pitch hip roof's skeleton, already run
+        if faces is None:
+            sk = Skeleton(rings)
+            try:
+                sk.run()
+                faces = sk.faces_3d(1.0)
+            except (RuntimeError, StopIteration, ValueError):
+                faces = [None] * len(edges)
         for e, (a, b) in enumerate(edges):
             face = faces[e] if e < len(faces) else None
             length = float(np.hypot(*(b - a)))

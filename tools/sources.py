@@ -57,7 +57,6 @@ SIDE = 800                                     # pixels per raster tile side
 
 WFS = "https://data.geopf.fr/wfs/ows"
 WMS = "https://data.geopf.fr/wms-r/wms"
-OVERPASS = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "berat-racer/1.0 (hobby game, non-commercial)"
 SSH_HOST = os.environ.get("BERAT_OSM_SSH", "mace")
 PSQL = ('PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=300000" '
@@ -73,7 +72,7 @@ RASTER_KINDS = ("mnt", "mnh", "ortho")
 VECTOR_KINDS = tuple(WFS_LAYERS) + MACE_KINDS + OVERPASS_KINDS + ("rows",)
 # what a build reads: the rows need the rpg tile first (fetched in an earlier wave)
 BUILD_KINDS = RASTER_KINDS + VECTOR_KINDS
-SERVICE_THREADS = {"wms": 4, "wfs": 3, "mace": 1, "overpass": 1, "rows": 6}
+SERVICE_THREADS = {"wms": 4, "wfs": 3, "mace": 1, "overpass": 3, "rows": 6}          # overpass: one query per public instance
 
 _zc, _zd = threading.local(), zstandard.ZstdDecompressor()
 
@@ -404,31 +403,36 @@ def fetch_mace(kind, tiles):
 
 
 POI_AMENITY = "place_of_worship|pharmacy|townhall|school|post_office|restaurant|cafe|bar|bakery|fuel|doctors|community_centre|fire_station|police|library|kindergarten|bank|marketplace"
-GROUND_FILTERS = ('nwr["landuse"]', 'nwr["natural"]', 'nwr["leisure"]', 'nwr["amenity"="parking"]', 'way["service"="parking_aisle"]', 'way["barrier"]',
+GROUND_FILTERS = ('wr["landuse"]', 'wr["natural"]', 'wr["leisure"]', 'wr["amenity"="parking"]', 'way["service"="parking_aisle"]', 'way["barrier"]',
                   'way["highway"="service"]["service"="parking_aisle"]')
 PLACE_RANK = {"city": 0, "town": 1, "village": 2, "suburb": 2, "hamlet": 3}
-_overpass_lock, _overpass_last = threading.Lock(), [0.0]
+OVERPASS_SERVERS = ("https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
+                    "https://overpass.kumi.systems/api/interpreter")
+_servers = [dict(url=u, lock=threading.Lock(), last=0.0) for u in OVERPASS_SERVERS]
+_pick = threading.Lock()
 
 
 def overpass(query, service="overpass", gap=2.0):
-    """POST a query, at most one at a time and `gap` seconds apart (the public instance's courtesy), with back-off on refusal."""
+    """POST a query to a public Overpass instance: at most one query at a time on each and `gap` seconds apart (their courtesy rules),
+    the next instance after a refusal, with back-off."""
     import requests
-    for attempt in range(8):
-        with _overpass_lock:
-            wait = _overpass_last[0] + gap - time.time()
+    for attempt in range(12):
+        with _pick:                                                             # the instance free for the longest
+            server = min(_servers, key=lambda s: (s["lock"].locked(), s["last"]))
+        with server["lock"]:
+            wait = server["last"] + gap - time.time()
             if wait > 0:
                 time.sleep(wait)
             t = time.time()
             try:
-                r = requests.post(OVERPASS, data={"data": query}, timeout=600, headers={"User-Agent": USER_AGENT})
+                r = requests.post(server["url"], data={"data": query}, timeout=600, headers={"User-Agent": USER_AGENT})
                 COUNT.add(service, len(r.content), time.time() - t)
                 ok = r.ok and r.text.lstrip().startswith("{")
             except Exception:
                 ok = False
-            _overpass_last[0] = time.time()
+            server["last"] = time.time() + (0 if ok else 30 * (attempt + 1))  # a refusing instance rests a while
         if ok:
             return r.json()["elements"]
-        time.sleep(15 * (attempt + 1))
     raise RuntimeError("overpass: no answer")
 
 
