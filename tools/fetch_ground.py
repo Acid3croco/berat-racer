@@ -6,6 +6,7 @@
       structures   BD TOPO construction_lineaire: walls, retaining walls, bridges, fences, dams
       rpg          RPG (latest year): every declared farm parcel with its crop code
       hedges       BD Haie: hedgerow lines
+  data/big/vec/rows_{tag}.json.gz           row direction of the crop, vine and orchard parcels measured on the 20 cm orthophoto (ground.py)
   data/big/osm/ground_{tag}.json.gz         OSM areas and lines of the list's window: landuse / natural / leisure polygons, car parks
                                             (amenity=parking with parking=*), parking aisles, barriers. From Overpass: the database on
                                             mace is a filtered import without landuse.
@@ -128,8 +129,31 @@ def main(list_path):
         for name, si, sj, n in pool.map(sector_job, jobs):
             if n is not None:
                 print(f"{name} {si} {sj}: {n}", flush=True)
-    path, n = fetch_osm(sectors, road_build.tag_of(list_path))
+    tag = road_build.tag_of(list_path)
+    path, n = fetch_osm(sectors, tag)
     print(f"osm ground: {path} ({'cached' if n is None else n})")
+    measure_rows(sectors, tag)
+
+
+def measure_rows(sectors, tag):
+    """Row direction of every rowed RPG parcel of the list's sectors, on the orthophoto (ground.py), cached."""
+    import shapely
+    from shapely.geometry import shape
+
+    import ground
+    from build_world import load_vectors
+    codes = ground.rpg_codes(VEC)
+    parcels, seen = [], set()
+    for si, sj in sectors:
+        for f in load_vectors("rpg", si, sj):
+            if f["id"] in seen or ground.rpg_class(f["properties"], codes) not in ground.ROWED:
+                continue
+            seen.add(f["id"])
+            g = shapely.transform(shape(f["geometry"]), lambda xy: xy - [CX, CY])
+            parcels += [(f["id"], q) for q in ([g] if g.geom_type == "Polygon" else list(g.geoms))]
+    done = ground.measure_all(parcels, ground.rows_path(BIG, tag))
+    clear = sum(1 for pid, _ in parcels if pid in done and done[pid][1] >= ground.ROW_COHERENCE)
+    print(f"rows: {len(parcels)} rowed parcels, {sum(1 for pid, _ in parcels if pid in done)} measured, {clear} clear on the orthophoto")
 
 
 if __name__ == "__main__":

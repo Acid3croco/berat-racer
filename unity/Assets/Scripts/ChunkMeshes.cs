@@ -337,6 +337,9 @@ public class ChunkMeshes
         m.BuildStreetFurniture(d, local, boxes);
         m.BuildTrees(d, local);
         m.BuildShrubs(d, local);
+        m.BuildVines(d);
+        m.BuildParking(d, local);
+        m.BuildHedges(d, local);
         return m;
     }
 
@@ -347,7 +350,8 @@ public class ChunkMeshes
             for (int x = 0; x < CV; x++)
             {
                 int gi = z * CV + x;
-                mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, d.H[gi], d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
+                int v = mb.Vertex(new Vector3(d.x0 + x * WorldData.Cell, d.H[gi], d.z0 + z * WorldData.Cell), new Color32(d.Col[gi * 3], d.Col[gi * 3 + 1], d.Col[gi * 3 + 2], 255));
+                if (d.GroundClass != null && d.GroundClass[gi] != 0) mb.Uv(v, new Vector2(d.GroundClass[gi], d.RowDir[gi]));     // BN02: the shader's ground material
             }
         for (int z = 0; z < CV - 1; z++)
             for (int x = 0; x < CV - 1; x++)
@@ -369,6 +373,16 @@ public class ChunkMeshes
             if (west) Skirt(i * CV, (i + 1) * CV);
             if (east) Skirt(i * CV + CV - 1, (i + 1) * CV + CV - 1);
         }
+    }
+
+    /// <summary>BN02: gives vertex v the ground class and row direction of the nearest 4 m grid vertex (none where the chunk has none).</summary>
+    static void GroundUv(ChunkData d, MeshBuilder mb, int v)
+    {
+        if (d.GroundClass == null) return;
+        const int CV = ChunkData.CV; Vector3 p = mb.V[v];
+        int ix = Mathf.Clamp(Mathf.RoundToInt((p.x - d.x0) / WorldData.Cell), 0, CV - 1), iz = Mathf.Clamp(Mathf.RoundToInt((p.z - d.z0) / WorldData.Cell), 0, CV - 1);
+        int gi = iz * CV + ix;
+        if (d.GroundClass[gi] != 0) mb.Uv(v, new Vector2(d.GroundClass[gi], d.RowDir[gi]));
     }
 
     /// <summary>Ground colour of the 4 m grid at (x, z), bilinear (clamped to the chunk).</summary>
@@ -396,7 +410,11 @@ public class ChunkMeshes
         int[] Section(bool paved)
         {
             var idx = new int[Ribbons.Points + 1];
-            for (int k = 0; k < Ribbons.Points; k++) idx[k] = mb.Vertex(pts[k], paved && k <= 1 ? Shoulder : GroundColour(d, pts[k].x, pts[k].z));
+            for (int k = 0; k < Ribbons.Points; k++)
+            {
+                idx[k] = mb.Vertex(pts[k], paved && k <= 1 ? Shoulder : GroundColour(d, pts[k].x, pts[k].z));
+                if (k >= 3) GroundUv(d, mb, idx[k]);                                            // from the toe out the ribbon is the ground: its class too
+            }
             idx[Ribbons.Points] = mb.Vertex(pts[Ribbons.Points - 1] + Vector3.down * Ribbons.Lip, mb.C[idx[Ribbons.Points - 1]]);
             return idx;
         }
@@ -816,13 +834,15 @@ public class ChunkMeshes
             var trunk = C(96, 70, 48);
             float th = Mathf.Max(1.2f, h * 0.3f), rad = Mathf.Clamp(h * 0.28f, 0.9f, 4f);
             float tr = Mathf.Clamp(h * 0.03f, 0.12f, 0.35f);
-            int shape0 = (int)(hash >> 16 & 7);
+            int kind = d.TreeKind != null ? d.TreeKind[i] : 0;                                           // BN02: from the vegetation zone
+            int shape0 = kind == 1 ? (int)(hash >> 16) % 5 : kind == 2 ? 6 : kind == 3 ? 5 : kind == 4 ? 0 : (int)(hash >> 16 & 7);
+            if (kind == 4) { rad *= 0.8f; leaf = C((int)(88 + 30 * rnd), (int)(132 + 30 * rnd), (int)(60 + 20 * rnd)); }      // fruit trees: small, light
             float trunkH = (shape0 < 5 || h < 5f) ? th + (h - th) * 0.075f + 0.7f : th;
             float root = y - 2.5f;                                                                // trunks run well below the surface, so on a slope or a coarse terrain facet they still meet the ground
             int b0 = mb.Vertex(new Vector3(x - tr, root, z - tr), trunk), b1 = mb.Vertex(new Vector3(x + tr, root, z - tr), trunk), b2 = mb.Vertex(new Vector3(x + tr, root, z + tr), trunk), b3 = mb.Vertex(new Vector3(x - tr, root, z + tr), trunk);
             int t0 = mb.Vertex(new Vector3(x - tr, y + trunkH, z - tr), trunk), t1 = mb.Vertex(new Vector3(x + tr, y + trunkH, z - tr), trunk), t2 = mb.Vertex(new Vector3(x + tr, y + trunkH, z + tr), trunk), t3 = mb.Vertex(new Vector3(x - tr, y + trunkH, z + tr), trunk);
             mb.Quad(b0, b1, t1, t0); mb.Quad(b1, b2, t2, t1); mb.Quad(b2, b3, t3, t2); mb.Quad(b3, b0, t0, t3);
-            int shape = (int)(hash >> 16 & 7);
+            int shape = shape0;
             if (shape < 5 || h < 5f)
             {
                 int lobes = h > 8f ? 3 : (h > 5f ? 2 : 1);
@@ -852,6 +872,88 @@ public class ChunkMeshes
                 for (int k = 0; k < 6; k++) mb.Tri(apex, r0 + k, r0 + (k + 1) % 6);
             }
             if (h >= 3f) AddObstacle(local, new Vector3(x, y, z), tr + 0.12f, 3f);           // trunk only: the crown is not solid
+        }
+    }
+
+    // ------------------------------------------------------------------ BN02 dressing (tools/ground.py): vine rows, car park bays and cars, hedges
+    static readonly Color32 VineLeaf = new Color32(92, 128, 58, 255), VineWood = new Color32(104, 84, 62, 255), BayPaint = new Color32(236, 236, 230, 255);
+    static readonly Color32[] ParkedPaint = { new Color32(230, 230, 228, 200), new Color32(40, 42, 46, 200), new Color32(150, 154, 160, 200), new Color32(160, 40, 36, 200), new Color32(46, 72, 120, 200), new Color32(200, 200, 196, 200) };
+
+    /// <summary>A box from a to b (ground points), `width` wide, from `y0` to `y1` above the ground at each end: follows the slope.</summary>
+    static void Strip(MeshBuilder mb, Vector3 a, Vector3 b, float width, float y0, float y1, Color32 top, Color32 sides)
+    {
+        Vector3 d = b - a; d.y = 0; if (d.sqrMagnitude < 1e-6f) return;
+        Vector3 n = new Vector3(-d.z, 0, d.x).normalized * (width * 0.5f);
+        int[] v = new int[8];
+        for (int k = 0; k < 8; k++)
+        {
+            Vector3 p = ((k & 1) == 0 ? a : b) + ((k & 2) == 0 ? -n : n); p.y += (k & 4) == 0 ? y0 : y1;
+            v[k] = mb.Vertex(p, (k & 4) == 0 ? sides : top);
+        }
+        mb.Quad(v[4], v[6], v[7], v[5]); mb.Quad(v[0], v[1], v[5], v[4]); mb.Quad(v[2], v[6], v[7], v[3]); mb.Quad(v[0], v[4], v[6], v[2]); mb.Quad(v[1], v[3], v[7], v[5]);
+    }
+
+    void BuildVines(ChunkData d)
+    {
+        var mb = Trees;
+        for (int i = 0; i + 3 < d.Vines.Length; i += 4)
+        {
+            Vector3 a = new Vector3(d.Vines[i], 0, d.Vines[i + 1]), b = new Vector3(d.Vines[i + 2], 0, d.Vines[i + 3]);
+            a.y = d.Height(a.x, a.z); b.y = d.Height(b.x, b.z);
+            Strip(mb, a, b, 0.5f, 0.55f, 1.45f, VineLeaf, Tint(VineLeaf, 0.75f));                   // the trained foliage wall
+            float len = Vector3.Distance(a, b);
+            for (float t = 0; t <= len; t += 5f)                                                       // a post every 5 m
+            {
+                Vector3 p = Vector3.Lerp(a, b, t / Mathf.Max(len, 1e-3f));
+                mb.Box(new Vector3(p.x, p.y + 0.8f, p.z), new Vector3(0.08f, 1.6f, 0.08f), VineWood);
+            }
+        }
+    }
+
+    void BuildParking(ChunkData d, RoadIndex local)
+    {
+        for (int i = 0; i + 3 < d.Bays.Length; i += 4)
+        {
+            float x = d.Bays[i], z = d.Bays[i + 1], heading = d.Bays[i + 2]; bool car = d.Bays[i + 3] > 0.5f;
+            Vector3 face = new Vector3(Mathf.Cos(heading), 0, Mathf.Sin(heading)), side = new Vector3(-face.z, 0, face.x);
+            Vector3 c = new Vector3(x, d.Height(x, z), z);
+            foreach (float s in new[] { -1.25f, 1.25f })                                              // the two side lines of the bay, 5 m long
+            {
+                Vector3 a = c + side * s - face * 2.5f, b = c + side * s + face * 2.5f;
+                a.y = d.Height(a.x, a.z) + 0.04f; b.y = d.Height(b.x, b.z) + 0.04f;
+                Vector3 w = side * 0.06f;
+                Marks.Quad(Marks.Vertex(a - w, BayPaint), Marks.Vertex(b - w, BayPaint), Marks.Vertex(b + w, BayPaint), Marks.Vertex(a + w, BayPaint));
+            }
+            if (!car) continue;
+            uint hash = (uint)((i + d.key * 977) * 2654435761u);
+            var paint = ParkedPaint[(int)(hash >> 8) % ParkedPaint.Length];
+            var q = Quaternion.LookRotation(face); float y = c.y;
+            Street.BoxQ(new Vector3(x, y + 0.62f, z) - face * 0.3f, new Vector3(1.76f, 0.62f, 4.1f), q, paint);                        // body
+            Street.BoxQ(new Vector3(x, y + 1.17f, z) - face * 0.5f, new Vector3(1.56f, 0.5f, 2.1f), q, new Color32(52, 62, 74, 150));  // cabin, glass
+            foreach (float fx in new[] { -0.78f, 0.78f })
+                foreach (float fz in new[] { -1.55f, 0.95f })
+                    Street.BoxQ(new Vector3(x, y + 0.33f, z) + side * fx + face * fz, new Vector3(0.24f, 0.62f, 0.62f), q, new Color32(30, 30, 32, 255));
+            Collision.BoxQ(new Vector3(x, y + 0.75f, z) - face * 0.3f, new Vector3(1.76f, 1.5f, 4.1f), q, BayPaint);                       // solid, like a building
+        }
+    }
+
+    void BuildHedges(ChunkData d, RoadIndex local)
+    {
+        var mb = Trees;
+        foreach (var h in d.Hedges)
+        {
+            int n = h.xz.Length / 2;
+            uint hash = (uint)((n + d.key * 31 + (int)(h.xz[0] * 10)) * 2246822519u); float rnd = (hash >> 9 & 255) / 255f;
+            var leaf = C((int)(52 + 30 * rnd), (int)(98 + 36 * rnd), (int)(46 + 18 * rnd));
+            for (int k = 0; k + 1 < n; k++)
+            {
+                Vector3 a = new Vector3(h.xz[k * 2], 0, h.xz[k * 2 + 1]), b = new Vector3(h.xz[k * 2 + 2], 0, h.xz[k * 2 + 3]);
+                if (local.EdgeClearance((a.x + b.x) * 0.5f, (a.z + b.z) * 0.5f) < 1.2f) continue;          // never on a road
+                a.y = d.Height(a.x, a.z); b.y = d.Height(b.x, b.z);
+                if (Water_(d, a) || Water_(d, b) || Water_(d, (a + b) * 0.5f)) continue;               // nor in a stream
+                float top = h.height * (0.9f + 0.2f * Mathf.PerlinNoise(a.x * 0.2f, a.z * 0.2f));
+                Strip(mb, a, b, 1.3f, -0.3f, top, Tint(leaf, 1.06f), Tint(leaf, 0.8f));
+            }
         }
     }
 

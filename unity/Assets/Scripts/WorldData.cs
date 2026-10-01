@@ -114,6 +114,8 @@ public class BuildingData
     public FacadeWall[] walls;
 }
 
+public class Hedge { public float height; public float[] xz; }
+
 /// <summary>A wall of a building: `count` outline edges from point `first` (nearly collinear), its flags, the ground at both ends, its openings.</summary>
 public class FacadeWall
 {
@@ -149,6 +151,12 @@ public class ChunkData
     public bool[] Holes;                                 // BM07: per 4 m cell (row-major from the south-west), cut out of the terrain (tunnel portals); null when none
     public BuildingData[] Buildings;
     public float[] Trees, Shrubs;
+    // BN02 (tools/ground.py): per tree its kind (0 unknown, 1 broadleaf, 2 conifer, 3 poplar, 4 fruit); per terrain vertex the ground
+    // class (Ground.*) and the row direction (0 none, else 1 + 254 * angle / pi, angle from +x towards +z); vine rows (x0, z0, x1, z1);
+    // parking bays (x, z, heading, 1 with a parked car); hedges (height, then x / z pairs)
+    public byte[] TreeKind, GroundClass, RowDir;
+    public float[] Vines = new float[0], Bays = new float[0];
+    public Hedge[] Hedges = new Hedge[0];
     public bool HasNear;
     public const int CV = WorldData.CV, LV = 26;
 
@@ -320,8 +328,17 @@ public class ChunkData
     {
         using (var br = Open(path))
         {
-            if (new string(br.ReadChars(4)) != "BN01") throw new InvalidDataException(path);
+            string magic = new string(br.ReadChars(4));
+            if (magic != "BN01" && magic != "BN02") throw new InvalidDataException(path);
             Trees = Floats(br, br.ReadInt32() * 4); Shrubs = Floats(br, br.ReadInt32() * 4);
+            if (magic == "BN02")
+            {
+                TreeKind = br.ReadBytes(Trees.Length / 4);
+                GroundClass = br.ReadBytes(CV * CV); RowDir = br.ReadBytes(CV * CV);
+                Vines = Floats(br, br.ReadInt32() * 4); Bays = Floats(br, br.ReadInt32() * 4);
+                Hedges = new Hedge[br.ReadInt32()];
+                for (int i = 0; i < Hedges.Length; i++) { var h = new Hedge { height = br.ReadSingle() }; h.xz = Floats(br, br.ReadInt32() * 2); Hedges[i] = h; }
+            }
         }
         HasNear = true;
     }

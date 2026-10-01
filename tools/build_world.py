@@ -39,13 +39,14 @@ from rasterio import features
 from rasterio.transform import from_origin
 from scipy.ndimage import (correlate, distance_transform_edt, gaussian_filter, label, map_coordinates, maximum_filter, uniform_filter, uniform_filter1d)
 from scipy.spatial import cKDTree
-from shapely.geometry import Point, box, shape
+from shapely.geometry import LineString, Point, Polygon, box, shape
 from shapely.strtree import STRtree
 import pyproj
 import rasterio
 import fetch
 import rasters
 import facades
+import ground as land
 import roofs
 import vec_io
 from fetch import CX, CY
@@ -95,6 +96,28 @@ def load_vectors(name, si, sj):
             if key in seen: continue
             seen.add(key); out.append(feat)
     return out
+
+@functools.lru_cache(maxsize=1)
+def osm_ground(tag):
+    """OSM areas and lines of fetch_ground.py, each with its local bounds (empty when not fetched)."""
+    from fetch_ground import osm_path
+    path = osm_path(tag)
+    if not path.exists(): return []
+    out = []
+    for f in json.loads(gzip.open(path).read()):
+        g = geom_local(f)
+        f["_local"], f["_bounds"] = g, g.bounds
+        out.append(f)
+    return out
+
+@functools.lru_cache(maxsize=1)
+def row_directions(tag):
+    path = land.rows_path(BIG, tag)
+    return json.loads(gzip.open(path).read()) if path.exists() else {}
+
+@functools.lru_cache(maxsize=1)
+def rpg_codes():
+    return land.rpg_codes(BIG / "vec") if (BIG / "vec" / "rpg_codes.json").exists() else {}
 
 def poi_files():
     return [f for f in [BIG / "vec" / n for n in ("osm_poi.json", "osm_poi_hg.json")] + sorted((BIG / "vec").glob("osm_poi_hg_*.json.gz")) if f.exists()]
@@ -507,7 +530,7 @@ def put_junctions(buf, items, ribbons):
 @functools.lru_cache(maxsize=1)
 def code_key():
     """What this process builds sectors with: the code, its tuning, the libraries and the points of interest."""
-    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs, facades]
+    modules = [sys.modules[__name__], rasters, vec_io, fetch, road_surface, road_terrain, roofs, facades, land]
     return digest(code_stamp(*modules), [rasterio.__version__, pyproj.__version__], [rasters.file_stamp(f) for f in poi_files()])
 
 def sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes):
@@ -790,6 +813,35 @@ def process_sector(args):
     sk &= rs.random(len(sx_)) < min(1.0, 17000 / max(int(sk.sum()), 1))
     shrubs = np.c_[sx_[sk], win.sample(win.mnt, sx_[sk], sz_[sk], 2), sz_[sk], sm[lr, lc][sk]].astype("<f4")
 
+    # ---- ground classes and their dressing (tools/ground.py)
+    to_local = lambda g: shapely.transform(shapely.force_2d(g), lambda c: c - np.array([CX, CY]))
+    wx0, wz0, wx1, wz1 = win.x0, win.z0, win.x0 + win.size, win.z0 + win.size
+    near_osm = [f for f in osm_ground(road_tag) if f["_bounds"][2] >= wx0 and f["_bounds"][0] <= wx1 and f["_bounds"][3] >= wz0 and f["_bounds"][1] <= wz1]
+    garea = [a for a in land.areas(lambda name: load_vectors(name, si, sj), near_osm, to_local, rpg_codes(), row_directions(road_tag))
+             if a[0].bounds[2] >= wx0 and a[0].bounds[0] <= wx1 and a[0].bounds[3] >= wz0 and a[0].bounds[1] <= wz1]
+    G, A = land.rasterize(garea, win.x0, win.z0, nv, CELL)
+    solid = corr + [q.buffer(0.5) for q in bpolys]
+    solid_tree = STRtree(solid) if solid else None
+    blocked = lambda q: shapely.union_all([solid[i] for i in solid_tree.query(q.buffer(2.0))]) if solid_tree is not None else Polygon()
+    vines = land.vine_rows(garea, owned, blocked)
+    if len(shrubs):                                                                   # in a vineyard the LiDAR's shrubs are the vines: the rows replace them
+        gi = np.clip(np.round((shrubs[:, 2] - win.z0) / CELL).astype(int), 0, nv - 1), np.clip(np.round((shrubs[:, 0] - win.x0) / CELL).astype(int), 0, nv - 1)
+        shrubs = shrubs[G[gi] != land.VINEYARD]
+    bays = land.parking_bays(garea, owned, blocked)
+    hedge_list = land.hedges([to_local(shape(f["geometry"])) for f in load_vectors("hedges", si, sj)], owned,
+                               lambda xy: win.sample(win.mnh, xy[:, 0], xy[:, 1], 2))
+    if hedge_list and len(shrubs):                                                   # a hedge replaces the shrubs the LiDAR found on it
+        on_hedge = shapely.union_all([LineString(xy) for _, xy in hedge_list]).buffer(1.5)
+        shrubs = shrubs[~shapely.contains_xy(on_hedge, shrubs[:, 0], shrubs[:, 2])]
+    hedge_pieces = [(h, xy[k:k + 8]) for h, xy in hedge_list for k in range(0, len(xy) - 1, 7)]       # 8 points (28 m) a piece, one chunk each
+    tree_kind = land.tree_kinds(trees[:, [0, 2]], [(to_local(shape(f["geometry"])), f["properties"].get("nature")) for f in load_vectors("vegetation", si, sj)], garea)
+    own_rows, own_cols = slice(MARGIN // CELL, MARGIN // CELL + SECTOR // CELL), slice(MARGIN // CELL, MARGIN // CELL + SECTOR // CELL)
+    counts = np.bincount(G[own_rows, own_cols].ravel(), minlength=len(land.NAMES))
+    ground_stats = dict(cells={land.NAMES[k]: int(v) for k, v in enumerate(counts) if v}, rows_measured=sum(1 for a in garea if a[5]),
+                        rows_long_axis=sum(1 for a in garea if a[1] in land.ROWED and not a[5]), vine_rows_km=round(float(np.hypot(vines[:, 2] - vines[:, 0], vines[:, 3] - vines[:, 1]).sum()) / 1000, 2),
+                        bays=len(bays), parked=int(bays[:, 3].sum()) if len(bays) else 0, hedges_km=round(sum(LineString(xy).length for _, xy in hedge_list) / 1000, 2),
+                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist())
+
     # ---- bucket everything by chunk and write
     def bucket_xy(arr, xcol=0, zcol=2):
         d = collections.defaultdict(list)
@@ -798,6 +850,8 @@ def process_sector(args):
             for k in range(len(arr)): d[(ci[k], cj[k])].append(k)
         return d
     tree_b, shrub_b = bucket_xy(trees), bucket_xy(shrubs)
+    vine_b, bay_b = bucket_xy((vines[:, :2] + vines[:, 2:]) / 2, 0, 1), bucket_xy(bays, 0, 1)
+    hedge_b = bucket_xy(np.array([xy[len(xy) // 2] for _, xy in hedge_pieces]).reshape(-1, 2), 0, 1)
     bld_b = collections.defaultdict(list)
     for k, b in enumerate(buildings):
         cx_, cz_ = np.mean(b["p"][0::2]), np.mean(b["p"][1::2])
@@ -882,8 +936,15 @@ def process_sector(args):
                 wi(buf, len(b["rt"])); buf += b["rt"].astype("<i4").tobytes(); buf += b["rg"].astype(np.uint8).tobytes()     # ... its triangles and which are gable walls
                 put_facade(buf, b)                                                                           # BM07: walls and openings
             write_gz(out_dir / f"m_{ci - ci0}_{cj - cj0}.bin.gz", buf)
-            nb = bytearray(b"BN01"); ti, sh = tree_b.get(key, []), shrub_b.get(key, [])
+            nb = bytearray(b"BN02"); ti, sh = tree_b.get(key, []), shrub_b.get(key, [])
             wi(nb, len(ti)); wfa(nb, trees[ti].ravel()); wi(nb, len(sh)); wfa(nb, shrubs[sh].ravel())
+            nb += tree_kind[ti].tobytes()                                                # BN02: tree kind, ground class and row direction per vertex,
+            nb += G[r0:r0 + CV, c0:c0 + CV].tobytes() + A[r0:r0 + CV, c0:c0 + CV].tobytes()   # vine rows, parking bays, hedges
+            vi, bi, hi = vine_b.get(key, []), bay_b.get(key, []), hedge_b.get(key, [])
+            wi(nb, len(vi)); wfa(nb, vines[vi].ravel()); wi(nb, len(bi)); wfa(nb, bays[bi].ravel())
+            wi(nb, len(hi))
+            for k in hi:
+                h, xy = hedge_pieces[k]; wf(nb, h); wi(nb, len(xy)); wfa(nb, xy.ravel())
             write_gz(out_dir / f"n_{ci - ci0}_{cj - cj0}.bin.gz", nb)
             n_chunks += 1
 
@@ -896,7 +957,7 @@ def process_sector(args):
     fc = np.stack([map_coordinates(far_raw[..., k], [(fgz.ravel() - win.z0) / CELL, (fgx.ravel() - win.x0) / CELL], order=1, mode="nearest") for k in range(3)], axis=1).reshape(fgx.shape + (3,))
     stamp.parent.mkdir(exist_ok=True)
     stamp.write_text(made_from)
-    stats = dict(sector=(si, sj), roofs=roof_stats, facades=facade_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
+    stats = dict(sector=(si, sj), roofs=roof_stats, facades=facade_stats, ground=ground_stats, chunks=n_chunks, roads=len(pieces), junctions=len(meshes), buildings=len(buildings), trees=len(trees), shrubs=len(shrubs), water_areas=len(areas), water_lines=len(wlines), troughs=len(troughs), secs=round(time.time() - t0, 1))
     return si, sj, fh.astype(np.float32), np.clip(fc, 0, 255).astype(np.uint8), stats
 
 # ------------------------------------------------------------------ assemble

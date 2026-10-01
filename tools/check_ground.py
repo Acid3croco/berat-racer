@@ -1,6 +1,7 @@
 """What the ground data covers over a sector list: per source and class, the features and the share of the map's area (fetch_ground.py).
 
-Usage: uv run python check_ground.py data/big/small_sectors.json
+Usage: uv run python check_ground.py data/big/small_sectors.json      (the fetched data)
+       uv run python check_ground.py --world ../world_small               (what a built world carries: BN02 near files)
 """
 import gzip
 import json
@@ -60,6 +61,46 @@ def measure(list_path):
     return report
 
 
+def measure_world(world_dir):
+    """Share of the vertices per ground class, rows with a direction, vine rows, bays, parked cars, hedges and trees per kind."""
+    import struct
+
+    import numpy as np
+
+    import ground
+    cv, classes, kinds = 101, Counter(), Counter()
+    rowed = vines_km = bays = parked = hedges_km = 0.0
+    for path in sorted(Path(world_dir, "chunks").glob("n_*")):
+        raw = gzip.open(path).read()
+        if raw[:4] != b"BN02":
+            continue
+        o = 4
+        nt = struct.unpack_from("<i", raw, o)[0]; o += 4 + 16 * nt
+        ns = struct.unpack_from("<i", raw, o)[0]; o += 4 + 16 * ns
+        kinds.update(np.frombuffer(raw, np.uint8, nt, o).tolist()); o += nt
+        g = np.frombuffer(raw, np.uint8, cv * cv, o)[:cv * cv].reshape(cv, cv)[:-1, :-1]; o += cv * cv     # each chunk owns its south-west vertices
+        a = np.frombuffer(raw, np.uint8, cv * cv, o).reshape(cv, cv)[:-1, :-1]; o += cv * cv
+        classes.update(Counter(g.ravel().tolist())); rowed += int((a > 0).sum())
+        n = struct.unpack_from("<i", raw, o)[0]; v = np.frombuffer(raw, "<f4", 4 * n, o + 4).reshape(-1, 4); o += 4 + 16 * n
+        vines_km += float(np.hypot(v[:, 2] - v[:, 0], v[:, 3] - v[:, 1]).sum()) / 1000
+        n = struct.unpack_from("<i", raw, o)[0]; b = np.frombuffer(raw, "<f4", 4 * n, o + 4).reshape(-1, 4); o += 4 + 16 * n
+        bays += n; parked += float(b[:, 3].sum())
+        n = struct.unpack_from("<i", raw, o)[0]; o += 4
+        for _ in range(n):                                                               # height, point count, points
+            k = struct.unpack_from("<i", raw, o + 4)[0]; xy = np.frombuffer(raw, "<f4", 2 * k, o + 8).reshape(-1, 2); o += 8 + 8 * k
+            hedges_km += float(np.hypot(*np.diff(xy, axis=0).T).sum()) / 1000
+        assert o == len(raw), path
+    total = sum(classes.values())
+    if not total:
+        return dict(classes={}, note="no BN02 near files: no ground classes")
+    return dict(classes={ground.NAMES[k]: round(v / total, 4) for k, v in classes.most_common()}, rowed_share=round(rowed / total, 4),
+                vine_rows_km=round(vines_km, 1), bays=int(bays), parked=int(parked), hedges_km=round(hedges_km, 1),
+                trees_by_kind={["unknown", "broadleaf", "conifer", "poplar", "fruit"][k]: v for k, v in sorted(kinds.items())})
+
+
 if __name__ == "__main__":
-    for name, classes in measure(sys.argv[1]).items():
-        print(name, json.dumps(classes, ensure_ascii=False))
+    if sys.argv[1] == "--world":
+        print(json.dumps(measure_world(sys.argv[2]), ensure_ascii=False))
+    else:
+        for name, classes in measure(sys.argv[1]).items():
+            print(name, json.dumps(classes, ensure_ascii=False))

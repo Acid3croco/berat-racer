@@ -8,11 +8,15 @@ public class MeshBuilder
     public readonly List<Vector3> V = new List<Vector3>();
     public readonly List<Color32> C = new List<Color32>();
     public readonly List<int> T = new List<int>();
+    public readonly List<Vector2> U = new List<Vector2>();     // optional second channel (TEXCOORD1), zero where not set: the terrain's ground class and row direction
 
     public int Vertex(Vector3 p, Color32 c) { V.Add(p); C.Add(c); return V.Count - 1; }
     public void Tri(int a, int b, int c) { T.Add(a); T.Add(b); T.Add(c); }
     public void Quad(int a, int b, int c, int d) { Tri(a, b, c); Tri(a, c, d); }
     public bool Empty => T.Count == 0;
+
+    /// <summary>Sets vertex i's second channel; vertices before it without one get zero.</summary>
+    public void Uv(int i, Vector2 uv) { while (U.Count <= i) U.Add(Vector2.zero); U[i] = uv; }
 
     /// <summary>Box with optional narrower top (topScale.x/z multiply the top face).</summary>
     public void Box(Vector3 center, Vector3 size, Color32 col, Vector2? topScale = null, float topShiftZ = 0f)
@@ -109,6 +113,7 @@ public class MeshBuilder
     {
         var m = new Mesh { name = name, indexFormat = IndexFormat.UInt32 };
         m.SetVertices(V); m.SetColors(C); m.SetTriangles(T, 0);
+        if (U.Count > 0) { while (U.Count < V.Count) U.Add(Vector2.zero); m.SetUVs(1, U); }
         m.RecalculateBounds();
         return m;
     }

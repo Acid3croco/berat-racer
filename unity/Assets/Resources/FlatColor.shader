@@ -34,14 +34,15 @@ Shader "Berat/FlatColor"
 
             float _Noise, _NoiseScale, _Emission, _HoleRadius, _Detail; float4 _HoleCenter;
 
-            struct appdata { float4 vertex : POSITION; fixed4 color : COLOR; };
-            struct v2f { float4 pos : SV_POSITION; fixed4 col : COLOR; float3 wp : TEXCOORD0; SHADOW_COORDS(1) UNITY_FOG_COORDS(2) };
+            struct appdata { float4 vertex : POSITION; fixed4 color : COLOR; float2 ground : TEXCOORD1; };
+            // ground: the terrain's class (tools/ground.py) and row direction byte, flat over each triangle (a mix of two classes means nothing)
+            struct v2f { float4 pos : SV_POSITION; fixed4 col : COLOR; float3 wp : TEXCOORD0; SHADOW_COORDS(1) UNITY_FOG_COORDS(2) nointerpolation float2 ground : TEXCOORD3; };
 
             v2f vert (appdata v)
             {
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
-                o.col = v.color;
+                o.col = v.color; o.ground = v.ground;
                 // camera-relative position: large world coordinates (tens of km from the origin) have too little float precision for the screen-space-derivative normals
                 o.wp = mul((float3x3)unity_ObjectToWorld, v.vertex.xyz) + (float3(unity_ObjectToWorld[0].w, unity_ObjectToWorld[1].w, unity_ObjectToWorld[2].w) - _WorldSpaceCameraPos);
                 TRANSFER_SHADOW(o);
@@ -55,6 +56,80 @@ Shader "Berat/FlatColor"
                 float3 i = floor(x), f = frac(x); f = f * f * (3.0 - 2.0 * f);
                 return lerp(lerp(lerp(h31(i), h31(i + float3(1,0,0)), f.x), lerp(h31(i + float3(0,1,0)), h31(i + float3(1,1,0)), f.x), f.y),
                             lerp(lerp(h31(i + float3(0,0,1)), h31(i + float3(1,0,1)), f.x), lerp(h31(i + float3(0,1,1)), h31(i + float3(1,1,1)), f.x), f.y), f.z);
+            }
+
+            // ground classes of tools/ground.py
+            #define G_MEADOW 1
+            #define G_CEREAL 2
+            #define G_ROWCROP 3
+            #define G_VINEYARD 4
+            #define G_ORCHARD 5
+            #define G_FALLOW 6
+            #define G_PARKING 7
+            #define G_YARD 9
+            #define G_FOREST 10
+            #define G_PITCH 12
+
+            /// a stripe profile across rows `spacing` apart: 1 on the line (half width `w` of the spacing), 0 between, faded out with its own screen size
+            float Rows(float across, float spacing, float w)
+            {
+                float t = across / spacing, f = abs(frac(t) - 0.5) * 2.0;
+                return (1.0 - smoothstep(w, w + 0.15, 1.0 - f)) * saturate(1.0 - fwidth(t) * 2.5);
+            }
+
+            float3 GroundMaterial(float3 albedo, float2 ground, float3 wabs, float3 wq, float camDist)
+            {
+                int cls = (int)round(ground.x);
+                float ang = (ground.y - 1.0) / 254.0 * 3.14159265;
+                float2 along = float2(cos(ang), sin(ang)), side = float2(-along.y, along.x);
+                float across = dot(wabs.xz, side);                               // metres across the rows (world position: stripes stay continuous)
+                float3 soil = GammaToLinearSpace(float3(0.47, 0.38, 0.29)), asphalt = GammaToLinearSpace(float3(0.36, 0.36, 0.37));
+                float near = saturate(1.0 - (camDist - 30.0) / 250.0);
+                if (cls == G_ROWCROP && ground.y > 0.5)
+                {   // maize / sunflower: crop rows 0.8 m apart, bare soil showing between them
+                    float r = Rows(across, 0.8, 0.45);
+                    albedo = lerp(albedo, lerp(soil, albedo * 1.12, r), 0.45 * near);
+                }
+                else if (cls == G_CEREAL && ground.y > 0.5)
+                {   // wheat / barley: fine drill lines up close, tractor tramlines (two wheel tracks 1.8 m apart every 24 m) from afar
+                    float drill = Rows(across, 0.17, 0.5);
+                    float t = frac(across / 24.0) * 24.0;
+                    float tram = (1.0 - smoothstep(0.25, 0.4, abs(t - 0.9))) + (1.0 - smoothstep(0.25, 0.4, abs(t - 2.7)));
+                    albedo *= 1.0 - drill * 0.08 * saturate(1.0 - (camDist - 10.0) / 40.0);
+                    albedo = lerp(albedo, soil, tram * 0.35 * saturate(1.0 - fwidth(across / 24.0) * 40.0));
+                }
+                else if (cls == G_VINEYARD && ground.y > 0.5)
+                {   // bare or grassed strips between the vine rows (the rows themselves are meshes)
+                    float row = Rows(across, 2.2, 0.35);
+                    albedo = lerp(albedo, soil, (1.0 - row) * 0.5 * near);
+                }
+                else if (cls == G_ORCHARD && ground.y > 0.5)
+                {   // mown alleys between the tree rows
+                    albedo *= 1.0 + (Rows(across, 5.0, 0.4) - 0.5) * 0.12 * near;
+                }
+                else if (cls == G_FALLOW)
+                {
+                    albedo *= 1.0 + (vnoise(wq * 0.35) - 0.5) * 0.25;
+                }
+                else if (cls == G_PARKING)
+                {   // asphalt, whatever the photo caught on it (parked cars)
+                    float speck = (h31(floor(wq * float3(46.0, 1.0, 46.0))) - 0.5) * 0.12 * saturate(1.0 - (camDist - 6.0) / 30.0);
+                    albedo = asphalt * (1.0 + speck + (vnoise(wq * 0.45) - 0.5) * 0.10);
+                }
+                else if (cls == G_YARD)
+                {   // gravel and concrete: greyer, speckled
+                    float grey = dot(albedo, float3(0.3, 0.55, 0.15));
+                    albedo = lerp(albedo, float3(grey, grey, grey) * 1.05, 0.6) * (1.0 + (h31(floor(wq * float3(20.0, 1.0, 20.0))) - 0.5) * 0.18 * saturate(1.0 - (camDist - 6.0) / 30.0));
+                }
+                else if (cls == G_FOREST)
+                {   // leaf litter under the canopy
+                    albedo = lerp(albedo, soil * 0.8, 0.35) * (1.0 + (vnoise(wq * 0.5) - 0.5) * 0.2);
+                }
+                else if (cls == G_PITCH)
+                {   // mowing stripes 5 m wide
+                    albedo *= 1.0 + (step(0.5, frac(wabs.x / 10.0)) - 0.5) * 0.10;
+                }
+                return albedo;
             }
 
             fixed4 frag (v2f i) : SV_Target
@@ -103,6 +178,7 @@ Shader "Berat/FlatColor"
                                       + (1.0 - isWarm * smoothstep(0.12, 0.25, mx)) * (vnoise(float3(wt * 1.5, wq.y * 0.35, 0.0)) - 0.5) * 0.10);
                     albedo *= d;
                 }
+                if (_Detail > 0 && i.ground.x > 0.5) albedo = GroundMaterial(albedo, i.ground, wabs, wq, camDist);
                 float gloss = 1.0 - i.col.a;                                    // alpha 255 = matte
                 float3 L = normalize(_WorldSpaceLightPos0.xyz);
                 UNITY_LIGHT_ATTENUATION(atten, i, i.wp);
