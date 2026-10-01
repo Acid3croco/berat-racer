@@ -228,7 +228,7 @@ def road_ribbons(pieces, meshes, natural, footprint):
         for i in range(len(v)):                                                      # where a kerb meets a road edge, the road's ribbon continues
             if (v[i, 0], v[i, 1]) in normal_at: out[i] = normal_at[(v[i, 0], v[i, 1])]
         used = np.unique(kerb[:, :2])
-        prof = np.zeros((len(v), 5))
+        prof = np.zeros((len(v), 8))
         reach = road_terrain.kerb_reach(v, kerb[:, :2], out)
         prof[used] = road_terrain.ribbon_profile(v[used], out[used], natural, footprint, reach[used])
         out_list.append((j, -1, v, out, prof, [tuple(e) for e in kerb[:, :2]]))
@@ -236,7 +236,7 @@ def road_ribbons(pieces, meshes, natural, footprint):
 
 def ribbon_tris(ribbons):
     """The ribbons' triangles without their aprons: what the terrain is lowered under."""
-    tris = [road_terrain.ribbon_triangles(road_terrain.ribbon_points(edge, o, prof[:, :5]), segs) for _, _, edge, o, prof, segs in ribbons if segs]
+    tris = [road_terrain.ribbon_triangles(road_terrain.ribbon_points(edge, o, prof), segs) for _, _, edge, o, prof, segs in ribbons if segs]
     return np.concatenate(tris) if tris else np.zeros((0, 3, 3))
 
 def tunnel_holes(H, pieces, x0, z0):
@@ -457,7 +457,7 @@ def put_roads(buf, items, ribbons):
         for i, after in lines: buf += struct.pack("<HB", i, 1 if after else 0)
         wstr(buf, e.surface); buf.append(p.limits[1])                                # BM07: OSM surface, limit against the piece's direction
         put_lane_marks(buf, p, a, b)
-        sides = ribbons.get(id(p))                                                     # BM07: embankment ribbon per point and side: shoulder, toe d / y, outer d / y, apron y x 2, apron width
+        sides = ribbons.get(id(p))                                                     # BM07: embankment ribbon per point and side: width, heights at the blend fractions (roads/terrain.py)
         buf.append(1 if sides else 0)
         if sides: wfa(buf, np.c_[sides[0][a:b], sides[1][a:b]])
 
@@ -633,8 +633,6 @@ def process_sector(args):
         rr, cc, ww = road_terrain._mesh_corners(nv, nv, win.x0, win.z0, CELL, xy)
         return (H[rr, cc] * ww).sum(axis=0)
     park_meshes = [m for m in (land.parking_mesh(q, terrain_at) for q in parks) if len(m[1])]
-    for i, (owner, side, edge, o, prof, segs) in enumerate(ribbons):                  # no apron: the fill meets the ribbon's outer end
-        ribbons[i] = (owner, side, edge, o, np.c_[prof, prof[:, 4], prof[:, 4], np.zeros(len(prof))], segs)
     band = stitch.band_polygons(road_surface.footprints(pieces, meshes), ribbons, parks)
     band_cut = stitch.cut_cells(band, win.x0, win.z0, CELL, nv, nv)
     band_height = stitch.BandHeight(stitch.band_surface(pieces, meshes, ribbons, park_meshes, [ribbon_tris([r]) for r in ribbons if r[5]], road_surface.junction_triangles))

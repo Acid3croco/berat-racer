@@ -418,13 +418,13 @@ public class ChunkMeshes
         var mb = Terrain; var pts = new Vector3[Ribbons.Points];
         int[] Section(bool paved)
         {
-            var idx = new int[Ribbons.Points + 1];
+            var idx = new int[Ribbons.Points];
             for (int k = 0; k < Ribbons.Points; k++)
             {
-                idx[k] = mb.Vertex(pts[k], paved && k <= 1 ? Shoulder : GroundColour(d, pts[k].x, pts[k].z));
-                if (k >= 3) GroundUv(d, mb, idx[k]);                                            // from the toe out the ribbon is the ground: its class too
+                var ground = GroundColour(d, pts[k].x, pts[k].z);                             // paved roads: a gravel edge fading into the ground
+                idx[k] = mb.Vertex(pts[k], !paved || k >= 2 ? ground : k == 0 ? Shoulder : Color32.Lerp(Shoulder, ground, 0.6f));
+                if (k >= 2) GroundUv(d, mb, idx[k]);                                            // past the edge the ribbon is the ground: its class too
             }
-            idx[Ribbons.Points] = mb.Vertex(pts[Ribbons.Points - 1] + Vector3.down * Ribbons.Lip, mb.C[idx[Ribbons.Points - 1]]);
             return idx;
         }
         bool Inside(Vector3 p) => WorldData.InBounds(p.x, p.z);                      // nothing past the world's edge
@@ -432,9 +432,6 @@ public class ChunkMeshes
         {
             if (!Inside(mb.V[a[Ribbons.Points - 1]]) || !Inside(mb.V[b[Ribbons.Points - 1]])) return;
             for (int q = 0; q + 1 < Ribbons.Points; q++) Ribbons.Quad(a[q], b[q], b[q + 1], a[q + 1], left, (x, y, z) => { if (Ribbons.Upright(mb.V[x], mb.V[y], mb.V[z])) mb.Tri(x, y, z); });
-            if (d.Seam.Length > 0) return;                                          // the seam meets the ribbon's end: no lip
-            int e = Ribbons.Points - 1, f = Ribbons.Points;                          // the lip, seen from either side
-            mb.Tri(a[e], b[e], b[f]); mb.Tri(a[e], b[f], a[f]); mb.Tri(a[e], b[f], b[e]); mb.Tri(a[e], a[f], b[f]);
         }
         foreach (var r in d.Roads)
         {

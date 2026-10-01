@@ -25,7 +25,7 @@ def band_polygons(footprints, ribbons, park_polygons):
     """Plan polygons of the band: road and junction footprints, car parks, and each ribbon side from its edge to its outer end."""
     out = list(footprints) + list(park_polygons)
     for _, side, edge, o, prof, segs in ribbons:
-        outer = edge[:, :2] + o * prof[:, 3:4]
+        outer = edge[:, :2] + o * prof[:, 0:1]
         for a, b in segs:
             quad = Polygon([edge[a, :2], edge[b, :2], outer[b], outer[a]])
             if quad.area > 1e-4:

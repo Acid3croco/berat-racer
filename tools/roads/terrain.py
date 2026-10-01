@@ -10,11 +10,10 @@ Rules applied to a grid of vertices (row = north index, south first; vertex (r, 
           keeps the coarse 16 m terrain under the roads too.
   drape   (with ribbons) every vertex under a ribbon is lowered just below it, to the lowest ribbon over it.
 
-Ribbons: along every road edge and junction kerb, a strip sampled with the road: a shoulder, then an embankment slope (fill or
-cut, EMBANKMENT_SLOPE) down or up to the LiDAR ground, then the ground itself out to RIBBON_MIN from the edge (past the corners
-the bench lowers), never into another road; then an apron, APRON wide, that redraws the terrain as it was before it was lowered
-under the ribbon (a 4 m triangle with a lowered corner reaches that far past it). The game draws them with the terrain, so the
-4 m grid steps lie hidden under a surface that follows the road.
+Ribbons: along every road edge and junction kerb, a strip sampled with the road that blends from the road edge to the ground in one
+smoothstep (level with the road where it leaves it, tangent to the ground where it meets it), over a width that keeps it no steeper
+than BLEND_SLOPE, never into another road nor folded on the inside of a bend. The 4 m cells it covers are cut out of the terrain
+and the gap is filled by tools/stitch.py, so the ribbon meets the terrain without a step.
 """
 import numpy as np
 import shapely
@@ -167,69 +166,44 @@ def kerb_reach(points, segments, out):
     return reach
 
 
+BLEND_FRACTIONS = np.array([0.08, 0.18, 0.32, 0.5, 0.68, 0.84, 1.0])     # of the ribbon's width: where its seven cross-section points are
+
+
+def smoothstep(t):
+    return t * t * (3.0 - 2.0 * t)
+
+
 def ribbon_profile(edge, out, natural, footprint, cap=None):
-    """Embankment beside a road edge. `edge` (n, 3): x, north, height of the edge points; `out` (n, 2): unit outward directions;
-    `natural(xy)`: LiDAR ground. Returns (n, 5): shoulder width, toe distance and height (where the slope meets the ground), outer
-    distance and height (the ribbon's end), all from the edge. `cap`: per point, how far it may reach (default `inner_reach`)."""
+    """Embankment beside a road edge: one smooth blend from the road edge to the ground. `edge` (n, 3): x, north, height of the edge
+    points; `out` (n, 2): unit outward directions; `natural(xy)`: the ground. Returns (n, 8): the width W, then the heights at
+    BLEND_FRACTIONS of W: edge + s(t) (ground - edge), s the smoothstep, so the ribbon leaves the road level and meets the ground
+    tangent to it (no crease at either end). W is the narrowest of RIBBON_MIN .. RIBBON_REACH keeping the steepest part (1.5 x the
+    height difference / W) at BLEND_SLOPE or less, and stops a metre short of another road and where the bend would fold it
+    (`cap`, default `inner_reach`)."""
     n = len(edge)
     if not n:
-        return np.zeros((0, 5))
-    d = config.SHOULDER + np.arange(0.0, config.RIBBON_REACH + 0.01, 0.5)
+        return np.zeros((0, 8))
+    d = np.arange(0.5, config.RIBBON_REACH + 0.01, 0.5)
     p = edge[:, None, :2] + out[:, None, :] * d[None, :, None]
     g = natural(p.reshape(-1, 2)).reshape(n, len(d))
-    top = edge[:, 2] - config.VERGE_DROP
-    fill = g[:, 0] < top
-    line = top[:, None] + np.where(fill, -1.0, 1.0)[:, None] * config.EMBANKMENT_SLOPE * (d - config.SHOULDER)[None, :]
-    meets = np.where(fill[:, None], line <= g, line >= g)
     others = footprint.distance(p[..., 0], p[..., 1]) < d[None, :] - 1.0              # another road is nearer than ours
-    last = len(d) - 1
-    blocked = np.where(others.any(axis=1), np.argmax(others, axis=1) - 2, last + 1)       # stop a metre short of it
-    at = np.where(meets.any(axis=1), np.argmax(meets, axis=1), last)
-    rows = np.arange(n)
-    toe = np.minimum(at, np.maximum(blocked, 0))
-    toe_d, toe_y = d[toe], np.where(toe < at, line[rows, toe], g[rows, toe])
-    # where the slope meets the ground between two samples, put the toe on the crossing itself (0.5 m steps would jag the toe line)
-    prev = np.maximum(toe - 1, 0)
-    gap0, gap1 = line[rows, prev] - g[rows, prev], line[rows, toe] - g[rows, toe]
-    cross = (toe == at) & (toe > 0) & meets.any(axis=1) & (np.sign(gap0) != np.sign(gap1)) & (np.abs(gap0 - gap1) > 1e-6)
-    f = np.where(cross, gap0 / np.where(cross, gap0 - gap1, 1.0), 1.0)
-    toe_d = np.where(cross, d[prev] + f * (d[toe] - d[prev]), toe_d)
-    toe_y = np.where(cross, line[rows, prev] + f * (line[rows, toe] - line[rows, prev]), toe_y)
-    outer = np.clip(np.maximum(toe, int(np.ceil((config.RIBBON_MIN - config.SHOULDER) / 0.5))), 0, np.maximum(np.minimum(blocked, last), toe))
-    outer_d, outer_y = d[outer], np.where(outer == toe, toe_y, g[rows, outer])
-    shoulder = np.minimum(config.SHOULDER, np.where(blocked < 0, 0.5, config.SHOULDER))
-    cap = inner_reach(edge, out) if cap is None else cap                         # no further than the bend allows: the ribbon would fold
-    shoulder = np.minimum(shoulder, cap)
-    capped = toe_d > cap
-    slope_at = top + np.where(fill, -1.0, 1.0) * config.EMBANKMENT_SLOPE * np.maximum(cap - config.SHOULDER, 0.0)
-    toe_y = np.where(capped, np.where(np.isfinite(slope_at), slope_at, toe_y), toe_y)       # the slope stops where the bend allows
-    toe_d = np.where(capped, np.maximum(cap, shoulder), toe_d)
-    outer_capped = outer_d > np.maximum(cap, shoulder)
-    outer_d = np.where(outer_capped, np.maximum(toe_d, np.maximum(cap, shoulder)), outer_d)
-    outer_y = np.where(outer_capped, np.where(capped, toe_y, natural(edge[:, :2] + out * outer_d[:, None])), outer_y)
-    return np.c_[shoulder, toe_d, toe_y, outer_d, outer_y]
+    room = np.where(others.any(axis=1), d[np.argmax(others, axis=1)] - 1.0, config.RIBBON_REACH)
+    room = np.minimum(room, inner_reach(edge, out) if cap is None else cap)
+    room = np.clip(room, 0.5, config.RIBBON_REACH)
+    gentle = 1.5 * np.abs(g - edge[:, 2:3]) <= config.BLEND_SLOPE * d[None, :]
+    ok = gentle & (d[None, :] >= config.RIBBON_MIN) & (d[None, :] <= room[:, None])
+    width = np.where(ok.any(axis=1), d[np.argmax(ok, axis=1)], room)
+    width = np.minimum(width, room)
+    at = edge[:, None, :2] + out[:, None, :] * (width[:, None, None] * BLEND_FRACTIONS[None, :, None])
+    ground = natural(at.reshape(-1, 2)).reshape(n, len(BLEND_FRACTIONS))
+    heights = edge[:, 2:3] + smoothstep(BLEND_FRACTIONS)[None, :] * (ground - edge[:, 2:3])
+    return np.c_[width, heights]
 
 
-def ribbon_points(edge, out, profile, apron=False):
-    """(n, 4, 3) points across the ribbon: edge, shoulder end, toe, outer end (x, north, height); with `apron` (profile of 7
-    columns) (n, 6, 3), the apron's middle and outer end after them."""
-    shoulder = np.c_[edge[:, :2] + out * profile[:, 0:1], edge[:, 2] - config.VERGE_DROP]
-    toe = np.c_[edge[:, :2] + out * profile[:, 1:2], profile[:, 2]]
-    outer = np.c_[edge[:, :2] + out * profile[:, 3:4], profile[:, 4]]
-    points = [edge, shoulder, toe, outer]
-    if apron:
-        points += [np.c_[edge[:, :2] + out * (profile[:, 3:4] + f * profile[:, 7:8]), profile[:, 4 + k]] for k, f in ((1, 0.5), (2, 1.0))]
-    return np.stack(points, axis=1)
-
-
-def apron_width(edge, out, profile, reach=None):
-    """The apron's width at each point: APRON, less on the inside of a bend (it must not fold). `reach`: as `ribbon_profile`'s cap."""
-    return np.clip((inner_reach(edge, out) if reach is None else reach) - profile[:, 3], 0.0, config.APRON)
-
-
-def apron_points(edge, out, profile, width):
-    """(n, 2, 2) plan positions of the apron's middle and outer end."""
-    return np.stack([edge[:, :2] + out * (profile[:, 3:4] + f * width[:, None]) for f in (0.5, 1.0)], axis=1)
+def ribbon_points(edge, out, profile):
+    """(n, 8, 3) points across the ribbon: the edge, then the seven blend points (x, north, height)."""
+    at = edge[:, None, :2] + out[:, None, :] * (profile[:, :1, None] * BLEND_FRACTIONS[None, :, None])
+    return np.concatenate([edge[:, None, :], np.concatenate([at, profile[:, 1:, None]], axis=2)], axis=1)
 
 
 def ribbon_triangles(points, segments):

@@ -125,6 +125,7 @@ RIBBON_MIN = 6.5                  # a ribbon reaches at least this far from the 
 RIBBON_REACH = 14.0               # ... and at most this far past the shoulder (steeper ground: the slope stops there)
 RIBBON_SINK = 0.06                # the terrain under a ribbon lies this far below it
 APRON = 6.0                       # beyond the ribbon, the terrain as it was before the drape is redrawn this wide (a 4 m cell diagonal and a bit)
+BLEND_SLOPE = 0.5                 # steepest rise / fall of a ribbon's blend from the road to the ground (1:2); wider ribbons where needed
 RIBBON_GROUND_SIGMA = 2.0         # m: Gaussian smoothing of the LiDAR ground the ribbons follow (its bumps made facets, not relief)
 DUG_BELOW = 0.1                   # m: where the terrain is dug further below the LiDAR ground than this (a water bed), ribbons follow the terrain,
 DUG_BLEND = 0.5                   # ... fully once it is DUG_BLEND deeper still
