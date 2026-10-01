@@ -33,6 +33,10 @@ def read_roads(r, version):
         road = dict(bridge=bool(flags[0] & 2), dirt=bool(flags[0] & 1), limit=flags[2], oneway=flags[4], centre=centre, left=left, right=right, drawn=drawn, give_way=give_way)
         if version >= 7:
             road.update(surface=r.st(), limit_back=r.u8())
+            kinds = np.frombuffer(r.take(r.u8()), np.uint8)
+            road["lines"] = [(kind, r.fl(n)) for kind in kinds]                                   # (kind, fraction across per point)
+            road["marks"] = np.frombuffer(r.take(n - 1), np.uint8)
+            road["arrows"] = [(r.fl(5), r.u8()) for _ in range(r.u8())]
         roads.append(road)
     return roads
 

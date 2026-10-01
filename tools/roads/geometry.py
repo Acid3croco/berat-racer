@@ -9,7 +9,7 @@ import numpy as np
 from scipy.ndimage import minimum_filter1d, uniform_filter1d
 from scipy.spatial import cKDTree
 
-from . import config
+from . import config, lanes
 
 
 def arc_lengths(xy):
@@ -63,6 +63,15 @@ class Link:
     tunnel: np.ndarray = None             # per segment
     level: np.ndarray = None              # per segment: level after the OSM tags (osm.level), nan where no OSM way matched
     osm_bridge: np.ndarray = None         # per segment: the matched OSM way is a bridge
+    # lanes (lanes.py)
+    zones: list = None                    # [(start, end, k)]: transition from section k to k + 1 between these distances
+    lanes: np.ndarray = None              # (n, 2) lanes forward, backward, eased through the zones
+    marked: np.ndarray = None             # per segment: lines are painted
+    line_offsets: np.ndarray = None       # (n, K) metres left of the centreline of each lane line, nan where it is not painted
+    line_kinds: np.ndarray = None         # (K,) lanes.CENTRE or lanes.DIVIDER
+    no_overtaking: np.ndarray = None      # (n - 1, 2) per segment, for traffic along the link and against it
+    edge_style: np.ndarray = None         # per segment: lanes.EDGE_NONE / DASHED / SOLID
+    arrows: list = None                   # [(s, x, north, z, dx, dnorth, bits)] turn arrows
 
     @property
     def length(self):
@@ -86,12 +95,11 @@ def make_link(graph, chain, nodes):
     bounds = np.cumsum([arc_lengths(piece)[-1] for piece in pieces])
     s, xy = resample(raw, config.ALIGN_STEP)
     part = np.clip(np.searchsorted(bounds, s, side="left"), 0, len(chain) - 1)
-    hw = np.array([graph.edges[k].width / 2.0 for k, _ in chain])[part]
-    if len(chain) > 1:                                              # spread width changes between sections
-        size = max(int(config.WIDTH_TAPER / 2.0 / config.ALIGN_STEP), 1) | 1
-        for _ in range(2):
-            hw = uniform_filter1d(hw, size, mode="nearest")
-    return Link(chain=chain, nodes=nodes, dense_s=s, dense_xy=xy, dense_hw=hw, dense_part=part)
+    chain_edges = [graph.edges[k] for k, _ in chain]
+    part_hw = np.array([e.width / 2.0 for e in chain_edges])
+    zone_list = lanes.zones(chain_edges, bounds, part_hw, lanes.chain_lanes(chain, graph.edges))
+    hw = lanes.ease(s, part_hw, zone_list)                          # width changes between sections spread over their transition zone
+    return Link(chain=chain, nodes=nodes, dense_s=s, dense_xy=xy, dense_hw=hw, dense_part=part, zones=zone_list)
 
 
 def clamp_widths(links):

@@ -375,6 +375,27 @@ def put_roads(buf, items):
         buf.append(len(lines))
         for i, after in lines: buf += struct.pack("<HB", i, 1 if after else 0)
         wstr(buf, e.surface); buf.append(p.limits[1])                                # BM07: OSM surface, limit against the piece's direction
+        put_lane_marks(buf, p, a, b)
+
+def put_lane_marks(buf, p, a, b):
+    """BM07 lane markings of a road run (samples a .. b - 1): the lane lines (kind, then per point the fraction of the way from the
+    left edge to the right one, -1 where it is not painted), per segment the paint flags, then the turn arrows."""
+    buf.append(len(p.line_kinds)); buf += p.line_kinds.astype(np.uint8).tobytes()
+    hw = np.maximum(p.hw[a:b], 1e-3)
+    for k in range(len(p.line_kinds)):
+        wfa(buf, np.nan_to_num((hw - p.line_offsets[a:b, k]) / (2.0 * hw), nan=-1.0))
+    seg = slice(a, b - 1)                                                            # bit 0 painted, 1 / 2 no overtaking along / against, 3-4 edge style
+    flags = (p.marked[seg].astype(np.uint8) | (p.no_overtaking[seg, 0].astype(np.uint8) << 1) | (p.no_overtaking[seg, 1].astype(np.uint8) << 2)
+             | (p.edge_style[seg].astype(np.uint8) << 3))
+    buf += flags.tobytes()
+    inside = [w for w in p.arrows if run_holds(p, a, b, w)]
+    buf.append(len(inside))
+    for x, north, z, dx, dn, bits in inside: wf(buf, x, z, north, dx, dn); buf.append(bits)
+
+def run_holds(p, a, b, arrow):
+    """Is the arrow nearest to a sample of this run (each arrow is written once, with the run that holds it)?"""
+    i = int(np.argmin(np.hypot(p.xy[:, 0] - arrow[0], p.xy[:, 1] - arrow[1])))
+    return a <= i < b - 1 or (i == b - 1 == len(p.xy) - 1)
 
 def put_junctions(buf, items):
     """Junction meshes of a chunk: [(junction, vertices)]."""

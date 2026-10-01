@@ -49,6 +49,7 @@ class Edge:
     name: str = ""
     number: str = ""
     osm_id: int = 0
+    osm_same: bool = True         # the matched OSM way runs along the digitised direction (its :forward tags are ours)
     a: int = -1                   # node at xy[0]
     b: int = -1                   # node at xy[-1]
     tags: dict = field(default_factory=dict)

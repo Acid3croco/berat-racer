@@ -34,6 +34,13 @@ class Piece:
     drawn: np.ndarray             # (n - 1,) segments that are rendered (the others lie inside a junction)
     give_way: list                # [(point index, drawn part lies after it)]: a give-way line is painted across the lane arriving there
     bridge: bool                  # the piece is carried over what lies below (a span of a section may be, see crossing.py)
+    lanes: np.ndarray = None      # (n, 2) lanes along and against the piece (lanes.py)
+    line_offsets: np.ndarray = None   # (n, K) lane lines, metres left of the centreline, nan where not painted
+    line_kinds: np.ndarray = None     # (K,) lanes.CENTRE / DIVIDER
+    marked: np.ndarray = None         # (n - 1,) lines are painted
+    no_overtaking: np.ndarray = None  # (n - 1, 2) per segment, along and against
+    edge_style: np.ndarray = None     # (n - 1,) lanes.EDGE_*
+    arrows: list = None               # [(x, north, z, dx, dnorth, bits)]
 
     def polygon(self):
         """Plan outline of the drawn part (None when nothing is drawn). Drawn segments of a piece are always contiguous."""
@@ -82,7 +89,10 @@ def pieces(network):
                 out.append(Piece(link=k, edge=edge, oneway={1: 2, 2: 1}.get(edge.oneway, 0) if rev else edge.oneway,
                                  limits=limits[::-1] if rev else limits,
                                  s=link.s[span], xy=link.xy[span], z=link.z[span], tan=link.tan[span], hw=link.hw[span], tilt=link.tilt[span],
-                                 left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way, bridge=bool(link.bridge[first])))
+                                 left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way, bridge=bool(link.bridge[first]),
+                                 lanes=link.lanes[span], line_offsets=link.line_offsets[span], line_kinds=link.line_kinds,
+                                 marked=link.marked[first:last], no_overtaking=link.no_overtaking[first:last], edge_style=link.edge_style[first:last],
+                                 arrows=[a[1:] for a in link.arrows if link.s[first] <= a[0] < link.s[last]]))
     return out
 
 

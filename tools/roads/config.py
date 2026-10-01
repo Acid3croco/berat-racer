@@ -11,7 +11,8 @@ WIDTH_SCALE = 1.27                # drawn carriageway = surveyed width x this (t
 MIN_WIDTH_PAVED = 3.6             # narrowest drawn paved road (one-way)
 MIN_WIDTH_TWO_WAY = 5.0           # narrowest drawn paved two-way road: two cars must be able to pass (the survey has many at 3 - 3.5 m)
 MIN_WIDTH_DIRT = 3.2
-WIDTH_TAPER = 12.0                # a change of width along a road is spread over this length
+WIDTH_TAPER = 12.0                # a change of width along a road is spread over at least this length (lanes.zones)
+TAPER_LATERAL_SPEED = 1.0         # m/s: a lane or width change is spread so a car at the design speed shifts sideways this fast (1:25 at 90 km/h)
 
 # surveyed width missing: full carriageway width by BD TOPO nature, then by importance
 WIDTH_BY_NATURE = {"Rond-point": 6.0, "Chemin": 3.0, "Route empierrée": 3.2, "Sentier": 1.4}
@@ -20,6 +21,28 @@ WIDTH_DEFAULT = 5.2
 WIDTH_BY_LANES = {1: 3.0, 2: 5.0}  # no surveyed width but a lane count: a single-track road is ~3 m, a two-lane one ~2.5 m per lane
 LANE_WIDTH = 2.8                  # each lane beyond two
 LANE_MIN_WIDTH = 2.6               # a road cannot have more lanes than fit at this width each (the survey sometimes says otherwise)
+
+# lanes and markings (lanes.py)
+LANES_INFERRED_TWO_WAY_WIDTH = 5.5   # a two-way road without a lane count is two marked lanes from this surveyed width (p10 of two-lane roads)
+LANES_INFERRED_ONEWAY_WIDTH = 6.5    # a one-way road without a lane count has two lanes from this width
+# a two-way road the survey gives one lane is still painted in these classes. Measured on the 20 cm orthophoto of the small map
+# (random one-lane sections, a centre line seen / visible crops): collector 21 / 37, street 1 / 9, local 0 / 11; two lanes 8 / 10
+MARKED_ONE_LANE_CLASSES = ("collector",)
+EDGE_DASHED_WIDTH = 7.0           # drawn width from which a marked road has dashed edge lines (the 5.5 m surveyed the game used, x WIDTH_SCALE)
+EDGE_SOLID_WIDTH = 8.3            # ... solid edge lines (6.5 m surveyed)
+EDGE_STYLE_WINDOW = 40.0          # the edge style is the majority over this length
+SIGHT_EYE = 1.0                   # eye and object height above the road for overtaking sight
+SIGHT_SCAN = 40.0                 # the side view is scanned this far from the road edge (LiDAR surface model) ...
+SIGHT_SCAN_STEP = 1.0             # ... every this many metres; beyond the first point above eye level nothing is seen
+SIGHT_MAX = 400.0
+# overtaking forbidden where the sight distance is shorter than this many seconds of travel at the limit. Calibrated on the 20 cm
+# orthophoto of the small map: solid centre lines are rare (about 1 in 45 visible marked points, dashed even where we compute 44 - 60 m
+# of sight; the short-sight spots are mostly under tree canopy, so they cannot be checked one by one); 2.8 s (62 m at 80 km/h) marks
+# 2.2 % of the marked length. The MUTCD passing sight distances (244 m at 80 km/h) would mark 38 %.
+SIGHT_NO_OVERTAKING_SECONDS = 2.8
+NO_OVERTAKING_GAP = 50.0          # a gap shorter than this between two no-overtaking stretches is closed
+NO_OVERTAKING_MIN = 30.0          # a no-overtaking stretch shorter than this is dropped
+ARROW_DISTANCES = (12.0, 40.0)    # turn arrows are painted this far before the junction
 
 # roads running side by side closer than their widths (dual carriageways, slip roads): each keeps its share of the gap
 CLAMP_GAP = 0.6                   # ground left between the two

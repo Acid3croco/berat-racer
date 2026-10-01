@@ -100,7 +100,20 @@ two-way / one-way and the direction of a one-way road.
    run in parallel). Each tile is solved with a 600 m halo of its neighbours: what a neighbour already solved is fixed and continued
    smoothly, what is not solved yet is solved along and thrown away. A road crossing a tile border is one continuous profile.
    Against one solve of the whole small map the tiled result differs by 2 - 8 mm on average (a few cm at the 99th percentile).
-7. **surface**: pieces (centreline + both edges + drawn flags per section and bridge span), junction meshes, footprints and tangent planes for the terrain.
+7. **lanes** (`roads/lanes.py`): lanes each way at every sample, the lines between them, where overtaking is forbidden, edge
+   lines and turn arrows. Counts come from BD TOPO (OSM `lanes:forward/backward` and `turn:lanes` per direction where tagged and
+   the lanes fit in the surveyed width). A two-way road the survey gives one lane is unmarked unless it is a collector: on the
+   20 cm orthophoto a centre line shows on most two-lane roads (8 / 10) and one-lane collectors (21 / 37), on almost no one-lane
+   street (1 / 9) or local road (0 / 11). Where width or lanes change between two sections of a link, the change is a transition
+   zone centred on their boundary, as long as a car at the design speed needs to shift sideways by the change at 1 m/s (1:25 at
+   90 km/h), at least 12 m; width and lane count ease through it with a smooth-step (this replaced the moving average), so a
+   dropped lane narrows to nothing and its divider runs into the edge line. Overtaking is forbidden where the sight distance is
+   under 2.8 s at the limit: over our own height profile (eye and object 1 m up), and round bends as far sideways as the LiDAR
+   surface model shows nothing above eye level (hedges, woods, cuttings, houses, scanned 40 m out). The threshold is calibrated on
+   the orthophoto: solid lines are rare here (about 1 in 45 visible marked points; dashed even where we compute 44 - 60 m), and
+   the MUTCD passing sight distances would have marked 38 % of the length. Edge lines on marked roads only, dashed from 7.0 m
+   drawn width and solid from 8.3 m, the majority over 40 m so a section boundary does not flip them.
+8. **surface**: pieces (centreline + both edges + drawn flags per section and bridge span), junction meshes, footprints and tangent planes for the terrain.
 
 `build_world.py` then shapes the terrain around that surface (`roads/terrain.py`):
 
@@ -121,8 +134,9 @@ outlines of the water carried by a structure: a canal on an aqueduct over a road
 `build_world.py`: water standing 1.5 m or more above the ground, with a road on the ground passing under it, carried on until the
 ground under the water is back at the depth of a bed, so the ends rest on the banks); the game draws their
 concrete channel (walls where the water stops, a floor 1.8 m under the surface) and keeps the ground under them dry. A BM05 chunk
-is a BM06 chunk without that list; a BM07 road record adds, after the give-way lines, the OSM surface string and the limit against the
-piece's direction (the header byte is the limit along it). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+is a BM06 chunk without that list; a BM07 road record adds, after the give-way lines, the OSM surface string, the limit against the
+piece's direction (the header byte is the limit along it), the lane lines (kind, then per point the fraction of the way from the
+left edge to the right one), per segment the paint flags (painted, no overtaking along / against, edge style) and the turn arrows. `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
 
 The physics surface is the drawn one: `RoadIndex` hashes the very triangles that are rendered.
@@ -147,3 +161,5 @@ The physics surface is the drawn one: `RoadIndex` hashes the very triangles that
 - Cross-sections are flat except near junctions; no superelevation in curves yet (the data and the physics already carry a cross slope).
 - No pavements; lighting (`lit`) is carried in the data but not used yet. Give-way lines are painted where a paved road meets a
   junction as the lower-ranked arm (equal ranks get none: priority to the right); stop signs are not in the data.
+- Turn lanes that do not fit in the surveyed width are not drawn (Herbettes sector: 39 arrow sets skipped, 29 arrows drawn); the
+  small map has no `turn:lanes` tags.

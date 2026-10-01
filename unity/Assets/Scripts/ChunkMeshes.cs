@@ -278,6 +278,7 @@ public class ChunkMeshes
         foreach (var r in d.Roads)
         {
             if (r.dirt || r.bridge || r.kind == 5) continue;
+            if (r.lineKinds != null) { LaneMarks(mb, r, lift); continue; }                          // BM07: laid out by the world builder
             float width = r.realWidth; int lanes = r.lanes; bool oneWay = r.oneway != 0, dual = r.kind == 2 || r.kind == 3;
             bool centre = false; int dividers = 0;
             if (r.kind == 1) { if (lanes >= 2) dividers = lanes - 1; }                                                 // roundabout ring: lane lines only
@@ -322,6 +323,97 @@ public class ChunkMeshes
             for (int dvd = 1; dvd <= dividers; dvd++) Line(3f, dual ? 13f : 6f, dvd / (float)(dividers + 1), 0f, 0.075f);      // motorway lane lines: 3 m painted, 10 m gap
             if (edgeSolid) { Line(0f, 0f, 0f, 0.22f, 0.055f); Line(0f, 0f, 1f, 0.22f, 0.055f); }
             else if (edgeThin) { Line(3f, 6.5f, 0f, 0.22f, 0.045f); Line(3f, 6.5f, 1f, 0.22f, 0.045f); }
+        }
+    }
+
+    /// <summary>
+    /// BM07 markings, laid out by the world builder (tools/roads/lanes.py) from the lanes of every point: the centre line (dashed; solid
+    /// where neither direction may overtake; a solid beside a dashed line where only one may, the solid on the side of the drivers it
+    /// stops), dividers that run into the edge line where a lane ends, edge lines styled by the drawn width, give-way lines and turn arrows.
+    /// </summary>
+    static void LaneMarks(MeshBuilder mb, RoadData r, Vector3 lift)
+    {
+        int n = r.Count; bool dual = r.kind == 2 || r.kind == 3;
+        int centreLine = System.Array.IndexOf(r.lineKinds, (byte)0);
+        bool Painted(int k) => (r.marks[k] & 1) != 0;
+        for (int g = 0; g < r.giveWayAt.Length; g++)
+        {
+            int k = Mathf.Clamp(r.giveWayAfter[g] ? r.giveWayAt[g] : r.giveWayAt[g] - 1, 0, n - 2);
+            bool centre = centreLine >= 0 && Painted(k) && r.lineAcross[centreLine][k] >= 0f && r.lineAcross[centreLine][k + 1] >= 0f;
+            GiveWayLine(mb, r, r.giveWayAt[g], r.giveWayAfter[g], centre, lift);
+        }
+        for (int l = 0; l < r.lineKinds.Length; l++)
+        {
+            var f = r.lineAcross[l];
+            if (r.lineKinds[l] == 0)
+            {
+                MarkLine(mb, r, lift, f, 0f, 0.06f, 3f, 9f, k => Painted(k) && (r.marks[k] & 6) == 0);
+                MarkLine(mb, r, lift, f, 0f, 0.06f, 0f, 0f, k => Painted(k) && (r.marks[k] & 6) == 6);
+                MarkLine(mb, r, lift, f, 0.1f, 0.05f, 0f, 0f, k => Painted(k) && (r.marks[k] & 6) == 2);      // no overtaking along the line: solid on its drivers' (right) side
+                MarkLine(mb, r, lift, f, -0.1f, 0.05f, 3f, 9f, k => Painted(k) && (r.marks[k] & 6) == 2);
+                MarkLine(mb, r, lift, f, -0.1f, 0.05f, 0f, 0f, k => Painted(k) && (r.marks[k] & 6) == 4);
+                MarkLine(mb, r, lift, f, 0.1f, 0.05f, 3f, 9f, k => Painted(k) && (r.marks[k] & 6) == 4);
+            }
+            else MarkLine(mb, r, lift, f, 0f, 0.075f, 3f, dual ? 13f : 6f, Painted);
+        }
+        var inLeft = new float[n]; var inRight = new float[n];
+        for (int i = 0; i < n; i++) { float w = Mathf.Max(Vector3.Distance(r.P(r.left, i), r.P(r.right, i)), 0.5f); inLeft[i] = 0.22f / w; inRight[i] = 1f - 0.22f / w; }
+        foreach (var edge in new[] { inLeft, inRight })
+        {
+            MarkLine(mb, r, lift, edge, 0f, 0.055f, 0f, 0f, k => (r.marks[k] >> 3 & 3) == 2);
+            MarkLine(mb, r, lift, edge, 0f, 0.045f, 3f, 6.5f, k => (r.marks[k] >> 3 & 3) == 1);
+        }
+        for (int a = 0; a < r.arrowBits.Length; a++)
+            Arrow(mb, new Vector3(r.arrows[a * 5], r.arrows[a * 5 + 1], r.arrows[a * 5 + 2]) + lift, new Vector2(r.arrows[a * 5 + 3], r.arrows[a * 5 + 4]).normalized, r.arrowBits[a]);
+    }
+
+    /// <summary>A line along the road at fraction `f` of the way from its left edge to its right one (per point, negative where it is
+    /// not painted), moved `shift` metres to the right, on the segments `draw` accepts; dashes `on` metres every `period` (0: solid),
+    /// laid out by distance along the whole road so they stay in step across chunks.</summary>
+    static void MarkLine(MeshBuilder mb, RoadData r, Vector3 lift, float[] f, float shift, float half, float on, float period, System.Func<int, bool> draw)
+    {
+        float s = r.s0;
+        for (int k = 0; k + 1 < r.Count; k++)
+        {
+            float len = Vector3.Distance(r.P(r.pts, k), r.P(r.pts, k + 1)), s1 = s + len;
+            if (r.drawn[k] && len > 1e-3f && f[k] >= 0f && f[k + 1] >= 0f && draw(k))
+            {
+                if (period <= 0f) MarkStripe(mb, r, lift, k, 0f, 1f, f, shift, half);
+                else
+                    for (float start = Mathf.Floor(s / period) * period; start < s1; start += period)
+                    {
+                        float a = Mathf.Max(start, s), b = Mathf.Min(start + on, s1);
+                        if (b - a > 0.05f) MarkStripe(mb, r, lift, k, (a - s) / len, (b - s) / len, f, shift, half);
+                    }
+            }
+            s = s1;
+        }
+    }
+
+    static void MarkStripe(MeshBuilder mb, RoadData r, Vector3 lift, int k, float t0, float t1, float[] f, float shift, float half)
+    {
+        Vector3 la = Vector3.Lerp(r.P(r.left, k), r.P(r.left, k + 1), t0), ra = Vector3.Lerp(r.P(r.right, k), r.P(r.right, k + 1), t0);
+        Vector3 lb = Vector3.Lerp(r.P(r.left, k), r.P(r.left, k + 1), t1), rb = Vector3.Lerp(r.P(r.right, k), r.P(r.right, k + 1), t1);
+        Vector3 sa = (ra - la).normalized, sb = (rb - lb).normalized;
+        Vector3 a = Vector3.Lerp(la, ra, Mathf.Lerp(f[k], f[k + 1], t0)) + sa * shift, b = Vector3.Lerp(lb, rb, Mathf.Lerp(f[k], f[k + 1], t1)) + sb * shift;
+        mb.Quad(mb.Vertex(a - sa * half + lift, Paint), mb.Vertex(a + sa * half + lift, Paint), mb.Vertex(b + sb * half + lift, Paint), mb.Vertex(b - sb * half + lift, Paint));
+    }
+
+    /// <summary>A 5 m turn arrow lying on the road at `p`, pointing along `dir` (x, z): a shaft, and a head per allowed way (bits 1 left, 2 through, 4 right).</summary>
+    static void Arrow(MeshBuilder mb, Vector3 p, Vector2 dir, int bits)
+    {
+        Vector3 F = new Vector3(dir.x, 0f, dir.y), L = new Vector3(-dir.y, 0f, dir.x);
+        void Flat(Vector3 a, Vector3 b, Vector3 c) { int i = mb.Vertex(a, Paint), j = mb.Vertex(b, Paint), k = mb.Vertex(c, Paint); mb.Tri(i, j, k); mb.Tri(i, k, j); }
+        void Bar(Vector3 a, Vector3 b, float half) { Vector3 side = Vector3.Cross(Vector3.up, (b - a).normalized) * half; Flat(a - side, a + side, b + side); Flat(a - side, b + side, b - side); }
+        void Head(Vector3 at, Vector3 d, float half, float length) { Vector3 side = Vector3.Cross(Vector3.up, d) * half; Flat(at - side, at + side, at + d * length); }
+        Vector3 root = p - F * 2.5f, top = p + F * ((bits & 2) != 0 ? 1.0f : 0.4f);
+        Bar(root, top, 0.12f);
+        if ((bits & 2) != 0) Head(top, F, 0.45f, 1.5f);
+        foreach (var (bit, side) in new[] { (1, L), (4, -L) })
+        {
+            if ((bits & bit) == 0) continue;
+            Vector3 d = (F + side).normalized, bend = p + F * 0.2f, tip = bend + d * 0.9f;
+            Bar(bend, tip, 0.12f); Head(tip, d, 0.45f, 1.2f);
         }
     }
 

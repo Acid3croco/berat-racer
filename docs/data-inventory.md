@@ -20,6 +20,7 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 | # | Step | Status | Measured (small map) |
 |---|---|---|---|
 | 1 | OSM tags already cached: oneway, levels in `crossing.py`, French / directional limits, surface string | done | 24 one-way conflicts settled by OSM (20 to one-way, 4 reversed), rings kept on BD TOPO (61 / 61 counter-clockwise); 0 crossings on the small map, Herbettes sector: LiDAR 39, OSM 9, survey 3, same spans as master; overlap 0 m², terrain above road 0, LiDAR fit unchanged; roadtest 9.9 m/s² (9.8 - 9.9 before) |
+| 2 | Lanes per sample with transition zones; markings from lanes (centre / dividers, edge style, no overtaking, turn arrows) | done | 101 transition zones (8 lane changes), smooth-step replaces the 12 m moving average; centre line on 107 km instead of 243 km (one-lane locals and streets unmarked, measured on the ortho); no overtaking 0.9 km (2.8 s sight, calibrated on the ortho); edge-style changes 0.02 / km (same as before); arrows 0 on the small map, 29 on the Herbettes sector; overlap 0, terrain above road 0, LiDAR fit unchanged; roadtest 9.9 m/s² |
 
 Legend for the *Status* column: **used**: read and has an effect · **dropped**: fetched or present, then ignored ·
 **absent**: not fetched at all.
@@ -50,7 +51,7 @@ Everything else (land use, parcels, vegetation zones, parkings, walls, lanes, si
 |---|---|---|---|
 | Centreline | BD TOPO, smoothed (3rd-difference least squares, within 0.8 - 2 m) | Same, then **snapped to the real carriageway** | LiDAR `mnt` flat strip; LiDAR **intensity** (asphalt is dark, paint is bright); BD ORTHO 20 cm |
 | Width | BD TOPO x 1.27; 28 % estimated from nature / lanes / class | Measured everywhere | LiDAR flat strip + intensity edges; OSM `width`; PCRS kerbs where a city publishes one (Toulouse Métropole) |
-| Lane count | BD TOPO `nombre_de_voies` (capped by width), OSM `lanes` only when BD TOPO says 0 | **Per direction, per sample**, with explicit change points | OSM `lanes:forward/backward`, `turn:lanes`, `change:lanes`, `placement`; painted dividers counted in LiDAR intensity |
+| Lane count | **Per direction, per sample**, with transition zones; BD TOPO `nombre_de_voies`, OSM `lanes:forward/backward` and `turn:lanes` per direction (**done**, step 2) | Same | OSM `lanes:forward/backward`, `turn:lanes`, `change:lanes`, `placement`; painted dividers counted in LiDAR intensity |
 | One-way | BD TOPO `sens_de_circulation`, cross-checked: an explicit OSM `oneway` wins, except on rings (**done**, step 1) | Same | |
 | Speed limit | OSM `maxspeed`, numeric or French code (`FR:urban`, `zone:maxspeed=FR:30`, `maxspeed:type`, `source:maxspeed`), per direction (`:forward/:backward`), else legal default (**done**, step 1) | Same | |
 | Surface (paved/gravel) | OSM `surface`, `tracktype` -> `dirt` bool; the string is exported (BM07) (**done**, step 1) | Surface class for physics + look | add `smoothness` |

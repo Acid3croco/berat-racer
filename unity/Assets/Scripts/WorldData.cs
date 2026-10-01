@@ -11,6 +11,11 @@ public class RoadData
     public string name = ""; public string imp = "0";
     public int limitBack;                // BM07: legal speed against the line, km/h (OSM maxspeed:backward); 0 = same as limit
     public string surface = "";          // BM07: OSM surface (asphalt, gravel, sett, ...), else asphalt / dirt from the survey
+    // BM07 lane markings (null in older chunks: ChunkMeshes falls back to rules on the road attributes)
+    public byte[] lineKinds;             // per lane line: 0 centre line between the two directions, 1 divider between lanes of one direction
+    public float[][] lineAcross;         // per lane line, per point: fraction of the way from the left edge to the right one; negative where not painted
+    public byte[] marks;                 // per segment: bit 0 painted, bit 1 / 2 no overtaking along / against the line, bits 3-4 edge lines (0 none, 1 dashed, 2 solid)
+    public float[] arrows = new float[0]; public int[] arrowBits = new int[0];      // turn arrows: x y z dx dz each; bits 1 left, 2 through, 4 right
     public float[] pts, left, right;     // centreline and the two edges of the carriageway, x y z per point. The edges carry the cross slope.
     public int[] giveWayAt = new int[0]; public bool[] giveWayAfter = new bool[0];      // points where this road meets a junction as the minor road (a give-way line is painted); After: the drawn road lies after the point
     public bool[] drawn;                 // per segment: is it rendered and driven on? Not inside a junction: the junction surface covers it, the centreline stays for the traffic.
@@ -175,7 +180,15 @@ public class ChunkData
             var flags = br.ReadBytes(n - 1); r.drawn = new bool[n - 1]; for (int k = 0; k < n - 1; k++) r.drawn[k] = flags[k] != 0;
             int lines = br.ReadByte(); r.giveWayAt = new int[lines]; r.giveWayAfter = new bool[lines];
             for (int k = 0; k < lines; k++) { r.giveWayAt[k] = br.ReadUInt16(); r.giveWayAfter[k] = br.ReadByte() != 0; }
-            if (version >= 7) { r.surface = Str(br); r.limitBack = br.ReadByte(); }
+            if (version >= 7)
+            {
+                r.surface = Str(br); r.limitBack = br.ReadByte();
+                r.lineKinds = br.ReadBytes(br.ReadByte()); r.lineAcross = new float[r.lineKinds.Length][];
+                for (int k = 0; k < r.lineKinds.Length; k++) r.lineAcross[k] = Floats(br, n);
+                r.marks = br.ReadBytes(n - 1);
+                int na = br.ReadByte(); r.arrows = new float[na * 5]; r.arrowBits = new int[na];
+                for (int k = 0; k < na; k++) { var f = Floats(br, 5); System.Array.Copy(f, 0, r.arrows, k * 5, 5); r.arrowBits[k] = br.ReadByte(); }
+            }
             else r.surface = r.dirt ? "dirt" : "asphalt";
             a[i] = r;
         }

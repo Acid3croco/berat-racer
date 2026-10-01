@@ -172,7 +172,7 @@ def enrich(edges, ways):
         stats["matched"] += 1
         tags = dict(way.get("tags") or {})
         e.osm_id, e.tags = way["id"], {**tags, "highway": way["highway"]}
-        same = _same_direction(e, lines[id(way)])
+        same = e.osm_same = _same_direction(e, lines[id(way)])
         surface, grade = way.get("surface") or tags.get("surface"), tags.get("tracktype")
         paved = True if surface in PAVED or grade == "grade1" else False if surface in UNPAVED or grade in ("grade3", "grade4", "grade5") else None
         if paved is not None and surface:
