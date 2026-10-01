@@ -65,7 +65,6 @@ PARK_STEP = 3.0               # m between the vertices of a car park's surface
 PARK_LIFT = 0.06              # m over the terrain it covers
 PARK_SMOOTH = 4               # rounds of neighbour averaging of its heights
 HEDGE_STEP = 4.0
-WMS = "https://data.geopf.fr/wms-r/wms"
 BROADLEAF, CONIFER, POPLAR, FRUIT = 1, 2, 3, 4
 TREE_KINDS = {"Forêt fermée de feuillus": BROADLEAF, "Forêt ouverte": BROADLEAF, "Bois": BROADLEAF, "Forêt fermée de conifères": CONIFER,
               "Peupleraie": POPLAR, "Verger": FRUIT}
@@ -94,23 +93,15 @@ def long_axis(poly):
     return float(np.arctan2(e[1], e[0]) % np.pi)
 
 
-def measure_rows(cx, cy):
-    """(direction of the rows in radians 0 .. pi, coherence) on the 20 cm orthophoto around a Lambert-93 point."""
-    import requests
+def measure_rows(cx, cy, get):
+    """(direction of the rows in radians 0 .. pi, coherence) on the 20 cm orthophoto around a Lambert-93 point. `get(params)`: the
+    WMS image bytes (sources.py fetches politely)."""
     from PIL import Image
     from scipy.ndimage import gaussian_filter, sobel
     h = ROW_CROP_HALF
     params = dict(SERVICE="WMS", VERSION="1.3.0", REQUEST="GetMap", STYLES="", CRS="EPSG:2154", LAYERS="ORTHOIMAGERY.ORTHOPHOTOS",
                   BBOX=f"{cx - h},{cy - h},{cx + h},{cy + h}", WIDTH=250, HEIGHT=250, FORMAT="image/jpeg")
-    for attempt in range(4):
-        try:
-            reply = requests.get(WMS, params=params, timeout=60)
-            reply.raise_for_status()
-            img = np.asarray(Image.open(io.BytesIO(reply.content)).convert("L"), float)
-            break
-        except Exception:
-            if attempt == 3:
-                raise
+    img = np.asarray(Image.open(io.BytesIO(get(params))).convert("L"), float)
     gx, gy = sobel(img, 1), -sobel(img, 0)                                              # image rows run south
     jxx, jyy, jxy = (float(gaussian_filter(a, 4).mean()) for a in (gx * gx, gy * gy, gx * gy))
     gradient = 0.5 * np.arctan2(2 * jxy, jxx - jyy)

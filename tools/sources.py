@@ -72,7 +72,7 @@ RASTER_KINDS = ("mnt", "mnh", "ortho")
 VECTOR_KINDS = tuple(WFS_LAYERS) + MACE_KINDS + OVERPASS_KINDS + ("rows",)
 # what a build reads: the rows need the rpg tile first (fetched in an earlier wave)
 BUILD_KINDS = RASTER_KINDS + VECTOR_KINDS
-SERVICE_THREADS = {"wms": 4, "wfs": 3, "mace": 1, "overpass": 3, "rows": 6}          # overpass: one query per public instance
+SERVICE_THREADS = {"wms": 4, "wfs": 3, "mace": 1, "overpass": 3, "rows": 3}          # overpass: one query per public instance
 
 _zc, _zd = threading.local(), zstandard.ZstdDecompressor()
 
@@ -267,7 +267,7 @@ class Counter:
 COUNT = Counter()
 
 
-def _get(url, params, service, tries=6, expect="json"):
+def _get(url, params, service, tries=8, expect="json"):
     import requests
     err = None
     for k in range(tries):
@@ -280,6 +280,9 @@ def _get(url, params, service, tries=6, expect="json"):
             err = f"HTTP {r.status_code} {r.text[:120]!r}"
             if r.status_code in (400, 404) and expect == "image":
                 return r
+            if r.status_code in (429, 503):                                     # asked to slow down: wait as told, or longer each time
+                time.sleep(float(r.headers.get("Retry-After", 0) or 0) or 20 * (k + 1))
+                continue
         except Exception as e:
             err = repr(e)[:120]
         time.sleep(2 + 3 * k)
@@ -594,17 +597,10 @@ def fetch_rows(si, sj):
     out = {pid: done[pid] for pid, _ in eligible if pid in done}
     todo = [(pid, q) for pid, q in eligible if pid not in out]
 
-    def one(item):
-        pid, poly = item
+    for pid, poly in todo:                                                      # one crop at a time per tile (the WMS pool is shared)
         inner = poly.buffer(-10)
         p = (inner if not inner.is_empty else poly).representative_point()
-        t = time.time()
-        value = ground.measure_rows(p.x + CX, p.y + CY)
-        COUNT.add("wms_rows", 0, time.time() - t)
-        return pid, list(value)
-    with ThreadPoolExecutor(SERVICE_THREADS["rows"]) as pool:
-        for pid, value in pool.map(one, todo):
-            out[pid] = value
+        out[pid] = list(ground.measure_rows(p.x + CX, p.y + CY, lambda params: _get(WMS, params, "wms_rows", expect="image").content))
     write_tile("rows", si, sj, out)
 
 
@@ -654,25 +650,23 @@ def ensure(sectors, kinds=BUILD_KINDS, log=print):
         light += [(t, {"osm_restrictions"}) for t, k in heavy if "osm_restrictions" in k]
         heavy = [(t, k - {"osm_restrictions"}) for t, k in heavy if k - {"osm_restrictions"}]
     jobs = [("overpass", fetch_overpass, (*t, tuple(k))) for t, k in light] + jobs + [("overpass", fetch_overpass, (*t, tuple(k))) for t, k in heavy]
+    rows_now = [t for t in gaps.get("rows", []) if "rpg" not in gaps or t not in gaps["rpg"]]           # their parcels are there
+    rows_later = [t for t in gaps.get("rows", []) if t not in rows_now]
+    jobs += [("rows", fetch_rows, t) for t in rows_now]
     failures = []
     pools = {s: ThreadPoolExecutor(n) for s, n in SERVICE_THREADS.items()}
-    futures = {pools[s].submit(fn, *args): (s, fn.__name__, args) for s, fn, args in jobs}
-    for k, fut in enumerate(as_completed(futures), 1):
-        try:
-            fut.result()
-        except Exception as e:
-            failures.append((futures[fut][1], futures[fut][2], str(e)[:200]))
-        if k % 100 == 0 or k == len(futures):
-            log(f"  {k}/{len(futures)} jobs, {len(failures)} failures, {time.time() - t0:.0f} s")
-    if "rows" in gaps:                                                          # after the rpg tiles they read
-        rows = [t for t in gaps["rows"] if vector_path("rpg", *t).exists()]
-        futures = {pools["wfs"].submit(fetch_rows, *t): t for t in rows}
-        for fut in as_completed(futures):
+
+    def run(batch):
+        futures = {pools[s].submit(fn, *args): (s, fn.__name__, args) for s, fn, args in batch}
+        for k, fut in enumerate(as_completed(futures), 1):
             try:
                 fut.result()
             except Exception as e:
-                failures.append(("fetch_rows", futures[fut], str(e)[:200]))
-        log(f"  rows: {len(rows)} tiles, {time.time() - t0:.0f} s")
+                failures.append((futures[fut][1], futures[fut][2], str(e)[:200]))
+            if k % 100 == 0 or k == len(futures):
+                log(f"  {k}/{len(futures)} jobs, {len(failures)} failures, {time.time() - t0:.0f} s")
+    run(jobs)
+    run([("rows", fetch_rows, t) for t in rows_later if vector_path("rpg", *t).exists()])                  # after the parcels they read
     for p in pools.values():
         p.shutdown()
     report = dict(seconds=round(time.time() - t0, 1), fetched={k: len(v) for k, v in gaps.items()},
