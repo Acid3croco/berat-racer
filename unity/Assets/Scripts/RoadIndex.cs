@@ -9,7 +9,8 @@ public enum Surface { Grass, Asphalt, Dirt, Water }
 /// </summary>
 public class RoadIndex
 {
-    struct Tri { public Vector2 a, b, c; public float ya, yb, yc; public Surface s; public bool bridge; public int owner; }
+    struct Tri { public Vector2 a, b, c; public float ya, yb, yc; public Surface s; public bool bridge, tunnel; public int owner; }
+    public const float TunnelHeight = 5.0f;                 // inside a tunnel everything under its ceiling stands on the tunnel road
     struct Line { public Vector2 a, b; public bool bridge; public int owner; }
     const float CellSize = 12f, FadeWidth = 0.6f;
     readonly Dictionary<long, List<Tri>> grid = new Dictionary<long, List<Tri>>();
@@ -31,7 +32,7 @@ public class RoadIndex
                 Put(lines, cells, new Line { a = new Vector2(r.pts[k * 3], r.pts[k * 3 + 2]), b = new Vector2(r.pts[k * 3 + 3], r.pts[k * 3 + 5]), bridge = r.bridge, owner = owner }, 0f);
                 if (!r.drawn[k]) continue;
                 Vector3 l0 = r.P(r.left, k), r0 = r.P(r.right, k), l1 = r.P(r.left, k + 1), r1 = r.P(r.right, k + 1);      // the same two triangles as the drawn quad
-                AddTri(cells, l0, r0, r1, s, r.bridge, owner); AddTri(cells, l0, r1, l1, s, r.bridge, owner);
+                AddTri(cells, l0, r0, r1, s, r.bridge, owner, r.tunnel); AddTri(cells, l0, r1, l1, s, r.bridge, owner, r.tunnel);      // a tunnel road, like a deck, holds only what is in it (not the hill above)
             }
         }
         foreach (var j in junctions)
@@ -43,9 +44,9 @@ public class RoadIndex
 
     static Vector3 V(JunctionData j, int i) => new Vector3(j.v[i * 3], j.v[i * 3 + 1], j.v[i * 3 + 2]);
 
-    void AddTri(List<long> cells, Vector3 a, Vector3 b, Vector3 c, Surface s, bool bridge, int owner)
+    void AddTri(List<long> cells, Vector3 a, Vector3 b, Vector3 c, Surface s, bool bridge, int owner, bool tunnel = false)
     {
-        var t = new Tri { a = new Vector2(a.x, a.z), b = new Vector2(b.x, b.z), c = new Vector2(c.x, c.z), ya = a.y, yb = b.y, yc = c.y, s = s, bridge = bridge, owner = owner };
+        var t = new Tri { a = new Vector2(a.x, a.z), b = new Vector2(b.x, b.z), c = new Vector2(c.x, c.z), ya = a.y, yb = b.y, yc = c.y, s = s, bridge = bridge, tunnel = tunnel, owner = owner };
         float m = FadeWidth + 0.1f;                                         // a query near a cell border must still find the road
         int x0 = Cell(Mathf.Min(t.a.x, Mathf.Min(t.b.x, t.c.x)) - m), x1 = Cell(Mathf.Max(t.a.x, Mathf.Max(t.b.x, t.c.x)) + m);
         int z0 = Cell(Mathf.Min(t.a.y, Mathf.Min(t.b.y, t.c.y)) - m), z1 = Cell(Mathf.Max(t.a.y, Mathf.Max(t.b.y, t.c.y)) + m);
@@ -126,6 +127,11 @@ public class RoadIndex
                 if (d <= 0.3f && Mathf.Abs(y - refY) < 2f) { deckY = y; best = t.s; }
                 continue;
             }
+            if (t.tunnel)
+            {
+                if (d <= 0.3f && refY > y - 2f && refY < y + TunnelHeight + 1f) { deckY = y; best = t.s; }
+                continue;
+            }
             if (d > FadeWidth) continue;
             float wgt = d <= 0f ? 1f : Mathf.SmoothStep(1f, 0f, d / FadeWidth);
             if (wgt > roadWeight + 0.001f || (Mathf.Abs(wgt - roadWeight) <= 0.001f && d < bestD)) { roadWeight = wgt; roadY = y; bestD = d; }
@@ -162,7 +168,7 @@ public class RoadIndex
             for (int dz = -1; dz <= 1; dz++)
                 if (grid.TryGetValue(Key(cx + dx, cz + dz), out var list))
                     for (int i = 0; i < list.Count; i++)
-                        if (list[i].bridge && Distance(list[i], p, out deckY) < radius) return true;
+                        if ((list[i].bridge || list[i].tunnel) && Distance(list[i], p, out deckY) < radius) return true;
         return false;
     }
 

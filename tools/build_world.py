@@ -178,6 +178,25 @@ def densify_pts(pts, step=0.5):
         t = (np.arange(n) / n)[:, None]; out.append(a[None, :] + (b - a)[None, :] * t)
     return np.vstack(out) if out else pts
 
+def tunnel_holes(H, pieces, x0, z0):
+    """4 m cells cut out of the terrain over a tunnel road wherever the ground there is less than TUNNEL_CLEARANCE above the road
+    (the portals: the hill face meets the road there). (rows, cols) of cells, True = hole."""
+    holes = np.zeros((H.shape[0] - 1, H.shape[1] - 1), bool)
+    for p in pieces:
+        if not p.tunnel: continue
+        seg = densify_pts(np.c_[p.xy, p.z, p.hw], 1.0)
+        reach = float(p.hw.max()) + CELL
+        c0, c1 = int((seg[:, 0].min() - reach - x0) // CELL), int((seg[:, 0].max() + reach - x0) // CELL) + 1
+        r0, r1 = int((seg[:, 1].min() - reach - z0) // CELL), int((seg[:, 1].max() + reach - z0) // CELL) + 1
+        c0, r0, c1, r1 = max(c0, 0), max(r0, 0), min(c1, holes.shape[1]), min(r1, holes.shape[0])
+        if c1 <= c0 or r1 <= r0: continue
+        cx, cz = np.meshgrid(x0 + (np.arange(c0, c1) + 0.5) * CELL, z0 + (np.arange(r0, r1) + 0.5) * CELL)
+        d, i = cKDTree(seg[:, :2]).query(np.c_[cx.ravel(), cz.ravel()])
+        corners = np.minimum.reduce([H[r0:r1, c0:c1], H[r0 + 1:r1 + 1, c0:c1], H[r0:r1, c0 + 1:c1 + 1], H[r0 + 1:r1 + 1, c0 + 1:c1 + 1]]).ravel()
+        cut = (d <= seg[i, 3] + 0.5 * CELL * np.sqrt(2.0)) & (corners < seg[i, 2] + road_config.TUNNEL_CLEARANCE)
+        holes[r0:r1, c0:c1] |= cut.reshape(r1 - r0, c1 - c0)
+    return holes
+
 # ------------------------------------------------------------------ colour (ported)
 
 def ground_colour(raw_rgb, covered):
@@ -364,7 +383,7 @@ def put_roads(buf, items):
     wi(buf, len(items))
     for p, a, b in items:
         e = p.edge
-        buf += bytes([(1 if e.dirt else 0) | (2 if p.bridge else 0) | (4 if e.lit else 0), int(e.importance) if e.importance.isdigit() else 0,
+        buf += bytes([(1 if e.dirt else 0) | (2 if p.bridge else 0) | (4 if e.lit else 0) | (8 if p.tunnel else 0), int(e.importance) if e.importance.isdigit() else 0,
                       p.limits[0], e.avg, p.oneway, e.lanes, e.kind, e.road_class.rank])
         wi(buf, zlib.crc32(e.cleabs.encode()) & 0x7FFFFFFF); wf(buf, e.width_real, float(p.hw[a:b].mean()), float(p.s[a]))
         wstr(buf, e.name); wi(buf, b - a)
@@ -510,6 +529,7 @@ def process_sector(args):
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
     H = road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud)
     H = road_terrain.bench(H, win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
+    holes = tunnel_holes(H, pieces, win.x0, win.z0)
     troughs = carried_water(areas, H, wmask, wlevel, pieces, win.x0, win.z0, nv)
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
     LOW = correlate(H, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
@@ -723,6 +743,8 @@ def process_sector(args):
             wi(buf, len(trough_b.get(key, [])))                                         # BM06: outlines of the water carried by a structure
             for ring in trough_b.get(key, []): wi(buf, len(ring)); wfa(buf, ring.ravel())
             put_lanes(buf, lane_b.get(key, []))                                         # BM07: the lane graph traffic drives on
+            hole = np.flatnonzero(holes[r0:r0 + CV - 1, c0:c0 + CV - 1].ravel())         # BM07: terrain cells cut away (tunnel portals), row-major from the south-west
+            wi(buf, len(hole)); buf += hole.astype("<u2").tobytes()
             wi(buf, len(bld_b.get(key, [])))
             for k in bld_b.get(key, []):
                 b = buildings[k]

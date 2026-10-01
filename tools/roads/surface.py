@@ -2,7 +2,7 @@
 
   pieces      one per surveyed section of a link (two or three where a bridge span starts or ends in it): centreline, both edges (with heights), what is drawn. The game's road records.
   junctions   vertices with heights + triangles + boundary edges. The game's junction meshes.
-  footprints  plan polygons of everything that lies on the ground (bridges excluded): the terrain is shaped around them.
+  footprints  plan polygons of everything that lies on the ground (bridges and tunnels excluded): the terrain is shaped around them.
   cloud       points of the ground-level surface with its local gradient (its tangent plane): the height of the road at any place nearby.
 
 Heights are `z`; plan coordinates are (x east, north).
@@ -34,6 +34,7 @@ class Piece:
     drawn: np.ndarray             # (n - 1,) segments that are rendered (the others lie inside a junction)
     give_way: list                # [(point index, drawn part lies after it)]: a give-way line is painted across the lane arriving there
     bridge: bool                  # the piece is carried over what lies below (a span of a section may be, see crossing.py)
+    tunnel: bool = False          # the piece runs under the ground: not part of the terrain's inputs
     lanes: np.ndarray = None      # (n, 2) lanes along and against the piece (lanes.py)
     line_offsets: np.ndarray = None   # (n, K) lane lines, metres left of the centreline, nan where not painted
     line_kinds: np.ndarray = None     # (K,) lanes.CENTRE / DIVIDER
@@ -81,7 +82,8 @@ def pieces(network):
                 continue
             edge = network.edges[e]
             limits = (edge.limit, edge.limit_back or edge.limit)
-            for run in np.split(seg, np.flatnonzero(np.diff(link.bridge[seg])) + 1):          # one piece per section, split where a bridge starts or ends
+            level = link.bridge[seg].astype(int) + 2 * link.tunnel[seg].astype(int)
+            for run in np.split(seg, np.flatnonzero(np.diff(level)) + 1):                      # one piece per section, split where a bridge or tunnel starts or ends
                 first, last = run[0], run[-1] + 1                  # first and last sample of the piece
                 span = slice(first, last + 1)
                 # a line belongs to the piece that holds the drawn segment next to it
@@ -89,7 +91,7 @@ def pieces(network):
                 out.append(Piece(link=k, edge=edge, oneway={1: 2, 2: 1}.get(edge.oneway, 0) if rev else edge.oneway,
                                  limits=limits[::-1] if rev else limits,
                                  s=link.s[span], xy=link.xy[span], z=link.z[span], tan=link.tan[span], hw=link.hw[span], tilt=link.tilt[span],
-                                 left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way, bridge=bool(link.bridge[first]),
+                                 left=left[span], right=right[span], drawn=drawn[first:last], give_way=give_way, bridge=bool(link.bridge[first]), tunnel=bool(link.tunnel[first]),
                                  lanes=link.lanes[span], line_offsets=link.line_offsets[span], line_kinds=link.line_kinds,
                                  marked=link.marked[first:last], no_overtaking=link.no_overtaking[first:last], edge_style=link.edge_style[first:last],
                                  arrows=[a[1:] for a in link.arrows if link.s[first] <= a[0] < link.s[last]]))
@@ -122,7 +124,7 @@ def cloud(piece_list, meshes):
     hw (half width of the road across the point, 0 in junctions)."""
     xy, z, grad, tan_, hw = [], [], [], [], []
     for piece in piece_list:
-        if piece.bridge:
+        if piece.bridge or piece.tunnel:
             continue
         s = arc_lengths(piece.xy)
         t = np.arange(0.0, s[-1] + CLOUD_STEP, CLOUD_STEP).clip(max=s[-1])
@@ -158,7 +160,7 @@ def footprints(piece_list, meshes):
     """Plan polygons of the ground-level road surface."""
     out = []
     for piece in piece_list:
-        polygon = None if piece.bridge else piece.polygon()
+        polygon = None if piece.bridge or piece.tunnel else piece.polygon()
         if polygon is not None:
             out.append(polygon if polygon.is_valid else polygon.buffer(0))
     out += [junction.polygon for junction, _ in meshes]

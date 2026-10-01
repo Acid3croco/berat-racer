@@ -22,11 +22,12 @@ from .profile import ACROSS
 
 
 def flags(links, edges):
-    """Per segment bridge / tunnel flags of every link, as surveyed, and the OSM level and bridge tag of the way matched there."""
+    """Per segment bridge / tunnel flags of every link, as surveyed (a tunnel also where OSM says so), and the OSM level and bridge tag of
+    the way matched there."""
     for link in links:
         chain = [edges[e] for e, _ in link.chain]
         link.bridge = np.array([chain[p].bridge for p in link.part], bool)
-        link.tunnel = np.array([chain[p].tunnel for p in link.part], bool)
+        link.tunnel = np.array([chain[p].tunnel or osm.tunnel(chain[p].tags) for p in link.part], bool)
         level = [osm.level(edge.tags) for edge in chain]
         link.level = np.array([np.nan if level[p] is None else level[p] for p in link.part], float)
         link.osm_bridge = np.array([chain[p].tags.get("bridge", "no") != "no" for p in link.part], bool)
@@ -109,6 +110,37 @@ def _run(flags_, seg):
     while b < len(flags_) and flags_[b]:
         b += 1
     return a, b
+
+
+def verify_tunnels(links):
+    """Keep a tunnel only where the LiDAR ground stands at least TUNNEL_COVER above the straight line between its two portals (a
+    hill, an embankment over it). A flag on a road at grade (under trees, past a building) is dropped. Returns counts."""
+    stats = dict(tunnel_runs=0, tunnels_kept=0, tunnels_dropped=0, tunnel_m=0.0)
+    for link in links:
+        if link.tunnel is None or not link.tunnel.any():
+            continue
+        x0, z0 = np.floor((link.xy.min(axis=0) - 16.0) / 4.0) * 4.0
+        x1, z1 = np.ceil((link.xy.max(axis=0) + 16.0) / 4.0) * 4.0
+        terrain = Mosaic(x0, z0, x1 - x0, z1 - z0, kinds=("mnt",))
+        ground = _ground(link, terrain)
+        k = 0
+        while k < len(link.tunnel):
+            if not link.tunnel[k]:
+                k += 1
+                continue
+            a, b = _run(link.tunnel, k)                                # segments a .. b - 1, samples a .. b
+            stats["tunnel_runs"] += 1
+            line = np.interp(link.s[a:b + 1], [link.s[a], link.s[b]], [ground[a], ground[b]])
+            cover = np.nanmax(ground[a:b + 1] - line) if np.isfinite(ground[a:b + 1]).any() else 0.0
+            if cover >= config.TUNNEL_COVER:
+                stats["tunnels_kept"] += 1
+                stats["tunnel_m"] += float(link.s[b] - link.s[a])
+            else:
+                link.tunnel[a:b] = False
+                stats["tunnels_dropped"] += 1
+            k = b
+    stats["tunnel_m"] = round(stats["tunnel_m"])
+    return stats
 
 
 def separate(links):

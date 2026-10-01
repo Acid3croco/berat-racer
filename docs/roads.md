@@ -90,6 +90,11 @@ two-way / one-way and the direction of a one-way road.
    surveyed section is cut into several pieces where a span starts or ends. On berat70 this changes the two crossings of the
    Canal du Midi over the ring road at Herbettes / Rangueil (towpath and avenue on the aqueduct side surveyed as on the ground,
    the ring road in its trench surveyed as the bridge) and nothing else.
+   Tunnels: a section is a tunnel where BD TOPO puts it below ground or OSM tags `tunnel=yes` (or a service way at `layer<0`: a
+   ramp into an underground car park; `building_passage` and `covered` stay at ground level). The LiDAR keeps it only where the
+   ground stands at least 3 m above the straight line between its two portals: on the small map both BD TOPO tunnels (187 m of
+   the Route de Carbonne) run at grade under tree canopy and are dropped; on the Herbettes sector the two ring-road bores
+   (70 and 72 m) and a 43 m street are kept, 4 other runs dropped.
 6. **profile** (vertical): a quadratic programme (Clarabel, an interior-point solver: a tile converges in about 17 iterations to
    the optimum, where OSQP at a practical tolerance stopped up to decimetres short on tiles with fixed neighbours). Unknowns: the height of every sample outside junctions and one plane per
    junction. Objective: stay on the LiDAR ground (robust: samples far from the solution are down-weighted), minimise the third
@@ -132,7 +137,10 @@ two-way / one-way and the direction of a one-way road.
 
 - *blend*: under the road and on a 1.5 m shoulder the ground sits 5 cm below the road, easing back to natural ground over 6 m;
 - *bench*: every corner of a terrain cell touched by a road is lowered below the tangent planes of the road points that can share
-  that cell. A triangle whose corners are all below the road's tangent planes is below the road, so this holds for the 4 m mesh
+  that cell.
+- tunnels are not terrain inputs: the hill stays over them. The 4 m cells over a tunnel road where the ground is less than 5 m above
+  it (the portals) are cut out (BM07 hole list); the game draws the tube (dark inside, concrete outside), a concrete headwall at
+  each portal, and treats the tunnel road like a deck: it carries whatever is under its ceiling, not the hill above. A triangle whose corners are all below the road's tangent planes is below the road, so this holds for the 4 m mesh
   and for the 16 m mesh drawn beyond 1.6 km alike. The game no longer cuts terrain at run time.
 
 Buildings are cut out of the real surface polygons and plants keep clear of them (a 1 m raster of the surface).
@@ -151,7 +159,8 @@ is a BM06 chunk without that list; a BM07 road record adds, after the give-way l
 piece's direction (the header byte is the limit along it), the lane lines (kind, then per point the fraction of the way from the
 left edge to the right one), per segment the paint flags (painted, no overtaking along / against, edge style) and the turn arrows;
 and after the carried water a BM07 chunk lists the lane graph elements passing through it (id, kind, control, limit, road
-attributes, points with their speed, successors, the lanes beside, the connectors it gives way to). `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
+attributes, points with their speed, successors, the lanes beside, the connectors it gives way to), then the terrain cells cut away
+(tunnel portals). The road flags byte has bit 8 for a tunnel piece. `WorldData.cs` reads BM05 - BM07, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
 
 The physics surface is the drawn one: `RoadIndex` hashes the very triangles that are rendered.

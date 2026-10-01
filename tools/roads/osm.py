@@ -106,6 +106,20 @@ def oneway(tags):
     return None
 
 
+def tunnel(tags):
+    """Does the OSM way run underground: `tunnel=yes`, or a service way below ground level (a ramp into an underground car park)?
+    A `building_passage` or `covered` way stays at ground level."""
+    if not tags:
+        return False
+    if tags.get("tunnel") in ("yes", "avalanche_protector"):
+        return True
+    try:
+        below = float(tags.get("layer", "0")) < 0
+    except ValueError:
+        below = False
+    return below and tags.get("highway") == "service" and tags.get("tunnel") not in ("building_passage",) and tags.get("covered", "no") == "no"
+
+
 def level(tags):
     """Vertical level of a way after its tags: `layer` when given (bridge alone 1, tunnel or covered alone -1, else 0), and a cutting
     half a level below its layer. None for an edge without an OSM way."""

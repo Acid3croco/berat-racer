@@ -1,6 +1,7 @@
 """Verify the roads of a built world (BM05 - BM07 chunks) against its terrain, the way the game sees them:
 
-  - the 4 m terrain mesh and the 16 m one never stand above a road surface (sampled on every road quad and junction triangle)
+  - the 4 m terrain mesh and the 16 m one never stand above a road surface (sampled on every road quad and junction triangle; tunnels
+    excepted: the terrain is over them, and closer than the headroom only where the portal cells are cut away)
   - the 4 m terrain mesh never stands above a bridge deck either (the ground falls away under it)
   - how far below the roads they lie (a road must not float either)
   - every road end at a junction meets a junction vertex exactly
@@ -20,6 +21,7 @@ from check_hg import R, CV
 
 LV, CELL, LOD_CELL, CHUNK = 26, 4.0, 16.0, 400.0
 ROAD_LIFT = 0.012                     # ChunkMeshes.RoadLift: the drawn road sits this far above its data height
+TUNNEL_CLEARANCE = 4.5                # a little under roads.config.TUNNEL_CLEARANCE: what a car needs inside
 
 
 def read_roads(r, version):
@@ -31,7 +33,7 @@ def read_roads(r, version):
         centre, left, right = (r.fl(3 * n).reshape(n, 3) for _ in range(3))
         drawn = np.frombuffer(r.take(n - 1), np.uint8).astype(bool)
         give_way = [struct.unpack("<HB", r.take(3)) for _ in range(r.u8())]
-        road = dict(bridge=bool(flags[0] & 2), dirt=bool(flags[0] & 1), limit=flags[2], oneway=flags[4], centre=centre, left=left, right=right, drawn=drawn, give_way=give_way)
+        road = dict(bridge=bool(flags[0] & 2), dirt=bool(flags[0] & 1), tunnel=bool(flags[0] & 8), limit=flags[2], oneway=flags[4], centre=centre, left=left, right=right, drawn=drawn, give_way=give_way)
         if version >= 7:
             road.update(surface=r.st(), limit_back=r.u8())
             kinds = np.frombuffer(r.take(r.u8()), np.uint8)
@@ -91,6 +93,7 @@ def parse_mid(raw):
     for _ in range(d["lines"]): r.f(); r.u8(); r.u8(); r.fl(3 * r.i())
     d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if version >= 6 else []     # water carried by a structure
     d["lane_list"] = read_lanes(r) if version >= 7 else []
+    d["holes"] = np.frombuffer(r.take(2 * r.i()), "<u2").astype(int) if version >= 7 else np.zeros(0, int)
     d["bld"] = r.i()
     for _ in range(d["bld"]):
         r.fl(2 * r.i()); r.fl(3); r.fl(r.i()); r.take(6); r.st(); r.st(); r.i(); r.fl(r.i()); r.fl(2 * r.i()); n = r.i(); r.take(4 * n)
@@ -115,8 +118,8 @@ def surface_points(d, bridges=False):
     weights = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [.5, .5, 0], [0, .5, .5], [.5, 0, .5], [1 / 3, 1 / 3, 1 / 3]])
     tris = []
     for road in d["road_list"]:
-        if road["bridge"] != bridges:
-            continue
+        if road["bridge"] != bridges or road.get("tunnel"):
+            continue                                                               # a tunnel runs under the terrain by definition
         for k in np.flatnonzero(road["drawn"]):
             l0, r0, l1, r1 = road["left"][k], road["right"][k], road["left"][k + 1], road["right"][k + 1]
             tris += [(l0, r0, r1), (l0, r1, l1)]
@@ -148,7 +151,7 @@ def check(world_dir):
     w = json.load(open(world_dir / "world.json"))
     files = sorted((world_dir / "chunks").glob("m_*"))
     totals = dict(chunks=len(files), roads=0, junctions=0, points=0, above4=0, above16=0, worst4=0.0, worst16=0.0, loose=0, ends=0,
-                  deck_points=0, above_deck=0, worst_deck=0.0)
+                  deck_points=0, above_deck=0, worst_deck=0.0, tunnel_points=0, tunnel_blocked=0, holes=0)
     gaps, where, lanes = [], [], {}
     for path in files:
         d = parse_mid(gzip.open(path).read())
@@ -157,6 +160,17 @@ def check(world_dir):
         x0, z0 = w["x0"] + d["ci"] * CHUNK, w["z0"] + d["cj"] * CHUNK
         loose, ends = loose_ends(d)
         totals["roads"] += d["roads"]; totals["junctions"] += d["junctions"]; totals["loose"] += loose; totals["ends"] += ends
+        totals["holes"] += len(d["holes"])
+        for road in d["road_list"]:                                                  # tunnels: the terrain is either above the headroom or cut away
+            if not road.get("tunnel"):
+                continue
+            c = road["centre"][road["drawn"].nonzero()[0]] if road["drawn"].any() else road["centre"]
+            lx, lz = c[:, 0] - x0, c[:, 2] - z0
+            inside = (lx >= 0) & (lx < CHUNK) & (lz >= 0) & (lz < CHUNK)
+            cell = (lz[inside] // CELL).astype(int) * 100 + (lx[inside] // CELL).astype(int)
+            low = mesh_height(d["H"], CELL, lx[inside], lz[inside]) < c[inside, 1] + TUNNEL_CLEARANCE
+            totals["tunnel_points"] += int(inside.sum())
+            totals["tunnel_blocked"] += int((low & ~np.isin(cell, d["holes"])).sum())
         deck = surface_points(d, bridges=True)
         if len(deck):
             lx, lz = deck[:, 0] - x0, deck[:, 2] - z0
@@ -198,7 +212,7 @@ if __name__ == "__main__":
         print(f"{key:<18} {value}")
     graph = report.get("lane_graph", {})
     ok = (report["above4"] == 0 and report["above16"] == 0 and report["above_deck"] == 0 and report["loose"] == 0
-          and graph.get("missing_successors", 0) == 0 and graph.get("broken_joins", 0) == 0)
+          and graph.get("missing_successors", 0) == 0 and graph.get("broken_joins", 0) == 0 and report["tunnel_blocked"] == 0)
     print("OK: no terrain above any road or bridge deck, every road end meets its junction, every lane leads on" if ok
-          else "PROBLEMS: see above4 / above16 / above_deck / loose / lane_graph")
+          else "PROBLEMS: see above4 / above16 / above_deck / loose / lane_graph / tunnel_blocked")
     sys.exit(0 if ok else 1)

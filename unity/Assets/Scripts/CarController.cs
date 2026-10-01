@@ -207,7 +207,7 @@ public class CarController : MonoBehaviour, IWheelFx
         Vector3 vel = Body.linearVelocity; float speed = vel.magnitude, fwdSpeed = ForwardSpeed;
         LongAccel = Mathf.Lerp(LongAccel, Mathf.Clamp((fwdSpeed - prevFwdSpeed) / dt, -25f, 25f), 0.03f); prevFwdSpeed = fwdSpeed;
 
-        float floor = World.Flat ? World.FlatY : World.Data.TerrainHeight(transform.position.x, transform.position.z);
+        float floor = World.Flat ? World.FlatY : World.GroundHeight(transform.position.x, transform.position.z, transform.position.y, out _);      // a tunnel road where the car is in one
         if (transform.position.y < floor - 15f || transform.position.y > floor + 400f || float.IsNaN(transform.position.y))
         {
             Log.I("car", $"out of world (y={transform.position.y:F1}, floor={floor:F1}) -> safety respawn");

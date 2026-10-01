@@ -7,7 +7,7 @@ using UnityEngine;
 public class RoadData
 {
     public float hw, realWidth, s0;      // hw: mean drawn half width; realWidth: surveyed carriageway width; s0: distance of the first point along its whole road link (keeps dashed lines in step)
-    public bool dirt, bridge, lit; public int fid, limit, avg, oneway, lanes, kind, rank;      // limit: legal speed km/h, avg: BD TOPO average km/h, oneway: 0 both ways, 1 along the line, 2 against it; fid: source feature
+    public bool dirt, bridge, lit, tunnel; public int fid, limit, avg, oneway, lanes, kind, rank;      // limit: legal speed km/h, avg: BD TOPO average km/h, oneway: 0 both ways, 1 along the line, 2 against it; fid: source feature
     public string name = ""; public string imp = "0";
     public int limitBack;                // BM07: legal speed against the line, km/h (OSM maxspeed:backward); 0 = same as limit
     public string surface = "";          // BM07: OSM surface (asphalt, gravel, sett, ...), else asphalt / dirt from the survey
@@ -118,6 +118,7 @@ public class ChunkData
     public WaterArea[] Areas; public WaterLine[] Lines;
     public WaterArea[] Troughs = new WaterArea[0];       // BM06: water carried by a structure (a canal on an aqueduct over a road): drawn with its channel, dry below
     public LaneElem[] Lanes = new LaneElem[0];           // BM07: the lane graph elements passing through this chunk (an element crossing chunks is in each)
+    public bool[] Holes;                                 // BM07: per 4 m cell (row-major from the south-west), cut out of the terrain (tunnel portals); null when none
     public BuildingData[] Buildings;
     public float[] Trees, Shrubs;
     public bool HasNear;
@@ -190,7 +191,12 @@ public class ChunkData
             int nl = br.ReadInt32(); d.Lines = new WaterLine[nl];
             for (int i = 0; i < nl; i++) { var l = new WaterLine { hw = br.ReadSingle(), lead = br.ReadByte(), trail = br.ReadByte() }; int n = br.ReadInt32(); l.pts = Floats(br, n * 3); d.Lines[i] = l; }
             if (version >= 6) d.Troughs = ReadWater(br);
-            if (version >= 7) d.Lanes = ReadLanes(br);
+            if (version >= 7)
+            {
+                d.Lanes = ReadLanes(br);
+                int nh = br.ReadInt32();
+                if (nh > 0) { d.Holes = new bool[(CV - 1) * (CV - 1)]; var hb = br.ReadBytes(nh * 2); for (int k = 0; k < nh; k++) d.Holes[hb[k * 2] | hb[k * 2 + 1] << 8] = true; }
+            }
             int nb = br.ReadInt32(); d.Buildings = new BuildingData[nb];
             for (int i = 0; i < nb; i++)
             {
@@ -211,7 +217,7 @@ public class ChunkData
         int count = br.ReadInt32(); var a = new RoadData[count];
         for (int i = 0; i < count; i++)
         {
-            var r = new RoadData(); byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.lit = (fl & 4) != 0;
+            var r = new RoadData(); byte fl = br.ReadByte(); r.dirt = (fl & 1) != 0; r.bridge = (fl & 2) != 0; r.lit = (fl & 4) != 0; r.tunnel = (fl & 8) != 0;
             r.imp = br.ReadByte().ToString(); r.limit = br.ReadByte(); r.avg = br.ReadByte(); r.oneway = br.ReadByte(); r.lanes = br.ReadByte(); r.kind = br.ReadByte(); r.rank = br.ReadByte();
             r.fid = br.ReadInt32(); r.realWidth = br.ReadSingle(); r.hw = br.ReadSingle(); r.s0 = br.ReadSingle();
             r.name = Str(br); int n = br.ReadInt32();

@@ -125,7 +125,8 @@ def build(list_path, log=functools.partial(print, flush=True), jobs=6, fresh=Fal
          invalid=sum(not j.valid for j in junctions))
 
     crossing.flags(links, graph.edges)
-    done("crossing", **crossing.separate(links))
+    tunnels = crossing.verify_tunnels(links)
+    done("crossing", **crossing.separate(links), **tunnels)
 
     network = Network(tag=tag, sectors=sectors, edges=graph.edges, nodes=graph.nodes, links=links, junctions=junctions, raw=raw, report=report)
     done("profile", **profile.solve(network, log, jobs, keep_in=cache_dir(tag), fresh=fresh))

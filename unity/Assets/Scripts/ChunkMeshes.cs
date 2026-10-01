@@ -76,6 +76,7 @@ public class ChunkMeshes
                 if (!r.drawn[k]) continue;
                 Vector3 l0 = r.P(r.left, k) + Lift, r0 = r.P(r.right, k) + Lift, l1 = r.P(r.left, k + 1) + Lift, r1 = r.P(r.right, k + 1) + Lift;
                 mb.Quad(mb.Vertex(l0, col), mb.Vertex(r0, col), mb.Vertex(r1, col), mb.Vertex(l1, col));
+                if (r.tunnel) { TunnelTube(mb, l0, r0, l1, r1); continue; }
                 if (r.bridge)                                     // concrete deck edges hanging below the road
                 {
                     Vector3 dn = Vector3.down * 1.2f;
@@ -89,6 +90,7 @@ public class ChunkMeshes
                 }
             }
         }
+        foreach (var r in d.Roads) if (r.tunnel) Portals(mb, d, r);
         foreach (var j in d.Junctions)
         {
             var col = j.dirt ? Dirt : Asphalt; int first = mb.V.Count;
@@ -106,6 +108,47 @@ public class ChunkMeshes
     }
 
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
+
+    const float TunnelHeight = 5.0f, PortalMargin = 2.0f, PortalTop = 2.5f;      // headroom (the builder's TUNNEL_CLEARANCE); the portal's frame around the opening
+    static readonly Color32 TunnelInside = new Color32(58, 58, 62, 255);
+
+    /// <summary>A quad seen from both sides, the back face 4 cm behind the front one (two coplanar faces would flicker).</summary>
+    static void TwoSided(MeshBuilder mb, Vector3 a, Vector3 b, Vector3 c, Vector3 e, Color32 front, Color32 back)
+    {
+        Vector3 n = Vector3.Cross(b - a, e - a).normalized * 0.04f;
+        mb.Quad(mb.Vertex(a, front), mb.Vertex(b, front), mb.Vertex(c, front), mb.Vertex(e, front));
+        mb.Quad(mb.Vertex(e + n, back), mb.Vertex(c + n, back), mb.Vertex(b + n, back), mb.Vertex(a + n, back));
+    }
+
+    /// <summary>The tube of a tunnel segment: two walls and a ceiling, dark inside, concrete outside (seen where a portal cuts the terrain).</summary>
+    static void TunnelTube(MeshBuilder mb, Vector3 l0, Vector3 r0, Vector3 l1, Vector3 r1)
+    {
+        Vector3 up = Vector3.up * TunnelHeight;
+        TwoSided(mb, l0, l1, l1 + up, l0 + up, TunnelInside, Concrete);
+        TwoSided(mb, r1, r0, r0 + up, r1 + up, TunnelInside, Concrete);
+        TwoSided(mb, l0 + up, l1 + up, r1 + up, r0 + up, TunnelInside, Concrete);
+    }
+
+    /// <summary>A concrete headwall framing the opening at each end of a tunnel road that does not continue as a tunnel (in this chunk or the next).</summary>
+    static void Portals(MeshBuilder mb, ChunkData d, RoadData r)
+    {
+        for (int end = 0; end < 2; end++)
+        {
+            int i = end == 0 ? 0 : r.Count - 1, j = end == 0 ? 1 : r.Count - 2;
+            Vector3 c = r.P(r.pts, i);
+            bool inner = false;
+            foreach (var list in new[] { d.Roads, d.Ctx })
+                foreach (var o in list)
+                    if (o != r && o.tunnel && (Vector3.Distance(o.StartPoint, c) < 0.5f || Vector3.Distance(o.EndPoint, c) < 0.5f)) inner = true;
+            if (inner) continue;
+            Vector3 l = r.P(r.left, i), rt = r.P(r.right, i), side = (rt - l).normalized, outward = Flat(c - r.P(r.pts, j)).normalized * 0.05f;
+            Vector3 lo = Vector3.down * 0.5f, top = Vector3.up * TunnelHeight, cap = Vector3.up * (TunnelHeight + PortalTop);
+            Vector3 a = l - side * PortalMargin + outward, b = rt + side * PortalMargin + outward, l2 = l + outward, r2 = rt + outward;
+            TwoSided(mb, a + lo, l2 + lo, l2 + cap, a + cap, Concrete, Concrete);              // left pillar
+            TwoSided(mb, r2 + lo, b + lo, b + cap, r2 + cap, Concrete, Concrete);              // right pillar
+            TwoSided(mb, l2 + top, r2 + top, r2 + cap, l2 + cap, Concrete, Concrete);          // lintel
+        }
+    }
 
     /// <summary>
     /// Along the road edge a -> b (the road on its left), reaching outwards along out0 / out1: a gravel strip on paved roads, and,
@@ -259,6 +302,7 @@ public class ChunkMeshes
         for (int z = 0; z < CV - 1; z++)
             for (int x = 0; x < CV - 1; x++)
             {
+                if (d.Holes != null && d.Holes[z * (CV - 1) + x]) continue;                // cut away: a tunnel portal
                 int a = z * CV + x, b = a + CV, c = a + 1, e = b + 1;
                 if (((x + z) & 1) == 0) { mb.Tri(a, b, e); mb.Tri(a, e, c); } else { mb.Tri(a, b, c); mb.Tri(c, b, e); }
             }

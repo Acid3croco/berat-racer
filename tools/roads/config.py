@@ -104,6 +104,9 @@ CROSSING_WALL = 15.0              # ... and steeply: from the floor to that heig
 CROSSING_BANK = 20.0              # the span goes on to the top of that bank, at most this much further
 CROSSING_FLAT = 1.5               # a surveyed bridge of the road below (within CROSSING_WALL of the crossing) is dropped only if its ground never dips more than this under the crossing
 
+TUNNEL_COVER = 3.0                # a tunnel is kept where the LiDAR ground stands this far above the line between its portals
+TUNNEL_CLEARANCE = 5.0            # headroom: terrain closer than this above a tunnel road is cut away (portals)
+
 # ---------------------------------------------------------------- terrain
 
 ROAD_SINK = 0.05                  # the ground under and beside a road lies this far below the road surface
