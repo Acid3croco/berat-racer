@@ -574,7 +574,8 @@ def process_sector(args):
     garea = [a for a in land.areas(lambda name: load_vectors(name, si, sj), near_osm, to_local, rpg_codes(), row_directions(road_tag))
              if a[0].bounds[2] >= wx0 and a[0].bounds[0] <= wx1 and a[0].bounds[3] >= wz0 and a[0].bounds[1] <= wz1]
     road_polys = road_surface.footprints(pieces, meshes)
-    parks = land.parking_surfaces(garea, shapely.union_all(road_polys) if road_polys else None)
+    park_stats = {}
+    parks = land.parking_surfaces(garea, shapely.union_all(road_polys) if road_polys else None, park_stats)
     paved = road_terrain.Footprint(road_polys + parks, win.x0, win.z0, win.size, win.size) if parks else footprint
 
     # ---- water lines (areas need the terrain grid, see below)
@@ -862,7 +863,7 @@ def process_sector(args):
     ground_stats = dict(cells={land.NAMES[k]: int(v) for k, v in enumerate(counts) if v}, rows_measured=sum(1 for a in garea if a[5]),
                         rows_long_axis=sum(1 for a in garea if a[1] in land.ROWED and not a[5]), vine_rows_km=round(float(np.hypot(vines[:, 2] - vines[:, 0], vines[:, 3] - vines[:, 1]).sum()) / 1000, 2),
                         bays=len(bays), parked=int(bays[:, 3].sum()) if len(bays) else 0, hedges_km=round(sum(LineString(xy).length for _, xy in hedge_list) / 1000, 2),
-                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist(), car_parks=len(park_meshes),
+                        trees_by_kind=np.bincount(tree_kind, minlength=5).tolist(), car_parks=len(park_meshes), car_park_entrances=park_stats.get("entrances", 0), car_parks_unreached=park_stats.get("unreached", 0),
                         car_park_m2=round(sum(land.plan_area(v[t]) for v, t in park_meshes)))
 
     # ---- bucket everything by chunk and write

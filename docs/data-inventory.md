@@ -38,7 +38,9 @@ Work in the order of the goal set on 2026-10-01 (branch `data-inventory`), each 
 | Pond bank (4628, 5567) | dark spikes where the road bend meets the pond | the ribbon followed the LiDAR bank top (199.3 m) while the 4 m terrain is dug to the pond bed (197.7 m): a 1.8 m drop over a 1.1 m apron | ribbons follow the terrain where it is dug below the LiDAR ground (DUG_BELOW, blended over DUG_BLEND); the slope's foot is interpolated between samples | verge p99 0.112 -> 0.109 m, steps > 0.25 m 0.22 -> 0.20 %; roadtest input 6.2 -> 4.7 m/s² |
 | Car parks (3974, 5734), (4572, 5550) | jagged asphalt staircase on the terrain, read as grass | car parks were only a class on 4 m terrain triangles | car parks are paved like roads: their own mesh over the real outline (cut at the road edges), smoothed and laid 6 cm over the terrain, which is lowered under it; drawn with the road material, in the road index as asphalt; ribbons stop at them; bays and cars stand on them | 37 car parks, 13,906 m²; `-groundat`: road weight 1.0, asphalt |
 
-Shots: [roundabout](shots/datainv/fix_roundabout_island.jpg), [pond bank](shots/datainv/fix_pond_bank.jpg), [car park](shots/datainv/step10_parking_lot.jpg), [village car park](shots/datainv/step10_parking_village.jpg). Headless test runs now ignore gamepads (a game being played on the same machine steered them).
+| Car parks cut off (4586, 5514) | 6 of 37 car parks touched no road (gaps 0.4 - 5.4 m): their outline stops short of the road, the way in is not mapped | - | a car park meeting a road over less than 3 m gets a 5 m wide entrance along the shortest line to the road (up to 30 m) | 6 entrances, 0 left unreached; every car park meets a road over >= 3 m |
+
+Shots: [car park entrance](shots/datainv/fix_parking_entrance.jpg), [roundabout](shots/datainv/fix_roundabout_island.jpg), [pond bank](shots/datainv/fix_pond_bank.jpg), [car park](shots/datainv/step10_parking_lot.jpg), [village car park](shots/datainv/step10_parking_village.jpg). Headless test runs now ignore gamepads (a game being played on the same machine steered them).
 
 ### Final report (2026-10-01, branch `data-inventory`, 10 commits on master `136bc6a9`)
 

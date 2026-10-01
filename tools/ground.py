@@ -9,7 +9,8 @@
               axis 7 / 7, orchards 12 / 14, cereals 9 / 11, but row crops only 8 / 14 (4 run across), hence the measurement
   vines       rows 2.2 m apart along the row direction, clipped 1 m inside the parcel and clear of roads; the LiDAR shrubs in a
               vineyard (the vines themselves) give way to the rows
-  car parks   paved like the roads: their own surface (PARK_STEP triangles inside the outline, cut back to the road edges), laid
+  car parks   paved like the roads: their own surface (PARK_STEP triangles inside the outline, cut back to the road edges, with an
+              entrance where the outline does not reach a road), laid
               PARK_LIFT over the terrain and smoothed, the terrain lowered under it; the road-edge ribbons stop at it
   parking     bays of 2.5 x 5 m in double rows along the car park's long axis, 6 m aisles; a car on some of them (a stable hash:
               occupancy is not in any data, PARKED_SHARE is a look choice)
@@ -59,6 +60,9 @@ VINE_CLEARANCE = 1.5         # m from a road corridor or a building
 BAY_WIDTH, BAY_DEPTH, AISLE = 2.5, 5.0, 6.0
 PARKED_SHARE = 0.45
 HEDGE_MIN, HEDGE_HEIGHT = 0.6, (1.0, 3.0)
+ACCESS_TOUCH = 3.0            # m of outline along a road under which a car park gets an entrance
+ACCESS_WIDTH = 5.0            # m, the entrance's width
+ACCESS_MAX = 30.0             # m: a car park further from any road is left as it is (counted)
 PARK_MIN_AREA = 40.0          # m²: smaller car-park pieces (slivers left between roads) are not paved
 PARK_STEP = 3.0               # m between the vertices of a car park's surface
 PARK_LIFT = 0.06              # m over the terrain it covers
@@ -276,17 +280,37 @@ def tree_kinds(xz, vegetation, area_list):
     return kinds
 
 
-def parking_surfaces(area_list, roads):
+def parking_surfaces(area_list, roads, stats=None):
     """The car parks to pave: union of the PARKING areas of every source, less the road surface (`roads`: shapely), in pieces of
-    PARK_MIN_AREA or more."""
+    PARK_MIN_AREA or more. A car park that meets a road over less than ACCESS_TOUCH gets an entrance: a strip ACCESS_WIDTH wide along
+    the shortest line to the road (up to ACCESS_MAX away; the outlines rarely draw the way in). `stats`: dict counting them."""
+    from shapely.geometry import LineString
+    from shapely.ops import nearest_points
     parks = [a[0] for a in area_list if a[1] == PARKING]
     if not parks:
         return []
     merged = shapely.union_all(parks).buffer(0)
-    if roads is not None and not roads.is_empty:
+    has_roads = roads is not None and not roads.is_empty
+    if has_roads:
         merged = merged.difference(roads)
     pieces = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "Polygon" and g.area >= PARK_MIN_AREA]
-    return [g.simplify(0.2) for g in pieces]
+    out = []
+    for q in pieces:
+        if has_roads and q.exterior.intersection(roads.buffer(0.5)).length < ACCESS_TOUCH:
+            gap = q.distance(roads)
+            if gap <= ACCESS_MAX:
+                a, b = nearest_points(q, roads)
+                d = np.array(b.coords[0]) - a.coords[0]
+                d = d / max(np.hypot(*d), 1e-9)
+                way = LineString([np.array(a.coords[0]) - d * 2.0, np.array(b.coords[0]) + d * 1.0]).buffer(ACCESS_WIDTH / 2, cap_style="flat")
+                joined = q.union(way).difference(roads)
+                q = max(getattr(joined, "geoms", [joined]), key=lambda g: g.area)
+                if stats is not None:
+                    stats["entrances"] = stats.get("entrances", 0) + 1
+            elif stats is not None:
+                stats["unreached"] = stats.get("unreached", 0) + 1
+        out.append(q.simplify(0.2))
+    return out
 
 
 def parking_mesh(poly, height):
