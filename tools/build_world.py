@@ -243,6 +243,7 @@ def poi_kind(t):
 LINE_WIDTH = {"Entre 0 et 5 m": 2.6, "Entre 5 et 15 m": 8.0, "Entre 15 et 50 m": 24.0}      # full width of BD TOPO width classes (m)
 WATER_DEPTH = 0.45
 CARRIED_WATER = 1.5             # water standing this far above the ground under it, with a road passing under it, is carried by a structure (an aqueduct)
+TROUGH_REACH = WATER_DEPTH + 0.15   # ... and its trough goes on as long as the ground under the water lies deeper than this (deeper than a bed)
 
 def water_features(win, wbox, area_feats, line_feats):
     """Standing water polygons (ponds, reservoirs, river surfaces; levels are added later from a smooth field) and streams / canals with a level per vertex."""
@@ -300,12 +301,13 @@ def water_level_field(areas, h0, vx0, vz0, nv):
         level = np.where(den > 1e-3, again, level)                                  # (no water left within the box: keep the first level)
     return mask, level.astype(np.float32)
 
-def carried_water(areas, h0, mask, level, pieces, vx0, vz0, nv):
-    """Plan polygons of the water carried by a structure (a canal on an aqueduct over a road trench): the parts of the water polygons over ground
-    lying CARRIED_WATER or more below the water level, where a road on the ground passes under the water at least that far below it (water merely
-    levelled too high over a sloping shore has no road under it), widened by a cell to reach the banks. The game draws their trough and keeps the
-    ground under them dry."""
-    void = mask & (h0 < level - CARRIED_WATER)
+def carried_water(areas, ground, mask, level, pieces, vx0, vz0, nv):
+    """Plan polygons of the water carried by a structure (a canal on an aqueduct over a road trench). Seeds: water over ground lying CARRIED_WATER
+    or more below its level, with a road on the ground passing under it at least that far below (water merely levelled too high over a sloping
+    shore has no road under it). From there the trough goes on through the water for as long as the ground under it lies deeper than a bed
+    (TROUGH_REACH), so it reaches the banks across the slopes of the trench. `ground` is the finished terrain. The game draws the channel and
+    keeps the ground under it dry."""
+    void = mask & (ground < level - CARRIED_WATER)
     if not void.any(): return []
     labels, _ = label(void)
     keep = set()
@@ -317,9 +319,11 @@ def carried_water(areas, h0, mask, level, pieces, vx0, vz0, nv):
         under = labels[c[:, 1], c[:, 0]]
         keep.update(under[(under > 0) & (z < level[c[:, 1], c[:, 0]] - CARRIED_WATER)].tolist())
     if not keep: return []
-    cells = np.isin(labels, sorted(keep))[::-1]                                       # north-up, like the raster the water mask was burnt from
+    seeds = np.isin(labels, sorted(keep))
+    deep, _ = label(mask & (ground < level - TROUGH_REACH))                           # every seed lies in one of these
+    cells = np.isin(deep, np.unique(deep[seeds]))[::-1]                               # north-up, like the raster the water mask was burnt from
     tr = from_origin(vx0 - CELL / 2, vz0 + (nv - 0.5) * CELL, CELL, CELL)
-    region = shapely.union_all([shape(g) for g, v in features.shapes(cells.astype(np.uint8), mask=cells, transform=tr) if v == 1]).buffer(CELL, join_style="mitre")
+    region = shapely.union_all([shape(g) for g, v in features.shapes(cells.astype(np.uint8), mask=cells, transform=tr) if v == 1]).buffer(CELL / 2, join_style="mitre")
     out = []
     for a in areas:
         part = a["poly"].intersection(region)
@@ -442,7 +446,6 @@ def process_sector(args):
     h = win.sample(mnt_s, gx.ravel(), gz.ravel(), 2)
     pts = np.c_[gx.ravel(), gz.ravel()]
     wmask, wlevel = water_level_field(areas, h.reshape(nv, nv), win.x0, win.z0, nv)
-    troughs = carried_water(areas, h.reshape(nv, nv), wmask, wlevel, pieces, win.x0, win.z0, nv)
     if wmask.any():                                                                  # scoop the bed below the surface, deeper away from the shore
         shore = distance_transform_edt(wmask) * CELL
         bed = wlevel - WATER_DEPTH * np.clip(0.35 + shore / 4.0, 0.35, 1.0)
@@ -472,6 +475,7 @@ def process_sector(args):
     # the road always wins: the ground is shaped around the road surface, and no terrain triangle (4 m or 16 m) may stand above it
     H = road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud)
     H = road_terrain.bench(H, win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
+    troughs = carried_water(areas, H, wmask, wlevel, pieces, win.x0, win.z0, nv)
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
     LOW = correlate(H, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
     LOW = road_terrain.bench(LOW, win.x0, win.z0, LOD_CELL, footprint, road_surface.thin(cloud, 4), road_config.LOD_SINK)

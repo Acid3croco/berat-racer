@@ -127,7 +127,7 @@ public class ChunkMeshes
     /// <summary>
     /// The concrete channel carrying water over a void (BM06 troughs: a canal on an aqueduct over a road): walls from the rim down to the floor where
     /// the water stops (not where the trough ends and the canal goes on, nor where the builder cut it at the chunk border), and the floor, both seen
-    /// from either side.
+    /// from either side. The builder runs the trough on until the ground under the water is back at the bed, so its ends rest on the banks.
     /// </summary>
     static void Trough(MeshBuilder mb, ChunkData d, WaterArea t)
     {

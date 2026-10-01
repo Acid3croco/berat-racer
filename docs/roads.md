@@ -108,7 +108,8 @@ mean half width, distance along its link, name, per point the centre and both ed
 points where a give-way line is painted;
 then the junction meshes (vertices, triangles, outline edges with a mouth flag), the water areas and stream lines, and (BM06) the
 outlines of the water carried by a structure: a canal on an aqueduct over a road. The builder finds them (`carried_water` in
-`build_world.py`: water standing 1.5 m or more above the ground, with a road on the ground passing under it); the game draws their
+`build_world.py`: water standing 1.5 m or more above the ground, with a road on the ground passing under it, carried on until the
+ground under the water is back at the depth of a bed, so the ends rest on the banks); the game draws their
 concrete channel (walls where the water stops, a floor 1.8 m under the surface) and keeps the ground under them dry. A BM05 chunk
 is a BM06 chunk without that list; `WorldData.cs` reads both, `LegacyChunk.cs` adapts older worlds (BM02 - BM04) so they still
 load with their old look.
