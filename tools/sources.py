@@ -18,6 +18,8 @@ Layout (data/big/src/):
                           hydro_lines, hydro_areas, vegetation, transport, structures, non_communication; rpg; hedges)
   osm_roads/...           OSM drivable highways (massif-extractor database on mace): {id, highway, surface, name, ref, tags, xy (L93)}
   osm_controls/...        OSM traffic signals / stop / give way / mini roundabouts (mace): {id, highway, tags, x, z (local)}
+  extract/*.osm.pbf       Geofabrik extracts (optional): the Overpass kinds below are read from them for the tiles they cover
+                          (osm_extract.py: 3 min for the region's 45,000 km2 against hours of public Overpass); Overpass for the rest
   osm_ground/...          Overpass: landuse / natural / leisure areas, car parks, aisles, barriers as GeoJSON features (L93)
   osm_roofs/...           Overpass: buildings tagging their roof or levels {id, tags, xy (local)}
   osm_restrictions/...    Overpass: turn restriction relations {id, restriction, from_way, to_way, x, z (local, the via node)}
@@ -494,11 +496,12 @@ def _lonlat(e):
 
 def osm_ground_features(elements, to_l93, rect):
     """Ground elements -> GeoJSON features whose box meets the tile, in Overpass order."""
+    import shapely
     from shapely.geometry import shape
-    out = []
+    out, tile = [], shapely.box(*rect)
     for e in elements:
         f = osm_feature(e, to_l93)
-        if f is not None and meets(shape(f["geometry"]).bounds, rect):
+        if f is not None and shape(f["geometry"]).intersects(tile):                 # as Overpass selects: the shape, not its box
             out.append(f)
     return out
 
@@ -631,6 +634,18 @@ def ensure(sectors, kinds=BUILD_KINDS, log=print):
     gaps = missing(sectors, kinds)
     if not gaps:
         return dict(seconds=0.0, fetched={}, services={}, failures=[])
+    over_tiles = sorted({t for k in OVERPASS_KINDS for t in gaps.get(k, [])})
+    extracts = sorted((SRC / "extract").glob("*.osm.pbf"))
+    if over_tiles and extracts:                                                 # a Geofabrik extract read locally beats the public servers
+        import osm_extract
+        t = time.time()
+        for path in extracts:
+            done = osm_extract.write_tiles(path, over_tiles)
+            over_tiles = [x for x in over_tiles if x not in set(done)]
+        COUNT.add("osm_extract", 0, time.time() - t, requests=0)
+        gaps = missing(sectors, kinds)
+        if not gaps:
+            return dict(seconds=round(time.time() - t0, 1), fetched={}, services={s: dict(v) for s, v in COUNT.by.items()}, failures=[])
     log(f"fetching: {', '.join(f'{k} {len(v)}' for k, v in gaps.items())}")
     jobs = []                                                                   # (service, function, args)
     for kind, tiles in gaps.items():

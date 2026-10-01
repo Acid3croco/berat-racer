@@ -6,6 +6,7 @@ dependencies = [
     "clarabel>=0.11.1",
     "matplotlib>=3.11.2",
     "numpy>=2.5.3",
+    "osmium>=4.3.1",
     "pillow>=12.3.0",
     "psutil>=7.2.2",
     "pyproj>=3.8.0",
