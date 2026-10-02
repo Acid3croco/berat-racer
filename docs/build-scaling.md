@@ -327,6 +327,20 @@ What remains is flat: the profile pass is three Clarabel solves (the robust re-w
 600 m halo (no solver setting gains more than 10 % without moving heights by centimetres); a rural world sector (10 CPU-s) has no
 part above 3 s; a Toulouse sector is per-building Python (raster samples, footprint tests, facades) more than any one call.
 
+## Step 9: numba, a coarser ground fill
+
+- `numba` (via `uv add`): the sight distances of the road surface pass compiled, sample by sample, the same rules and order as the
+  vectorised version: identical output (400 synthetic roads, a dense Toulouse tile), surface tile 33.8 -> 20.4 s. Roads 846 -> 810 s.
+- The user's call: roads keep their precision, the terrain may be coarser. The ground fill now works on the 4 m cells instead of 2 m
+  boxes (`stitch.FILL_STEP`); a finer grid only added slivers where its lines met a kerb (tens of folds in a square metre). Small map:
+  fill triangles 4.18 M -> 1.49 M (those under 0.01 m² 50,424 -> 15,491), fill 2.85 -> 1.36 s a sector, `check_gaps` 4 -> 2, chunk
+  files 64 -> 54 MB, playtest the same, shots at three road spots without a visible difference. World 1,114 -> 1,000 s; berat70new
+  gaps (every 8th column) 684 -> 548.
+- Tried and dropped: the field's edge samples every 2 m instead of 1 m (no time gained: the field's cost is elsewhere).
+- Started and not finished: the straight skeleton compiled whole (~1,000 CPU-s to gain, ~2 min).
+
+**berat70new from scratch, 9 workers: 30.2 min** (roads 810 s, world 1,000 s). The 10-minute target is not met.
+
 ## Per-km² model and France
 
 Measured on berat70new (4,956 km²), the build costs, per km² (step 8 code; CPU at 9 workers, which counts ~15 % more than at 5):
