@@ -271,19 +271,76 @@ Shots outside the small map (old `world_berat70new` left, new right): [Herbettes
 [pond bank](shots/scaling/small_pond_bank.jpg), [vineyard](shots/scaling/small_vineyard.jpg): the same scenes; roads within a metre
 where the smoothing order changed (a footprint cut by a road moves with it, and a front wall with it).
 
+## Step 8: 90 % of the machine, a second speed pass
+
+The user then allowed 90 % of the machine (`BERAT_MACHINE_SHARE=0.9`: 9 workers, 28.8 GB; the default stays half). The same build
+at 9 workers took **43.5 min** (roads 1,191 s, world 1,420 s): the world stage scaled, the road passes hardly did (align 161 s
+against 168 at 5 workers). `run_batched` started a fresh pool for every jobs x 4 tiles and waited for the slowest tile of each batch:
+3 of the 9 workers stood idle most of the time. Profiles of a Toulouse sector / tile (cProfile) then gave the second pass:
+
+| change | where | effect | output |
+|---|---|---|---|
+| one pool, workers renewed every 4 tiles, at most jobs + 1 queued, heaviest tiles first (by their surveyed roads' size); world sectors with most buildings first | `roads/tiled.py`, `build_world.py` | no idle worker until a round's end | the same (tiles of a round are independent) |
+| straight skeleton: the next event worked out for every vertex / edge pair at once (numpy) instead of a Python double loop | `roofs.py` | 2.2x on all footprints of sector (10, 11); buildings 101 -> 43 s there | identical (175,244 roofs compared; chunks byte-identical) |
+| junction mouths: `make_valid` once per piece, the mouth's length inside the others as the union of its pieces in each (no union of the polygons) | `roads/junction.py` | network tile 35 -> 22 s | identical tile; 124 invalid junctions of 93,244 instead of 126 over the map |
+| sideways clearances: every scan offset sampled in one call | `roads/lanes.py` | surface tile 42 -> 34 s | identical |
+| fill: a 2 m box less the paved surface of its 32 m block, not the chunk's; fill points made unique as complex numbers | `stitch.py` | fill 44 -> 24 s on sector (10, 11) | 10 - 50 bytes per changed chunk (last-bit floats) |
+| car-park aisles: one bulk query instead of a union of every other car park per car park | `ground.py` | ground areas 20 -> 6 s on sector (10, 11) | the same aisles (buffer of a union = union of buffers) |
+| `check_gaps`: every n-th whole column (a chunk's neighbours stay cached), 16 chunks cached, progress; triangles by STRtree (below) | `check_gaps.py` | 8 GB and no result after an hour -> 15 min, 1 GB | the same check |
+
+berat70new from scratch, 9 workers:
+
+| | before (9 workers) | after |
+|---|---|---|
+| roads | 1,191 s (7,782 CPU-s): align 161, network 256, profile 422, surface 314 | **846 s** (7,091 CPU-s, x8.4): align 113, network 120, profile 332, surface 246 |
+| world | 1,420 s (11,238 CPU-s) | **1,120 s** (9,339 CPU-s, x8.3): fill 3,395 -> 2,135 CPU-s, buildings 2,890 -> 2,289, ground areas 1,399 -> 1,117 |
+| total | 43.5 min | **32.8 min** |
+| peak memory | 18.5 GB tree, 4.6 GB a worker | 19.0 GB tree, 5.0 GB a worker (Toulouse's centre); within 28.8 |
+
+CPU-s per stage are higher at 9 workers than at 5 (world 11,238 against 9,974 for the same code): the M1 Max has 8 performance and
+2 efficiency cores, and the ninth worker shares memory bandwidth; 9 workers give ~7.5 workers' worth.
+
+Checks on the new full world: `check_roads` the same as step 7 (above4 0, above16 62, loose 0, 923,715 lane elements, 0 turned back);
+Playtest (`Build/scaling`): roadtest 1.4 km, harshness 0.10 m/s², 0 wheel hops, 0 respawns; autotest 2,296 m, 25 cells, 0 stuck,
+0 exceptions. Small map rebuilt with the same code: `check_roads` OK (12,096 elements, 1 without exit), `check_gaps` 7 cm-level gaps
+(as before), `check_buildings` 10,595 buildings, nothing outside.
+
+**The full-world gap check**, which step 7 could not finish, now runs: `check_gaps.Surface` looked triangles up in a KD-tree with the
+radius of the largest triangle around, so one long road or seam triangle made every query return thousands (19.5 GB, 77 min for
+every 8th column). An STRtree of the triangles' boxes tests the same ones: 15 min, 1 GB; the small map 8:52 -> 1:55, the same result.
+On every 8th column of berat70new (3,872 chunks) it found 981 see-through gaps (199 holes, 351 cracks, 431 steps). The same sectors
+built with the step-7 code give the same gaps, so they predate this work, but they are what the map has:
+
+- **Car parks (fixed).** `parking_mesh` kept a Delaunay triangle when its centroid and edge midpoints were inside the outline; an edge
+  passing a notch of the outline (0.6 m deep, near a corner) stuck out of it, the ground fill followed the outline, and the car park
+  dipped up to 0.67 m below the ground's edge. A triangle is now tested whole against the outline (+5 cm). Small map 7 -> 4 gaps;
+  berat70new 981 -> **684** (steps 431 -> 242, cracks 351 -> 237), over 10 cm 175 -> 116. Playtests unchanged.
+- **Junctions over a bridge's end (not fixed).** The largest remaining steps (up to 6 m, ~100 spots over 10 cm) are slip-road forks
+  whose junction arms (up to 60 m) reach over a bridge span: the junction mesh is ground in the world builder (its kerbs pull the
+  ground field, its area is cut out of the terrain) while part of it stands on the deck, so the ground rises to the deck there or a
+  wall opens under it. Treating junctions met only by bridge pieces as decks did not catch these (their arms continue on embankments)
+  and made a test block slightly worse; it needs the road pipeline to cut such junctions at the span (or mark their deck part).
+- **Holes** (205) are mostly millimetre artefacts (the check probing 2 cm across a 2 mm junction edge) and, at sector borders, strips
+  of about a metre where one sector's fill leaves room for a junction drawn by the neighbouring sector's chunk.
+
+What remains is flat: the profile pass is three Clarabel solves (the robust re-weighting) of ~300,000 unknowns a dense tile with its
+600 m halo (no solver setting gains more than 10 % without moving heights by centimetres); a rural world sector (10 CPU-s) has no
+part above 3 s; a Toulouse sector is per-building Python (raster samples, footprint tests, facades) more than any one call.
+
 ## Per-km² model and France
 
-Measured on berat70new (4,956 km², half the machine), the build costs, per km²:
+Measured on berat70new (4,956 km²), the build costs, per km² (step 8 code; CPU at 9 workers, which counts ~15 % more than at 5):
 
 | | per km² | berat70new | France (550,000 km², x111) |
 |---|---|---|---|
-| CPU, roads | 1.34 s | 6,660 s | 205 h |
-| CPU, world | 2.01 s | 9,974 s | 308 h |
-| wall on 5 workers (half this machine) | 0.69 s | 57 min | **4.3 days** |
+| CPU, roads | 1.43 s | 7,091 s | 219 h |
+| CPU, world | 1.88 s | 9,339 s | 288 h |
+| wall on 9 workers (90 % of this machine) | 0.40 s | 32.8 min | **2.5 days** |
+| wall on 5 workers (half), step 7 code | 0.69 s | 57 min | 4.3 days |
 | world output (BM08) | 0.89 MB | 4.4 GB | **490 GB** |
 | road intermediates | 1.33 MB | 6.6 GB | 730 GB (only needed for incremental rebuilds; a tile's files can go once its world sectors are written) |
 | sources | 0.29 MB | 1.4 GB | **160 GB** (+ the extracts: France's `.osm.pbf` ~4.5 GB) |
-| RAM | | worker <= 2.1 GB (roads) / 5.3 GB (world, densest sector); whole build <= 16 GB | the same: a worker's need is its tile's content, the build's is 5 workers |
+| RAM | | worker <= 2.8 GB (roads) / 5.0 GB (world, densest sector); whole build <= 19 GB at 9 workers, 16 GB at 5 | the same: a worker's need is its tile's content, the build's is its number of workers |
 
 Nothing in the build holds the whole map any more: sources, road passes, world sectors and the far terrain are per tile; what grows
 with the map is the number of files, `far.bin` (one file the game reads: 7 bytes a 64 m vertex, 0.9 GB for France; the game would
@@ -294,7 +351,7 @@ Toulouse's centre (168 CPU-s), so a map's cost follows its towns more than its a
 
 | target | result |
 |---|---|
-| berat70new rebuilt in 10 min or less | **not met: 57 min** at half the machine (5 workers). The goal was set for the whole machine; at half of it 10 min means 6.2 CPU-s a sector for roads and world together, and the build now needs 34 (roads 14 a tile, world 21 a sector on average, 168 for Toulouse's centre) |
+| berat70new rebuilt in 10 min or less | **not met: 32.8 min** at 90 % of the machine (9 workers; 57 min at half). 10 min at 9 workers (x8.4 in use) means ~5,000 CPU-s, about 10 CPU-s a sector for roads and world together; the build now needs 34 (roads 14.6 a sector, 12.3 a tile; world 19.3 a sector on average, ~150 for Toulouse's centre) |
 | output + intermediates <= 20 GB, output ~1 MB/km² | met: 11.0 GB; 0.89 MB/km² |
 | sources <= 1 MB/km², per tile, leanest lossless | met: 0.29 MB/km² |
 | RAM per worker bounded, the same on 9, 100, 484 sectors | met: the same sector needs the same memory in a 9-, 20-, 100- or 484-sector build (1.8 / 2.0 GB); a worker's peak is its densest tile's (roads <= 2.3 GB, world <= 5.3 GB), the whole build within 16 GB |
@@ -303,15 +360,18 @@ Toulouse's centre (168 CPU-s), so a map's cost follows its towns more than its a
 
 ## What is left
 
-- **Speed.** The remaining 5.5x is spread over many stages: the ground fill (~100,000 small GEOS polygon differences a sector), the
-  straight-skeleton roofs (pure Python event simulation), building footprints against road corridors, the paved-edge field, the
-  height QP (Clarabel, 2.4 of 4 s a tile), the network pass (junctions, 2 - 23 s a tile). Each of these needs compiled code or a
-  different algorithm (e.g. the fill per 4 m cell as one constrained triangulation; the skeleton in numba / Rust; roofs cached by
-  footprint content across builds) rather than more tuning.
+- **Speed.** The remaining 3.3x (at 9 workers) is spread over many stages: the height QP (three Clarabel solves a tile, ~3,000
+  CPU-s over the map, the largest single item; a smaller halo or fewer robust rounds would change the profiles), the ground fill
+  (~2,100 CPU-s: small GEOS differences and triangulations), buildings (~2,300: per-building Python around the roofs), the
+  paved-edge field and car parks (~2,300), the surface pass (sight distances). Each of these needs compiled code (numba / Rust for
+  the skeleton, the fill and the sight lines) or a different algorithm rather than more tuning; roofs could also be cached by
+  footprint content across builds.
 - `far.bin` is still one file the game reads; for France it should be tiled like the chunks (a game change).
 - The road intermediates (6.6 GB) are kept for incremental rebuilds; a "no-incremental" mode could drop each tile once used.
 - Smoothing-order differences against master (step 3): roads move up to ~2 m where shared nodes are placed by another stroke; 2
   invalid junctions on the small map instead of 1, the same 2 in a whole-area build with the new order.
+- berat70new gaps (`check_gaps`, every 8th column: 684): junctions reaching over a bridge's end (steps up to 6 m, see step 8),
+  metre-wide holes at sector borders next to junctions drawn by the neighbour sector, cm-level cracks.
 - berat70new: 62 points where the 16 m distant terrain stands above a road and a 674 m² overlap of two junctions, both at one motorway
   interchange in Toulouse (junctions with 250 m slip-road arms); 24 lane joins jumping a lane width where the lane count changes;
   459 lanes without exit at the map's border or one-way ends. Not caused by the tiling (all inside one tile), not fixed.
