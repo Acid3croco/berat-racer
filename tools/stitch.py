@@ -28,7 +28,7 @@ from roads import config
 from roads.terrain import smoothstep
 
 SNAP = 0.01            # m: a fill point this close to a paved outline takes the paved height
-FILL_STEP = 2.0        # m between the fill's inner points
+FILL_STEP = 4.0        # m between the fill's inner points: the 4 m cell itself (a finer grid only adds slivers where it meets a kerb)
 NEIGHBOURS = 16        # edge samples blended at each point
 SAMPLE_STEP = 1.0      # m between edge samples
 BLOCK = 32.0           # m: the fill's boxes are cut by the paved surface of their block of the grid
