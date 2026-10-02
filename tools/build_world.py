@@ -1018,6 +1018,18 @@ def write_far(out, world, si_min, sj_min, far_cell, far_nx, far_nz, x0, z0):
                 last = h[take][-1]
     os.replace(out / "far.bin.tmp", out / "far.bin")
 
+SECTOR_HEADROOM_GB = 5.5          # what the densest sector needs (Toulouse centre, 22,700 buildings: 5.3 GB); others 1.5 - 3 GB
+
+def tree_gb():
+    """Resident memory of this process and its workers, GB."""
+    import psutil
+    me = psutil.Process()
+    total = 0
+    for p in [me] + me.children(recursive=True):
+        try: total += p.memory_info().rss
+        except psutil.Error: pass
+    return total / 2**30
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sectors", default="", help="comma list si:sj to (re)build (default: every sector of --list)")
@@ -1060,7 +1072,8 @@ def main():
     with ProcessPoolExecutor(a.jobs, max_tasks_per_child=40) as ex:
         exhausted = False
         while True:
-            while not exhausted and not stopped and len(pending) < a.jobs + 1:              # keep the pool busy without queuing everything, so a stop takes effect quickly
+            while not exhausted and not stopped and len(pending) < a.jobs + 1 and (not pending or tree_gb() < machine.MEMORY_GB - SECTOR_HEADROOM_GB):
+                # keep the pool busy without queuing everything (a stop takes effect quickly), and the whole build within half the RAM
                 stopped = stop_reason()
                 if stopped: print(f"STOPPING (no new sectors): {stopped}", flush=True); break
                 j = next(todo_iter, None)
