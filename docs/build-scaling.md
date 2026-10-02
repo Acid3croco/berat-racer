@@ -191,3 +191,131 @@ per-sector copies (3.9 GB) are gone.
 | world output | 1.18 MB | 0.97 MB (b70s20) |
 | road intermediates | 2.4 MB | 0.68 MB (b70s20 incl. its ring of tiles) |
 | world keys, far patches | - | ~0.01 MB |
+
+## Sources from a Geofabrik extract
+
+The public Overpass servers answered the heavy per-tile query (land use, roof tags, POIs) in 80 - 110 s, or not at all (504):
+~0.7 tiles a minute for berat70new's 402 missing tiles, about 10 hours. `osm_extract.py` reads a Geofabrik extract instead (the
+Midi-Pyrénées `.osm.pbf`, 362 MB, 50 s to download) with pyosmium in two passes and writes the same tiles through the same
+converters: 402 tiles in 3 min 13 s. Against tiles fetched from Overpass: roof tags, restrictions, POIs and places identical; land
+use the same up to the dates of the two snapshots, plus the multipolygons that cover a tile without a member node inside it (Overpass
+misses those). `sources.ensure` uses any extract in `data/big/src/extract/` first and Overpass only for tiles outside it. (This is
+one regional file, read once and split into tiles; the builds still only read tiles.)
+
+## Step 7: berat70new from scratch
+
+`berat70scale` = the 484 sectors of berat70new, roads and world built from scratch from the cached sources, **at most half the
+machine** (5 worker processes of 10 cores; whole process tree within 16 GB of 32), on a quiet machine. World written to
+`../world_berat70scale`, next to `world_berat70new`.
+
+| | before (step 1 model) | now |
+|---|---|---|
+| roads | whole-area process, ~30 min+ (89 min measured for berat70 before build-speed) | **22.8 min** wall, 6,660 CPU-s (576 tiles) |
+| world | ~2 h 20 min on 9 cores (15.4 CPU-s/km²) | **33.9 min** wall, 9,974 CPU-s (20.6 CPU-s a sector, 2.0 / km²) |
+| total | ~3 h | **56.7 min** (target 10 min: **not met**) |
+| CPU per km² | 16.2 s | 3.36 s |
+| largest process | road main process growing with the area (network pickle 2.5 GB) | roads 2.1 GB (any tile; dense Toulouse tile 1.8 GB alone), world 5.3 GB (the densest sector, Toulouse centre, 22,700 buildings; a rural one 1.9 GB) |
+| whole process tree | | roads 9.5 GB, world 14.5 GB (the world builder holds new sectors back above 16 GB - 5.5 GB) |
+| world output | 1.18 MB/km² | **4.42 GB, 0.89 MB/km²** (BM08) |
+| road intermediates | 2.4 MB/km² (7.7 GB on disk for berat70new) | 6.6 GB, 1.33 MB/km² |
+| output + intermediates | ~14 GB | **11.0 GB** (target 20 GB: met) |
+| sources | 0.53 MB/km² | **0.29 MB/km²** (target 1 MB/km²: met) |
+
+RAM per worker does not grow with the map: a sector needs what its own content needs. The same sector measured alone, built as
+part of areas of different sizes:
+
+| sector | 9-sector build | 20 | 100 | 484 |
+|---|---|---|---|---|
+| (5, 5), small map | 1,796 MB | | 1,800 MB | 1,800 MB |
+| (9, 4) | | 2,024 MB | 2,013 MB | 2,020 MB |
+
+The largest worker of a build is therefore its densest sector's: 2.5 GB on the small map, 4.7 GB on the 100-sector block (near
+Toulouse), 5.3 GB on berat70new (Toulouse's centre, 22,700 buildings; a rural sector 1.9 GB). Road workers: at most 2.3 GB (a
+dense tile alone 1.8 GB). Road worker pools are renewed every 4 tiles, world workers every 40 sectors, so nothing piles up, and the
+world builder starts no new sector while the process tree is within 5.5 GB of the 16 GB budget (berat70new: tree peak 13.6 - 14.5 GB).
+
+Incremental: an unchanged rebuild reuses every tile of every pass (content hashes of the inputs and of each pass's code) and rebuilds
+no world sector (small map: 1.6 s); one hand correction recomputes the tiles whose windows see it (9 of 25 alignment tiles on the
+small map) and the 3 x 3 world sectors around it. On berat70new, a change of the surface pass (junction mouths) rebuilt 36 world
+sectors of 484 in 619 s.
+
+First-time fetch of berat70new (not part of the 10 min; rasters and BD TOPO roads / buildings / water were already on disk from the
+region download): the 5 ground layers and BD TOPO `non_communication` (WFS), OSM ways and control nodes (mace) for 576 tiles: 3,000
+jobs in 227 s; the Overpass kinds from the extract: 50 s download + 193 s; the orthophoto row measurements: 25,910 WMS crops,
+203 MB, about 50 min at 3 tiles at a time (the IGN service answers 429 when pushed harder; requests back off and retry).
+
+Quality on berat70new (whole area, against the old whole-area berat70new report of 30 Sep):
+
+| | old | tiled |
+|---|---|---|
+| links / junctions | 194,192 / 93,235 | 194,186 / 93,244 |
+| overlap pairs / m² | 432 / 11,721 | 434 / 12,236 |
+| folded ribbons, invalid junctions | 116, 125 | 136, 126 |
+| class figures (grade, crest, cut / fill) | | within a few % |
+
+`check_roads` on the full world: no terrain above a 4 m road or a deck, no lane without its successor, no lane turned back at a
+junction; 62 points where the 16 m distant terrain stands above a road (worst 1.69 m, at a motorway interchange in Toulouse where
+two junctions with 250 m slip-road arms overlap by 674 m²), 25 lane joins inside a link that jump one lane width where the lane count
+changes (the lane graph's own handling of lane drops, all within one tile). Road ends not exactly on their junction's vertices were
+51 (42 of them within 1 cm: a junction outlined by its owner from its copy of a link another tile owns); the surface pass now puts
+every mouth corner on the arm link's own edge point: **0**.
+
+Playtest on the full world (`Build/scaling`, the BM08 player): road benchmark 1.4 km, harshness 0.10 m/s², 0 wheel hops, 0
+respawns; autotest 2,236 m, 25 cells, 0 stuck, 0 exceptions; ready in 3.2 s, 476 MB managed.
+
+Shots outside the small map (old `world_berat70new` left, new right): [Herbettes ring-road tunnel](shots/scaling/b70_herbettes.jpg),
+[Toulouse centre](shots/scaling/b70_toulouse_centre.jpg), [west, rural](shots/scaling/b70_west_rural.jpg), [a tile corner](shots/scaling/b70_tile_corner.jpg)
+(the old world predates the data-inventory work: no tunnels, roofs, facades, ground classes). Small map against master:
+[road seam](shots/scaling/small_road_seam.jpg), [roundabout](shots/scaling/small_roundabout.jpg), [village car park](shots/scaling/small_parking_village.jpg),
+[village](shots/scaling/small_facades_village.jpg), [main road](shots/scaling/small_main_road.jpg), [banked bend](shots/scaling/small_banked_bend.jpg),
+[pond bank](shots/scaling/small_pond_bank.jpg), [vineyard](shots/scaling/small_vineyard.jpg): the same scenes; roads within a metre
+where the smoothing order changed (a footprint cut by a road moves with it, and a front wall with it).
+
+## Per-km² model and France
+
+Measured on berat70new (4,956 km², half the machine), the build costs, per km²:
+
+| | per km² | berat70new | France (550,000 km², x111) |
+|---|---|---|---|
+| CPU, roads | 1.34 s | 6,660 s | 205 h |
+| CPU, world | 2.01 s | 9,974 s | 308 h |
+| wall on 5 workers (half this machine) | 0.69 s | 57 min | **4.3 days** |
+| world output (BM08) | 0.89 MB | 4.4 GB | **490 GB** |
+| road intermediates | 1.33 MB | 6.6 GB | 730 GB (only needed for incremental rebuilds; a tile's files can go once its world sectors are written) |
+| sources | 0.29 MB | 1.4 GB | **160 GB** (+ the extracts: France's `.osm.pbf` ~4.5 GB) |
+| RAM | | worker <= 2.1 GB (roads) / 5.3 GB (world, densest sector); whole build <= 16 GB | the same: a worker's need is its tile's content, the build's is 5 workers |
+
+Nothing in the build holds the whole map any more: sources, road passes, world sectors and the far terrain are per tile; what grows
+with the map is the number of files, `far.bin` (one file the game reads: 7 bytes a 64 m vertex, 0.9 GB for France; the game would
+need it tiled too), the build report and the list of tiles. The world's density varies 10x between a rural sector (14 CPU-s) and
+Toulouse's centre (168 CPU-s), so a map's cost follows its towns more than its area.
+
+## Against the targets
+
+| target | result |
+|---|---|
+| berat70new rebuilt in 10 min or less | **not met: 57 min** at half the machine (5 workers). The goal was set for the whole machine; at half of it 10 min means 6.2 CPU-s a sector for roads and world together, and the build now needs 34 (roads 14 a tile, world 21 a sector on average, 168 for Toulouse's centre) |
+| output + intermediates <= 20 GB, output ~1 MB/km² | met: 11.0 GB; 0.89 MB/km² |
+| sources <= 1 MB/km², per tile, leanest lossless | met: 0.29 MB/km² |
+| RAM per worker bounded, the same on 9, 100, 484 sectors | met: the same sector needs the same memory in a 9-, 20-, 100- or 484-sector build (1.8 / 2.0 GB); a worker's peak is its densest tile's (roads <= 2.3 GB, world <= 5.3 GB), the whole build within 16 GB |
+| small map: no regression | `check_roads` OK (12,096 lane elements, 1 without exit, as master); `check_gaps` 7 cm-level gaps (master 6, the same problem area); roadtest better (harshness 0.10 vs 0.28 m/s², 0 wheel hops vs 14, 0 respawns vs 1); autotest 2,166 m, one stop at a village junction corner where a building stands 0.35 m from the junction (master has the same building and junction; its random route did not pass there); world 71 MB vs 92; shots: the same scenes |
+| chunks only, no global state, incremental by content | met for every stage (far terrain as patches, `far.bin` streamed) |
+
+## What is left
+
+- **Speed.** The remaining 5.5x is spread over many stages: the ground fill (~100,000 small GEOS polygon differences a sector), the
+  straight-skeleton roofs (pure Python event simulation), building footprints against road corridors, the paved-edge field, the
+  height QP (Clarabel, 2.4 of 4 s a tile), the network pass (junctions, 2 - 23 s a tile). Each of these needs compiled code or a
+  different algorithm (e.g. the fill per 4 m cell as one constrained triangulation; the skeleton in numba / Rust; roofs cached by
+  footprint content across builds) rather than more tuning.
+- `far.bin` is still one file the game reads; for France it should be tiled like the chunks (a game change).
+- The road intermediates (6.6 GB) are kept for incremental rebuilds; a "no-incremental" mode could drop each tile once used.
+- Smoothing-order differences against master (step 3): roads move up to ~2 m where shared nodes are placed by another stroke; 2
+  invalid junctions on the small map instead of 1, the same 2 in a whole-area build with the new order.
+- berat70new: 62 points where the 16 m distant terrain stands above a road and a 674 m² overlap of two junctions, both at one motorway
+  interchange in Toulouse (junctions with 250 m slip-road arms); 24 lane joins jumping a lane width where the lane count changes;
+  459 lanes without exit at the map's border or one-way ends. Not caused by the tiling (all inside one tile), not fixed.
+- The Geofabrik extract is a regional file; for other regions the matching extract has to be put in `data/big/src/extract/`
+  (Overpass remains the fallback).
+- A small change rebuilds the 3 x 3 world sectors around it because lane-graph numbers in the changed tile shift; numbering
+  elements by what they belong to (not by rank) would keep the others identical.

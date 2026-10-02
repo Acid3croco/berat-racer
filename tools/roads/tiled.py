@@ -35,7 +35,7 @@ from . import alignment, config, graph as graph_stage, osm, source
 from .digest import code_stamp, digest
 
 TILE = SECTOR
-WORKER_TASKS = 10                 # tiles per worker before the pool is renewed: its memory is what a tile needs, not what piled up
+WORKER_TASKS = 4                  # tiles per worker before the pool is renewed: its memory is what a tile needs, not what piled up
 ALIGN_HALO = 1600.0               # m: how far a tile reads the sections around it for the alignment
 
 

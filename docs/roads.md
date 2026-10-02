@@ -8,8 +8,8 @@ Code: `tools/roads/` (one module per stage), consumed by `tools/build_world.py`,
 ```sh
 cd tools
 uv run python -m roads fetch          # optional: the source tiles of the area (build does it too; sources.py)
-uv run python -m roads build          # ~1.5 min for the small map: every stage, report, artefact in data/big/roads/
-uv run python build_world.py --list data/big/small_sectors.json --out ../world_small --far-cache data/big/far_small_v2.npz
+uv run python -m roads build          # every stage, tile by tile (roads/tiled.py), report in data/big/roads/<area>/report.json
+uv run python build_world.py --list data/big/small_sectors.json --out ../world_small
 uv run python check_roads.py ../world_small      # terrain never above a road nor a bridge deck, every road end meets its junction
 BERAT_WORLD=$PWD/../world_small ../Build/dev/BeratRacer.app/Contents/MacOS/*      # play it
 ```
@@ -30,12 +30,12 @@ Tuning lives in two files:
 
 `--list` selects another area (default `data/big/small_sectors.json`); it goes before the command: `python -m roads --list L build`.
 
-Both steps only redo what changed. The height solve keeps the result of every tile with a hash of what it was solved from (its samples,
-the heights its neighbours fixed, the raster files under it, the tuning values and the solver code) in `data/big/roads/<area>.cache`;
-the world builder leaves the same kind of key per sector in `<world>/keys` (road surface, raster, vector and POI files, builder code and
-tuning). A tile or sector whose key is unchanged is skipped. After a local change (one override, one road) the tiles around it are solved
-again and the sectors whose roads moved are rebuilt; after a change of tuning or code everything is. `--fresh` on either command ignores
-the keys. `compare_roads.py A B` and `compare_worlds.py DIR_A DIR_B` compare two builds (heights, sector files; chunk contents).
+Both steps only redo what changed. The road pipeline runs tile by tile (3.2 km, the sectors) in four passes (alignment, network,
+heights, surface; docs/build-scaling.md): every tile's result is kept in `data/big/roads/<area>/<pass>/` with a hash of what it was made
+from (the content of its inputs, the tuning and the code of its pass); the world builder leaves the same kind of key per sector in
+`<world>/keys`. A tile or sector whose key is unchanged is skipped. After a local change (one override, one road) the tiles whose
+windows see it are made again and the sectors around them rebuilt; after a change of tuning or code everything is. `--fresh` on either
+command ignores the keys. `compare_roads.py A B` and `compare_worlds.py DIR_A DIR_B` compare two builds (heights, sector files; chunk contents).
 
 ## Data
 
@@ -228,8 +228,9 @@ The traffic log reports *kinks*: a car's path heading jumping faster than 90°/s
 
 ## Known limits
 
-- Graph and horizontal smoothing still run over the whole build area in one process (minutes for 5,000 km2, all in memory) and are
-  redone on every build; junctions run in parallel but are also redone; only the height solve is tiled and kept between builds. The region-sized `world/` is still in the old format and loads through `LegacyChunk`.
+- Each road object is computed by the tile that owns it, from a window around the tile; the smoothing order (class, length up to
+  1.6 km, smallest section id) is the same in a tile and in a whole area, so the tiles reproduce a whole-area build except within
+  ~200 m of a tile border, where a stroke continues the curve an earlier round fixed (docs/build-scaling.md, step 3).
 - Two roads closer than a terrain cell at different heights (a village terrace) cannot both sit on a 4 m terrain grid: the upper
   one gets a retaining wall along its edge.
 - Streets, rings and tracks are not banked; there is no crown (cross-sections are planes).
