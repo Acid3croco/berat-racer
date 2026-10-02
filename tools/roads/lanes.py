@@ -17,6 +17,7 @@ Markings follow from the lanes and the road's own profile:
   - edge lines on marked roads, their style from the drawn width (smoothed so a section boundary does not flip it);
   - `turn:lanes` arrows near the end of a lane arriving at a junction.
 """
+import numba
 import numpy as np
 from scipy.ndimage import median_filter
 
@@ -147,28 +148,32 @@ def sight_distances(s, xy, tan, z, left, right):
     """Distance ahead (increasing s) from each sample to the first point of the road a driver cannot see: over a crest (eye and
     object SIGHT_EYE above the road) or round a bend (the line of sight passes further from the centreline than the measured
     clearance on that side). inf where the link ends first or the road is clear for SIGHT_MAX."""
+    as_float = lambda a: np.ascontiguousarray(a, dtype=np.float64)
+    return _sight(as_float(s), as_float(xy), as_float(tan), as_float(z), as_float(left), as_float(right), config.SIGHT_MAX, config.SIGHT_EYE)
+
+
+@numba.njit(cache=True)
+def _sight(s, xy, tan, z, left, right, sight_max, eye):
+    """sight_distances, sample by sample: from each eye, the points ahead in turn, narrowing the open view (the highest line of sight
+    over the road, the bearings left and right the clearances allow) until one falls outside it."""
     n = len(s)
     out = np.full(n, np.inf)
-    lo, hi, high = np.full(n, -np.inf), np.full(n, np.inf), np.full(n, -np.inf)
-    i = np.arange(n)
-    for k in range(1, n):
-        a, b = i[:n - k], i[k:]
-        alive = np.isinf(out[a]) & (s[b] - s[a] <= config.SIGHT_MAX)
-        if not alive.any():
-            break
-        a, b = a[alive], b[alive]
-        run = s[b] - s[a]
-        rise = (z[b] - z[a]) / run                                            # eye and object at the same height above the road
-        d = xy[b] - xy[a]
-        dist = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-6)
-        bearing = np.arctan2(tan[a, 0] * d[:, 1] - tan[a, 1] * d[:, 0], (tan[a] * d).sum(axis=1))     # from the eye's heading, left positive
-        blocked = (rise < high[a]) | (bearing < lo[a]) | (bearing > hi[a])
-        out[a[blocked]] = run[blocked]
-        clear = ~blocked
-        a, b, run, dist, bearing = a[clear], b[clear], run[clear], dist[clear], bearing[clear]
-        high[a] = np.maximum(high[a], (z[b] - config.SIGHT_EYE - z[a]) / run)
-        lo[a] = np.maximum(lo[a], bearing - np.arcsin(np.clip(right[b] / dist, 0.0, 1.0)))
-        hi[a] = np.minimum(hi[a], bearing + np.arcsin(np.clip(left[b] / dist, 0.0, 1.0)))
+    for a in range(n):
+        lo, hi, high = -np.inf, np.inf, -np.inf
+        for b in range(a + 1, n):
+            run = s[b] - s[a]
+            if run > sight_max:
+                break                                                       # s only grows: every later point is further
+            rise = (z[b] - z[a]) / run                                      # eye and object at the same height above the road
+            d0, d1 = xy[b, 0] - xy[a, 0], xy[b, 1] - xy[a, 1]
+            dist = max(np.hypot(d0, d1), 1e-6)
+            bearing = np.arctan2(tan[a, 0] * d1 - tan[a, 1] * d0, tan[a, 0] * d0 + tan[a, 1] * d1)     # from the eye's heading, left positive
+            if rise < high or bearing < lo or bearing > hi:
+                out[a] = run
+                break
+            high = max(high, (z[b] - eye - z[a]) / run)
+            lo = max(lo, bearing - np.arcsin(min(max(right[b] / dist, 0.0), 1.0)))
+            hi = min(hi, bearing + np.arcsin(min(max(left[b] / dist, 0.0), 1.0)))
     return out
 
 
