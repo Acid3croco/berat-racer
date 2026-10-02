@@ -141,11 +141,14 @@ def open_edges(tris):
 def check(world, every=1):
     world = Path(world)
     info = json.loads((world / "world.json").read_text())
-    files = sorted((world / "chunks").glob("m_*"))[::every]
+    files = sorted((world / "chunks").glob("m_*"), key=lambda f: tuple(map(int, f.name[2:-7].split("_"))))[::every]     # column by column
     cache = {}
 
     def load(ci, cj):
         if (ci, cj) not in cache:
+            if len(cache) > 600:                                        # the three columns of chunks in use: bounded on any map
+                for key in [k for k in cache if abs(k[0] - ci) > 1]:
+                    del cache[key]
             p = world / "chunks" / f"m_{ci}_{cj}.bin.gz"
             if not p.exists():
                 cache[(ci, cj)] = None
