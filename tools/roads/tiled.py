@@ -27,6 +27,7 @@ import numpy as np
 import zstandard
 from scipy.spatial import cKDTree
 
+import rasters
 import sources
 from rasters import BIG, HALF, SECTOR
 
@@ -34,7 +35,7 @@ from . import alignment, config, graph as graph_stage, osm, source
 from .digest import code_stamp, digest
 
 TILE = SECTOR
-WORKER_TASKS = 10                 # a worker process is replaced after this many tiles: its memory is what a tile needs, not what piled up
+WORKER_TASKS = 10                 # tiles per worker before the pool is renewed: its memory is what a tile needs, not what piled up
 ALIGN_HALO = 1600.0               # m: how far a tile reads the sections around it for the alignment
 
 
@@ -238,7 +239,7 @@ def align_tile(job):
     # what the tiles of earlier rounds already made
     earlier = sorted(o for o in {owner_part[k] for k in range(len(parts))} | set(node_owner) if colour(o) < colour(t) and o in area.tile_set)
     done = {o: read_pickle(tile_file(area.tag, "align", o)) for o in earlier}
-    made_from = digest(parts, [done[o]["key"] for o in earlier], code_stamp(alignment, graph_stage, source, osm, sys.modules[__name__]), [t, colour(t)])
+    made_from = digest(parts, [done[o]["content"] for o in earlier], align_code(), [t, colour(t)])
     if not fresh and path.exists() and read_pickle(path)["key"] == made_from:
         return dict(tile=t, reused=True, seconds=round(time.time() - clock, 2))
     frozen, moved = alignment.round_roundabouts(graph)                  # on the surveyed lines: a ring a neighbour rounded comes out the same
@@ -265,21 +266,30 @@ def align_tile(job):
     through = [((part_key(parts[a[0]]), a[1]), (part_key(parts[b[0]]), b[1])) for a, b in graph.through.items()
                if node_owner[graph.node_of(a)] == t and a < b]
     ends = {part_key(parts[k]): (keys[parts[k].a], keys[parts[k].b]) for k in mine}
-    write_pickle(path, dict(key=made_from, edges=out_edges, nodes=out_nodes, through=through, ends=ends))
+    write_pickle(path, dict(key=made_from, content=digest(out_edges, out_nodes, through, ends), edges=out_edges, nodes=out_nodes, through=through, ends=ends))
     return dict(tile=t, parts=len(mine), nodes=len(out_nodes), strokes_reused=kept.reused, worst_bound_ratio=round(worst, 3),
                 seconds=round(time.time() - clock, 2))
+
+
+def run_batched(function, area, tiles, jobs, fresh):
+    """`function((area, tile, fresh))` for the tiles, side by side, in fresh worker processes every jobs x WORKER_TASKS tiles (a long-lived
+    worker piles memory up; max_tasks_per_child hangs the pool when many tasks are queued)."""
+    stats = []
+    step = jobs * WORKER_TASKS
+    for start in range(0, len(tiles), step):
+        with ProcessPoolExecutor(jobs) as pool:
+            for f in as_completed([pool.submit(function, (area, t, fresh)) for t in tiles[start:start + step]]):
+                stats.append(f.result())
+    return stats
 
 
 def run_rounds(function, area, jobs, fresh, log, label):
     """`function((area, tile, fresh))` for every tile of the area, in four rounds of non-touching tiles."""
     stats = []
-    with ProcessPoolExecutor(jobs, max_tasks_per_child=WORKER_TASKS) as pool:
-        for c in range(4):
-            batch = [t for t in area.tiles if colour(t) == c]
-            futures = [pool.submit(function, (area, t, fresh)) for t in batch]
-            for f in as_completed(futures):
-                stats.append(f.result())
-            log(f"    {label} round {c + 1}/4: {len(batch)} tiles")
+    for c in range(4):
+        batch = [t for t in area.tiles if colour(t) == c]
+        stats += run_batched(function, area, batch, jobs, fresh)
+        log(f"    {label} round {c + 1}/4: {len(batch)} tiles")
     return stats
 
 
@@ -420,8 +430,7 @@ def network_tile(job):
         if grow <= loaded:
             break                                                        # the build area ends there
         loaded |= grow
-    inputs = digest(sorted(read_pickle(tile_file(area.tag, "align", o))["key"] for o in sorted(loaded & area.tile_set)),
-                    code_stamp(junction_stage, geometry, crossing, graph_stage, sys.modules[__name__]), [t])
+    inputs = digest([read_pickle(tile_file(area.tag, "align", o))["content"] for o in sorted(loaded & area.tile_set)], network_code(), [t])
     path = tile_file(area.tag, "network", t)
     if not fresh and path.exists() and read_pickle(path)["key"] == inputs:
         return dict(tile=t, reused=True, seconds=round(time.time() - clock, 2))
@@ -478,7 +487,7 @@ def network_tile(job):
     # links of other tiles passing near this one (a long link owned far away), for the passes that look around a tile
     far = {lkey[k]: owner[k] for k, link in enumerate(links) if link.whole and abs(owner[k][0] - t[0]) + abs(owner[k][1] - t[1]) > 0
            and max(abs(owner[k][0] - t[0]), abs(owner[k][1] - t[1])) > 1 and Near(rect(t), [])(link.dense_xy, config.PROFILE_HALO)}
-    write_pickle(path, dict(key=inputs, links=out_links, junctions=out_junctions, edges=out_edges, far=far,
+    write_pickle(path, dict(key=inputs, content=digest(out_links, out_junctions, out_edges, far), links=out_links, junctions=out_junctions, edges=out_edges, far=far,
                             nodes={keys[n]: graph.nodes[n] for n in {n for k in owned for n in links[k].nodes} | {n for i in mine_j for n in junctions[i].nodes}}))
     return dict(tile=t, links=len(out_links), junctions=len(out_junctions), invalid=sum(not j.valid for j in out_junctions.values()), narrowed=narrowed,
                 swallowed=sum(link.internal for link in out_links.values()), loaded=len(loaded), **{f"crossing_{k}": v for k, v in crossed.items()},
@@ -487,10 +496,7 @@ def network_tile(job):
 
 def run_all(function, area, jobs, fresh, log, label):
     """`function((area, tile, fresh))` for every tile of the area, side by side."""
-    stats = []
-    with ProcessPoolExecutor(jobs, max_tasks_per_child=WORKER_TASKS) as pool:
-        for f in as_completed([pool.submit(function, (area, t, fresh)) for t in area.tiles]):
-            stats.append(f.result())
+    stats = run_batched(function, area, area.tiles, jobs, fresh)
     log(f"    {label}: {len(stats)} tiles")
     return stats
 
@@ -605,12 +611,10 @@ def profile_tile(job):
     p = (t[0] - 5, t[1] - 5)                                             # profile.py numbers tiles from the local origin
     lindex = {link.key: k for k, link in enumerate(network.links)}
     jindex = {j.key: i for i, j in enumerate(network.junctions)}
-    inputs = []
     for o in sorted({(t[0] + di, t[1] + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1)} & area.tile_set):
         if colour(o) >= colour(t):
             continue
         done = read_pickle(tile_file(area.tag, "profile", o))
-        inputs.append(done["key"])
         for key, (idx, z, tilt, _) in done["links"].items():
             if key in lindex:
                 k = lindex[key]
@@ -619,7 +623,7 @@ def profile_tile(job):
             if key in jindex:
                 known_plane[jindex[key]] = plane
     block = profile.make_block(samples, p, known_z, known_plane, known_t)
-    key = digest(profile.block_key(block), inputs)
+    key = digest(profile.block_key(block), code_stamp(Records, assemble, profile_tile))
     path = tile_file(area.tag, "profile", t)
     if not fresh and path.exists():
         done = read_pickle(path)
@@ -635,7 +639,7 @@ def profile_tile(job):
         out_links[network.links[k].key] = (ids[m] - samples.offsets[k], z[m], tilt[m], ground[m])
     mine = (samples.junction_tile[block["junctions"]] == np.array(p)).all(axis=1) if len(block["junctions"]) else np.zeros(0, bool)
     planes = {network.junctions[i].key: result["planes"][b] for b, i in enumerate(block["junctions"]) if mine[b]}
-    write_pickle(path, dict(key=key, links=out_links, planes=planes, status=result["status"]))
+    write_pickle(path, dict(key=key, content=digest(out_links, planes), links=out_links, planes=planes, status=result["status"]))
     return dict(tile=t, samples=int(own.sum()), status=result["status"], seconds=round(time.time() - clock, 2))
 
 
@@ -651,9 +655,10 @@ def tile_code(area, t):
     return (t[0] - x0) + width * (t[1] - z0)
 
 
-def heights(area, links, junctions):
-    """({link key: (z, tilt, ground)} for the links whose every sample has a height, {junction key: plane})."""
-    files = {}
+def heights(area, links, junctions, files=None):
+    """({link key: (z, tilt, ground)} for the links whose every sample has a height, {junction key: plane}). `files`: a dict that
+    keeps the profile files read (tile -> content)."""
+    files = {} if files is None else files
 
     def done(o):
         if o not in files:
@@ -689,7 +694,17 @@ def surface_tile(job):
     clock = time.time()
     records = Records(area)
     links, junctions = records.around(t)
-    z, planes = heights(area, links, junctions)
+    profiles = {}
+    z, planes = heights(area, links, junctions, profiles)
+    window = sorted({(t[0] + di, t[1] + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1)})
+    lo, hi = np.array(rect(t)[:2]) - TILE, np.array(rect(t)[2:]) + TILE               # the rasters the sight distances may read
+    terrain = rasters.stamp(lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1], kinds=("mnt", "mnh"))
+    made_from = digest([f.get("content") for _, f in sorted(records.files.items())], [f.get("content") for _, f in sorted(profiles.items())],
+                       [(k, w, sources.stamp(k, *w)) for k in ("osm_controls", "osm_restrictions", "non_communication") for w in window],
+                       terrain, surface_code(), [t, tile_code(area, t)])
+    path = tile_file(area.tag, "surface", t)
+    if not fresh and path.exists() and read_pickle(path).get("key") == made_from:
+        return dict(tile=t, reused=True, seconds=round(time.time() - clock, 2))
     links = {k: v for k, v in links.items() if k in z}
     network = assemble(area, links, junctions, records.edges(links, junctions), (z, planes))
     own_l = [k for k, link in enumerate(network.links) if link.owner == t]
@@ -707,7 +722,6 @@ def surface_tile(job):
         if k not in need:
             link.lanes = None
     stats = lanes.layout_all([network.links[k] for k in sorted(need)], network.edges)
-    window = sorted({(t[0] + di, t[1] + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1)})
     elements, elements_stats = lanegraph.build(network, controls_stage.load(window), connect)
     # numbering: what each element belongs to, and its rank among the elements made for it
     kinds = {"link": network.links, "junction": network.junctions}
@@ -735,6 +749,7 @@ def surface_tile(job):
     pieces = surface.pieces(network, own_l)
     for p in pieces:
         p.link = network.links[p.link].key
+    seal_mouths(network, [i for i, j in enumerate(network.junctions) if j.owner == t])
     meshes = surface.junction_meshes(network, [i for i, j in enumerate(network.junctions) if j.owner == t])
     mine_j = [i for i, j in enumerate(network.junctions) if j.owner == t]
     names = {lanegraph.LANE: "lanes", lanegraph.CHANGE: "changes", lanegraph.CONNECTOR: "connectors", lanegraph.UTURN: "uturns"}
@@ -745,15 +760,44 @@ def surface_tile(job):
                        controls={name: sum(1 for e in out if e.kind == lanegraph.CONNECTOR and e.control == c) for c, name in enumerate(lanegraph.CONTROL_NAMES)})
     report = dict(surface=metrics.surface_parts(network, set(own_l), set(mine_j)), classes=metrics.profile_parts(network, own_l, mine_j),
                   lanes=stats, lanegraph=graph_stats)
-    write_pickle(tile_file(area.tag, "surface", t), dict(pieces=pieces, meshes=meshes, elements=out, report=report))
+    write_pickle(path, dict(key=made_from, pieces=pieces, meshes=meshes, elements=out, report=report))
     write_pickle(tile_file(area.tag, "ids", t), ids)
     return dict(tile=t, pieces=len(pieces), meshes=len(meshes), elements=len(out), seconds=round(time.time() - clock, 2))
+
+
+def seal_mouths(network, which):
+    """Put the mouth corners of these junctions exactly on the edge points of their arms' links as the links' owners made them. A
+    junction's owner outlined it with its own copy of a link owned by another tile, which can differ in the last digits (a few
+    millimetres; more where the copy's far end saw another neighbourhood): the road would not end on the junction's vertices."""
+    from . import junction as junction_stage
+    for i in which:
+        j = network.junctions[i]
+        if j.vertices is None or j.boundary is None:
+            continue
+        corners = [junction_stage.mouth_corners(network.links[a.link], a) for a in j.arms if a.link >= 0 and not a.swallowed]
+        if not corners:
+            continue
+        v = j.vertices.copy()
+        for a, b in j.boundary[j.boundary[:, 2] == 1][:, :2]:
+            miss = [float(np.hypot(*(v[a] - right)) + np.hypot(*(v[b] - left))) for right, left in corners]
+            k = int(np.argmin(miss))
+            if miss[k] < 4.0:
+                v[a], v[b] = corners[k]
+        j.vertices = v
+
+
+NUMBER_REACH = 2                  # tiles: an element refers to elements of tiles at most this far (connectors at its links' ends)
 
 
 def number_tile(job):
     """Pass 4b: the references of a tile's elements to elements of other tiles, from what they belong to to their numbers."""
     area, t, fresh = job
     path = tile_file(area.tag, "surface", t)
+    near = sorted({(t[0] + di, t[1] + dj) for di in range(-NUMBER_REACH, NUMBER_REACH + 1) for dj in range(-NUMBER_REACH, NUMBER_REACH + 1)} & area.tile_set)
+    made_from = digest(sources.content_hash(path), [sources.content_hash(tile_file(area.tag, "ids", o)) for o in near], code_stamp(number_tile))
+    out_path = tile_file(area.tag, "lanes", t)
+    if not fresh and out_path.exists() and read_pickle(out_path).get("key") == made_from:
+        return dict(tile=t, reused=True, unresolved=read_pickle(out_path)["unresolved"])
     done = read_pickle(path)
     ids, files = dict(read_pickle(tile_file(area.tag, "ids", t))), {}
     missing = 0
@@ -763,7 +807,7 @@ def number_tile(job):
         if s is None:
             return -1
         if s not in ids:
-            for o in sorted({(t[0] + di, t[1] + dj) for di in (-2, -1, 0, 1, 2) for dj in (-2, -1, 0, 1, 2)} & area.tile_set):
+            for o in near:
                 if o not in files:
                     files[o] = read_pickle(tile_file(area.tag, "ids", o))
                 if s in files[o]:
@@ -780,9 +824,23 @@ def number_tile(job):
         e.left, e.right = -1 if e.left is None else e.left, -1 if e.right is None else e.right
     report = done["report"]
     report["lanegraph"]["no_exit"] = sum(1 for e in done["elements"] if not e.succ)
-    write_pickle(tile_file(area.tag, "lanes", t), dict(pieces=done["pieces"], meshes=done["meshes"], elements=done["elements"], report=report))
-    path.unlink()                                                        # the lanes file holds all of it now
+    write_pickle(out_path, dict(key=made_from, unresolved=missing, pieces=done["pieces"], meshes=done["meshes"], elements=done["elements"], report=report))
     return dict(tile=t, unresolved=missing)
+
+
+def align_code():
+    return code_stamp(alignment, graph_stage, source, osm, border_cuts, part_tile, split_edges, part_key, node_key, split_graph, load_edges, align_tile)
+
+
+def network_code():
+    from . import crossing, geometry, junction as junction_stage, lanes
+    return code_stamp(junction_stage, geometry, crossing, graph_stage, lanes, load_aligned, network_graph, link_key, link_owner, junction_owner,
+                      junction_key, Near, network_tile)
+
+
+def surface_code():
+    from . import controls, lanegraph, lanes, metrics, surface
+    return code_stamp(controls, lanegraph, lanes, metrics, surface, Records, assemble, heights, seal_mouths, tile_code, surface_tile)
 
 
 # ---------------------------------------------------------------- the build
