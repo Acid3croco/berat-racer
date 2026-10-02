@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 
 from fetch import CX, CY
-from rasters import BIG, HALF, SECTOR
-from vec_io import exists_vec, read_vec
+from rasters import HALF, SECTOR
+import sources
 
 from . import config
 
@@ -158,15 +158,7 @@ def area_of(sectors, margin):
 
 def load_features(sectors):
     """Raw BD TOPO road features of the sectors and their neighbours, de-duplicated on `cleabs`."""
-    seen = {}
-    wanted = {(i + di, j + dj) for i, j in sectors for di in (-1, 0, 1) for dj in (-1, 0, 1)}
-    for i, j in sorted(wanted):
-        base = BIG / "vec" / f"roads_{i}_{j}"
-        if not exists_vec(base):
-            continue
-        for feature in read_vec(base):
-            seen.setdefault(feature["properties"]["cleabs"], feature)
-    return list(seen.values())
+    return sources.read_tiles("roads", sources.window(sectors))
 
 
 def load_overrides(path=OVERRIDES):

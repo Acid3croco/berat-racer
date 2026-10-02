@@ -264,18 +264,12 @@ def _mesh_corners(rows, cols, x0, z0, cell, p):
     a, b, c, e = (iz, ix), (iz + 1, ix), (iz, ix + 1), (iz + 1, ix + 1)
     upper_even = tz >= tx                                  # even cells: triangles (a, b, e) and (a, e, c)
     lower_odd = tx + tz <= 1                               # odd cells: triangles (a, b, c) and (c, b, e)
-    rr = np.empty((3, len(p)), int)
-    cc = np.empty((3, len(p)), int)
-    ww = np.empty((3, len(p)))
-
-    def put(mask, corners, weights):
-        for k, (corner, w) in enumerate(zip(corners, weights)):
-            rr[k, mask], cc[k, mask], ww[k, mask] = corner[0][mask], corner[1][mask], w[mask]
-
-    put(even & upper_even, (a, b, e), (1 - tz, tz - tx, tx))
-    put(even & ~upper_even, (a, c, e), (1 - tx, tx - tz, tz))
-    put(~even & lower_odd, (a, c, b), (1 - tx - tz, tx, tz))
-    put(~even & ~lower_odd, (e, b, c), (tx + tz - 1, 1 - tx, 1 - tz))
+    cases = [even & upper_even, even & ~upper_even, ~even & lower_odd]          # the fourth: odd, upper
+    corners = [(a, b, e), (a, c, e), (a, c, b), (e, b, c)]
+    weights = [(1 - tz, tz - tx, tx), (1 - tx, tx - tz, tz), (1 - tx - tz, tx, tz), (tx + tz - 1, 1 - tx, 1 - tz)]
+    rr = np.stack([np.select(cases, [k[n][0] for k in corners[:3]], corners[3][n][0]) for n in range(3)])
+    cc = np.stack([np.select(cases, [k[n][1] for k in corners[:3]], corners[3][n][1]) for n in range(3)])
+    ww = np.stack([np.select(cases, [w[n] for w in weights[:3]], weights[3][n]) for n in range(3)])
     return rr, cc, ww
 
 

@@ -70,9 +70,11 @@ def _give_way_points(network, link):
     return out
 
 
-def pieces(network):
+def pieces(network, which=None):
+    """Road pieces of the links (`which`: their indices, None for all)."""
     out = []
-    for k, link in enumerate(network.links):
+    for k in range(len(network.links)) if which is None else which:
+        link = network.links[k]
         left, right = link.left(), link.right()
         drawn = (np.arange(len(link.s) - 1) >= link.i0) & (np.arange(len(link.s) - 1) < link.i1)
         lines = _give_way_points(network, link)
@@ -98,8 +100,9 @@ def pieces(network):
     return out
 
 
-def junction_meshes(network):
-    """[(junction, vertices (n, 3))]: plan vertices with plane heights. A mouth vertex takes the exact height of the link edge it coincides with."""
+def junction_meshes(network, which=None):
+    """[(junction, vertices (n, 3))]: plan vertices with plane heights. A mouth vertex takes the exact height of the link edge it coincides with.
+    `which`: indices of the junctions (None for all)."""
     exact = {}
     for link in network.links:
         if link.internal:
@@ -109,7 +112,7 @@ def junction_meshes(network):
             for p in (left[i], right[i]):
                 exact[(p[0], p[1])] = p[2]
     out = []
-    for junction in network.junctions:
+    for junction in network.junctions if which is None else [network.junctions[i] for i in which]:
         if junction.vertices is None or junction.plane is None:
             continue
         z = junction.height(junction.vertices)

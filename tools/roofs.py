@@ -13,14 +13,9 @@ meet there. A face is the edge's own roof plane: the edge and its nodes, which a
 their position along it. `roof()` returns the faces as triangles; a footprint the simulation cannot settle returns None (the caller
 then lays a flat roof).
 """
-import gzip
-import json
-import time
-
 import numpy as np
 
 EPS = 1e-7
-OVERPASS = "https://overpass-api.de/api/interpreter"
 OSM_SHAPES = {"flat": "flat", "gabled": "gabled", "hipped": "hipped", "pyramidal": "hipped", "half-hipped": "hipped",
               "skillion": "flat", "dome": "hipped", "round": "hipped", "mansard": "hipped", "gambrel": "gabled", "saltbox": "gabled"}
 
@@ -154,52 +149,57 @@ class Skeleton:
         return self._tidy(lav)
 
     def _next_events(self, lavs):
+        """(time to the next event, the events then): the wavefront's edges shrinking to nothing, its reflex vertices running into an
+        edge. Every pair is worked out at once; the candidates are then offered in the order of the wavefront (edge events first, then
+        split events by vertex and edge), the first of a group within 1e-7 setting the time."""
+        verts = [v for lav in lavs for v in lav]
+        starts = np.cumsum([0] + [len(lav) for lav in lavs])[:-1]
+        nxt = np.concatenate([s + (np.arange(len(lav)) + 1) % len(lav) for s, lav in zip(starts, lavs)])
+        P = np.array([v.p for v in verts])
+        W = np.array([v.w for v in verts])
+        A = np.array([v.a for v in verts])
+        B = np.array([v.b for v in verts])
+        candidates = []
+        d = P[nxt] - P                                                           # edge events
+        length = np.hypot(d[:, 0], d[:, 1])
+        unit = d / np.maximum(length, 1e-12)[:, None]
+        dw = W[nxt] - W
+        rate = np.where(length > 1e-12, dw[:, 0] * unit[:, 0] + dw[:, 1] * unit[:, 1], -1.0)
+        for i in np.flatnonzero(rate < -1e-9):
+            candidates.append((-length[i] / rate[i], ("edge", verts[i], verts[nxt[i]])))
+        da, db = self.d[A], self.d[B]                                            # split events: reflex vertices against the wavefront's edges
+        reflex = np.flatnonzero(da[:, 0] * db[:, 1] - da[:, 1] * db[:, 0] < -1e-9)
+        edges = np.flatnonzero(B == A[nxt])                                      # l -> r along edge f
+        if len(reflex) and len(edges):
+            f = B[edges]
+            nf, sf, along = self.n[f], self.speed[f], self.d[f]
+            lp = self.p0[f] + self.n[f] * self.speed[f][:, None] * self.time
+            pv, wv = P[reflex][:, None, :], W[reflex][:, None, :]
+            denom = sf[None, :] - (nf[None, :, 0] * wv[..., 0] + nf[None, :, 1] * wv[..., 1])
+            rel = pv - lp[None, :, :]
+            num = nf[None, :, 0] * rel[..., 0] + nf[None, :, 1] * rel[..., 1]
+            ok = denom > 1e-9
+            ok &= (f[None, :] != A[reflex][:, None]) & (f[None, :] != B[reflex][:, None])
+            ok &= (edges[None, :] != reflex[:, None]) & (nxt[edges][None, :] != reflex[:, None])
+            dt = np.where(ok, num / np.where(ok, denom, 1.0), -1.0)
+            ok &= dt > 1e-9
+            vi, ei = np.nonzero(ok)
+            t = dt[vi, ei][:, None]
+            hit = P[reflex[vi]] + W[reflex[vi]] * t
+            li, ri = edges[ei], nxt[edges[ei]]
+            lt, rt = P[li] + W[li] * t, P[ri] + W[ri] * t
+            al = along[ei]
+            inside = ((hit - lt) * al).sum(axis=1) >= -1e-6
+            inside &= ((rt - hit) * al).sum(axis=1) >= -1e-6
+            for k in np.flatnonzero(inside):
+                candidates.append((dt[vi[k], ei[k]], ("split", verts[reflex[vi[k]]], verts[li[k]], verts[ri[k]])))
         best, events = None, []
-
-        def offer(dt, ev):
-            nonlocal best, events
-            if dt is None or dt < -1e-9:
-                return
-            dt = max(dt, 0.0)
+        for dt, ev in candidates:
+            dt = max(float(dt), 0.0)
             if best is None or dt < best - 1e-7:
                 best, events = dt, [ev]
             elif abs(dt - best) <= 1e-7:
                 events.append(ev)
-
-        active = [(v, lav) for lav in lavs for v in lav]
-        for lav in lavs:
-            m = len(lav)
-            for i in range(m):                                                   # edge events
-                u, v = lav[i], lav[(i + 1) % m]
-                d = v.p - u.p
-                length = np.hypot(*d)
-                rate = np.dot(v.w - u.w, d / max(length, 1e-12)) if length > 1e-12 else -1.0
-                if rate < -1e-9:
-                    offer(-length / rate, ("edge", u, v))
-        for v, lav in active:                                                    # split events: reflex vertices
-            na, nb = self.n[v.a], self.n[v.b]
-            if self.d[v.a][0] * self.d[v.b][1] - self.d[v.a][1] * self.d[v.b][0] >= -1e-9:
-                continue                                                         # convex or straight
-            for lav2 in lavs:
-                m = len(lav2)
-                for i in range(m):
-                    l, r = lav2[i], lav2[(i + 1) % m]
-                    f = l.b
-                    if f != r.a or f in (v.a, v.b) or l is v or r is v:
-                        continue
-                    nf, sf = self.n[f], self.speed[f]
-                    denom = sf - np.dot(nf, v.w)
-                    if denom <= 1e-9:
-                        continue
-                    dt = (np.dot(nf, v.p - self._line_point(f))) / denom
-                    if dt <= 1e-9:
-                        continue
-                    hit = v.p + v.w * dt
-                    lt, rt = l.p + l.w * dt, r.p + r.w * dt
-                    along = self.d[f]
-                    if np.dot(hit - lt, along) < -1e-6 or np.dot(rt - hit, along) < -1e-6:
-                        continue
-                    offer(dt, ("split", v, l, r))
         return best, events
 
     def _apply(self, lavs, events):
@@ -258,9 +258,12 @@ class Skeleton:
                 out.append(None)
                 continue
             # unique nodes, ordered along the edge from its end back to its start (the face is monotone along its edge)
-            key = np.round(np.c_[pts, hs], 6)
-            _, keep = np.unique(key, axis=0, return_index=True)
-            pts, hs = pts[np.sort(keep)], hs[np.sort(keep)]
+            seen, keep = set(), []
+            for i, row in enumerate(map(tuple, np.round(np.c_[pts, hs], 6).tolist())):     # first of each, in order
+                if row not in seen:
+                    seen.add(row)
+                    keep.append(i)
+            pts, hs = pts[keep], hs[keep]
             t = (pts - self.p0[e]) @ self.d[e]
             on_edge = hs < 1e-9
             top = np.flatnonzero(~on_edge)
@@ -302,9 +305,10 @@ def _triangulate(poly2d):
     return tris
 
 
-def roof(rings, pitch, gables=None):
+def roof(rings, pitch, gables=None, keep=None):
     """Triangles of a roof over `rings` (outline counter-clockwise, holes clockwise; local metres): (t, 3, 3) points (x, north, height
-    above the eaves) and per triangle True where it is a gable wall (vertical face of an edge with speed 0). None if it fails."""
+    above the eaves) and per triangle True where it is a gable wall (vertical face of an edge with speed 0). None if it fails.
+    `keep`: a dict that receives the skeleton's faces (when no ring had to be turned round: they are the faces of `rings` as given)."""
     def signed(r):
         r = np.asarray(r, float)
         return 0.5 * np.sum(r[:, 0] * np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) * r[:, 1])
@@ -325,7 +329,10 @@ def roof(rings, pitch, gables=None):
     except (RuntimeError, StopIteration, ValueError):
         return None
     tris, wall = [], []
-    for e, face in enumerate(sk.faces_3d(pitch)):
+    faces = sk.faces_3d(pitch)
+    if keep is not None and not any(flips):
+        keep["faces"] = faces
+    for e, face in enumerate(faces):
         if face is None:
             continue
         gable = sk.speed[e] == 0.0
@@ -377,7 +384,8 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
 
     if shape == "flat" or (shape is None and rise < FLAT_RISE):
         return flat("flat")
-    hip = roof(rings, 1.0)                                                    # unit pitch: heights are the wavefront's times
+    kept = {}
+    hip = roof(rings, 1.0, keep=kept)                                         # unit pitch: heights are the wavefront's times
     if hip is None or abs(_area(hip[0]) - poly.area) > TILE_FIT * poly.area + 0.5:
         return flat("flat fallback")
     depth = float(hip[0][:, :, 2].max())
@@ -391,12 +399,14 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
     edges = [(r[i], r[(i + 1) % len(r)]) for r in rings for i in range(len(r))]
     gables = np.zeros(len(edges), bool)
     if shape != "hipped":
-        sk = Skeleton([r if k == 0 else r for k, r in enumerate(rings)])
-        try:
-            sk.run()
-            faces = sk.faces_3d(1.0)
-        except (RuntimeError, StopIteration, ValueError):
-            faces = [None] * len(edges)
+        faces = kept.get("faces")                                             # the unit-pitch hip roof's skeleton, already run
+        if faces is None:
+            sk = Skeleton(rings)
+            try:
+                sk.run()
+                faces = sk.faces_3d(1.0)
+            except (RuntimeError, StopIteration, ValueError):
+                faces = [None] * len(edges)
         for e, (a, b) in enumerate(edges):
             face = faces[e] if e < len(faces) else None
             length = float(np.hypot(*(b - a)))
@@ -414,58 +424,10 @@ def building_roof(poly, eave, rise, dsm, osm_shape=None, party=None):
     return dict(shape="gabled" if gables.any() else "hipped", tris=tris, wall=shaped[1], pitch=pitch)
 
 
-# ---------------------------------------------------------------- OSM roof tags (Overpass; the OSM database on mace has no buildings)
+# ---------------------------------------------------------------- OSM roof tags (sources.py: Overpass, the OSM database on mace has no buildings)
 
-def osm_cache(tag):
-    from rasters import BIG
-    return BIG / "osm" / f"buildings_{tag}.json.gz"
-
-
-def fetch_osm(area, tag):
-    """OSM buildings of `area` (local metres) that tag their roof or levels, with their outline: cached for `osm_buildings`."""
-    import requests
-    from pyproj import Transformer
-    from fetch import CX, CY
-    x0, z0, x1, z1 = area
-    to_wgs = Transformer.from_crs(2154, 4326, always_xy=True)
-    to_l93 = Transformer.from_crs(4326, 2154, always_xy=True)
-    lon0, lat0 = to_wgs.transform(x0 + CX, z0 + CY)
-    lon1, lat1 = to_wgs.transform(x1 + CX, z1 + CY)
-    box = f"({lat0},{lon0},{lat1},{lon1})"
-    query = f'[out:json][timeout:180];(way["building"]["roof:shape"]{box};way["building"]["building:levels"]{box};way["building"]["roof:orientation"]{box};);out tags geom;'
-    for attempt in range(6):
-        reply = requests.post(OVERPASS, data={"data": query}, timeout=300, headers={"User-Agent": "berat-racer/1.0 (hobby game, non-commercial)"})
-        if reply.ok and reply.text.lstrip().startswith("{"):
-            break
-        time.sleep(10 + 10 * attempt)
-    else:
-        raise RuntimeError(f"Overpass buildings failed: HTTP {reply.status_code}")
-    out = []
-    for way in reply.json()["elements"]:
-        pts = [to_l93.transform(g["lon"], g["lat"]) for g in way.get("geometry", [])]
-        out.append(dict(id=way["id"], tags=way.get("tags", {}), xy=[(x - CX, y - CY) for x, y in pts]))
-    path = osm_cache(tag)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt", encoding="utf-8") as fh:
-        json.dump(out, fh)
-    return path, len(out)
-
-
-def osm_buildings(tag):
-    """[(shapely polygon, tags)] of the cached OSM buildings, or []."""
+def osm_buildings(tiles):
+    """[(shapely polygon, tags)] of the OSM buildings of these tiles that tag their roof or levels, by id."""
     from shapely.geometry import Polygon
-    path = osm_cache(tag)
-    if not path.exists():
-        return []
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        return [(Polygon(b["xy"]), b["tags"]) for b in json.load(fh) if len(b["xy"]) >= 4]
-
-
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent))
-    from roads import build, source
-    list_path = sys.argv[1] if len(sys.argv) > 1 else "data/big/small_sectors.json"
-    sectors = [tuple(s) for s in json.loads(Path(list_path).read_text())["sectors"]]
-    print(fetch_osm(source.area_of(sectors, build.MARGIN), build.tag_of(list_path)))
+    import sources
+    return [(Polygon(b["xy"]), b["tags"]) for b in sorted(sources.read_tiles("osm_roofs", tiles), key=lambda b: b["id"]) if len(b["xy"]) >= 4]

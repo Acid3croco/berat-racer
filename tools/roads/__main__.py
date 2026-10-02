@@ -1,6 +1,6 @@
 """Command line of the road pipeline. Run from tools/:
 
-  uv run python -m roads fetch-osm                  download the OpenStreetMap ways, junction control and turn restrictions of the area (once; ssh to the OSM database host, Overpass, IGN WFS)
+  uv run python -m roads fetch                      fetch the source tiles the area needs and does not have yet (sources.py; `build` does it too)
   uv run python -m roads build                      run every stage, write data/big/roads/<tag>.network.pkl + .report.json, print the report
   uv run python -m roads report                     print the report of the last build
   uv run python -m roads inspect --at X,Z           plan view, height profiles and the surveyed sections around a spot (local metres)
@@ -10,13 +10,14 @@ then `uv run python build_world.py --list <same list>` puts the roads into the w
 """
 import argparse
 import json
-import time
 from pathlib import Path
 
 import numpy as np
 
 from . import build as build_stage
-from . import controls, debug, osm, source
+import sources
+
+from . import debug
 
 DEFAULT_LIST = "data/big/small_sectors.json"
 
@@ -34,40 +35,38 @@ def print_report(report):
     print("junctions ", json.dumps(report.get("classes", {}).get("junctions", {})))
 
 
-def cmd_fetch_osm(args):
+def cmd_fetch(args):
     sectors = [tuple(s) for s in json.loads(Path(args.list).read_text())["sectors"]]
-    area, tag = source.area_of(sectors, build_stage.MARGIN), build_stage.tag_of(args.list)
-    if not args.controls_only:
-        path, count = osm.fetch(area, tag)
-        print(f"{count} OSM ways -> {path}")
-    path, counts = controls.fetch(area, tag)
-    print(f"junction control {counts} -> {path}")
+    report = sources.ensure(sectors, build_stage.ROAD_KINDS)
+    print(json.dumps(report, indent=1))
+
+
+def sectors_of(args):
+    return [tuple(s) for s in json.loads(Path(args.list).read_text())["sectors"]]
 
 
 def cmd_build(args):
-    network = build_stage.build(args.list, jobs=args.jobs, fresh=args.fresh)
-    clock = time.time()
-    path = build_stage.save(network)
-    print(f"  save       {round(time.time() - clock, 1)} s")
-    print_report(network.report)
-    print(f"-> {path}")
+    report = build_stage.build(args.list, jobs=args.jobs, fresh=args.fresh)
+    print_report(report)
+    print(f"-> {build_stage.report_path(build_stage.tag_of(args.list))}")
 
 
 def cmd_report(args):
-    print_report(json.loads(build_stage.artefact_path(build_stage.tag_of(args.list)).with_suffix(".report.json").read_text()))
+    print_report(json.loads(build_stage.report_path(build_stage.tag_of(args.list)).read_text()))
 
 
 def cmd_inspect(args):
-    network = build_stage.load(build_stage.tag_of(args.list))
     centre = tuple(float(v) for v in args.at.split(","))
+    network = build_stage.load_around(build_stage.tag_of(args.list), sectors_of(args), centre)
     out = debug.ensure_dir(args.out)
-    debug.save_plan(network, centre, args.radius, out / "plan.png", raw=network.raw)
+    debug.save_plan(network, centre, args.radius, out / "plan.png")
     near = [k for k, link in enumerate(network.links) if np.hypot(*(link.xy - np.array(centre)).T).min() < args.radius]
     if near:
         debug.profile(network, near[:12], out / "profiles.png")
     for k in near:
         link = network.links[k]
-        print(f"L{k}: {link.length:.0f} m, junctions {link.junction}, trims {np.round(link.trim, 1).tolist()}{' (swallowed)' if link.internal else ''}")
+        print(f"L{link.key}: {link.length:.0f} m, junctions {[network.junctions[j].key if j >= 0 else None for j in link.junction]}, "
+              f"trims {np.round(link.trim, 1).tolist()}{' (swallowed)' if link.internal else ''}")
         for e, rev in link.chain:
             edge = network.edges[e]
             print(f"    {edge.cleabs}  {edge.nature}, {edge.klass}, width {edge.width_real:g} m (drawn {edge.width:.1f}), {edge.surface}, "
@@ -76,24 +75,28 @@ def cmd_inspect(args):
 
 
 def cmd_gallery(args):
-    network = build_stage.load(build_stage.tag_of(args.list))
-    out = debug.ensure_dir(args.out)
-    ids = [k for k, j in enumerate(network.junctions) if j.vertices is not None]
-    ids.sort(key=lambda k: -len(network.junctions[k].nodes))                 # the complicated ones first
-    for page, start in enumerate(range(0, len(ids), 48)):
-        debug.gallery(network, ids[start:start + 48], out / f"junctions_{page:02d}.png", radius=args.radius, columns=8)
-    print(f"{len(ids)} junctions -> {out}/junctions_*.png")
+    """Junction plan views, tile by tile: the junctions each tile owns, 48 per sheet, the complicated ones first."""
+    from rasters import HALF, SECTOR
+    from . import tiled
+    tag, sectors, out = build_stage.tag_of(args.list), sectors_of(args), debug.ensure_dir(args.out)
+    count = 0
+    for t in tiled.Area(tag, sectors, build_stage.MARGIN).tiles:
+        network = build_stage.load_around(tag, sectors, (-HALF + (t[0] + 0.5) * SECTOR, -HALF + (t[1] + 0.5) * SECTOR))
+        ids = [k for k, j in enumerate(network.junctions) if j.owner == t and j.vertices is not None]
+        ids.sort(key=lambda k: -len(network.junctions[k].nodes))
+        for page, start in enumerate(range(0, len(ids), 48)):
+            debug.gallery(network, ids[start:start + 48], out / f"junctions_{t[0]}_{t[1]}_{page:02d}.png", radius=args.radius, columns=8)
+        count += len(ids)
+    print(f"{count} junctions -> {out}/junctions_*.png")
 
 
 def main():
     parser = argparse.ArgumentParser(prog="python -m roads", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--list", default=DEFAULT_LIST, help="sector list json: the area to build")
     commands = parser.add_subparsers(dest="command", required=True)
-    fetch = commands.add_parser("fetch-osm")
-    fetch.add_argument("--controls-only", action="store_true", help="only junction control and turn restrictions (the ways are cached already)")
-    fetch.set_defaults(run=cmd_fetch_osm)
+    commands.add_parser("fetch").set_defaults(run=cmd_fetch)
     build = commands.add_parser("build")
-    build.add_argument("--jobs", type=int, default=6, help="worker processes (junctions, tiles of the height solve)")
+    build.add_argument("--jobs", type=int, default=0, help="worker processes (default and most: half the cores, machine.py)")
     build.add_argument("--fresh", action="store_true", help="smooth every stroke and solve every height tile again, even those whose inputs did not change")
     build.set_defaults(run=cmd_build)
     commands.add_parser("report").set_defaults(run=cmd_report)

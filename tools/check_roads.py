@@ -1,4 +1,4 @@
-"""Verify the roads of a built world (BM05 - BM07 chunks) against its terrain, the way the game sees them:
+"""Verify the roads of a built world (BM05 - BM08 chunks) against its terrain, the way the game sees them:
 
   - the 4 m terrain mesh and the 16 m one never stand above a road surface (sampled on every road quad and junction triangle; tunnels
     excepted: the terrain is over them, and closer than the headroom only where the portal cells are cut away)
@@ -79,7 +79,7 @@ def parse_mid(raw):
     """One m_ chunk: terrain grids, roads, junctions, and the counts of everything else (parsed to the last byte)."""
     r = R(raw)
     magic = r.take(4)
-    assert magic in (b"BM05", b"BM06", b"BM07"), "not a BM05 - BM07 chunk: rebuild the world with tools/build_world.py"
+    assert magic in (b"BM05", b"BM06", b"BM07", b"BM08"), "not a BM05 - BM08 chunk: rebuild the world with tools/build_world.py"
     version = int(magic[2:])
     d = dict(ci=r.i(), cj=r.i(), version=version)
     assert r.i() == CV
@@ -98,9 +98,16 @@ def parse_mid(raw):
     d["trough_list"] = [r.fl(3 * r.i()).reshape(-1, 3) for _ in range(r.i())] if version >= 6 else []     # water carried by a structure
     d["lane_list"] = read_lanes(r) if version >= 7 else []
     d["holes"] = np.frombuffer(r.take(2 * r.i()), "<u2").astype(int) if version >= 7 else np.zeros(0, int)
-    ns = r.i() if version >= 7 else 0
-    d["seam"] = r.fl(9 * ns).reshape(-1, 3, 3)                                       # x, y, z: the ground around the paved surfaces
-    d["seam_f"] = r.fl(3 * ns).reshape(-1, 3)                                        # its field weight per vertex
+    if version >= 8:                                                                 # shared vertices (x, y, z, weight), triangles of indices
+        nv = r.i()
+        v = np.stack([np.frombuffer(r.take(4 * nv), np.uint8).reshape(4, nv).T.copy().view("<f4").ravel() for _ in range(4)], axis=1)
+        nt = r.i(); width = r.u8()
+        idx = np.cumsum(np.frombuffer(r.take(width * 3 * nt), "<i2" if width == 2 else "<i4").astype(np.int64)).reshape(-1, 3)
+        d["seam"], d["seam_f"] = v[idx][:, :, :3], v[idx][:, :, 3]
+    else:
+        ns = r.i() if version >= 7 else 0
+        d["seam"] = r.fl(9 * ns).reshape(-1, 3, 3)                                   # x, y, z: the ground around the paved surfaces
+        d["seam_f"] = r.fl(3 * ns).reshape(-1, 3)                                    # its field weight per vertex
     d["bld"] = r.i()
     d["bld_list"] = []
     for _ in range(d["bld"]):
@@ -230,7 +237,13 @@ def check(world_dir):
         missing = [l["id"] for l in lanes.values() for t in l["succ"] if t not in lanes and inside(l["pts"][-1])]
         broken = [l["id"] for l in lanes.values() for t in l["succ"] if t in lanes and np.hypot(*(lanes[t]["pts"][0, [0, 2]] - l["pts"][-1, [0, 2]])) > 0.5]
         no_exit = [l["id"] for l in lanes.values() if not l["succ"] and inside(l["pts"][-1])]
-        totals["lane_graph"] = dict(elements=len(lanes), missing_successors=len(missing), broken_joins=len(broken), no_exit=len(no_exit))
+        # a lane that only turns round where junction connectors start (it should lead into them: a cross-tile join lost)
+        from scipy.spatial import cKDTree
+        starts = np.array([l["pts"][0, [0, 2]] for l in lanes.values() if l["kind"] == 2]).reshape(-1, 2)
+        tree = cKDTree(starts) if len(starts) else None
+        turned = [l["id"] for l in lanes.values() if l["kind"] == 0 and l["succ"] and all(lanes.get(t, {}).get("kind") == 3 for t in l["succ"])
+                  and tree is not None and np.isfinite(tree.query(l["pts"][-1, [0, 2]], distance_upper_bound=1.0)[0])]
+        totals["lane_graph"] = dict(elements=len(lanes), missing_successors=len(missing), broken_joins=len(broken), no_exit=len(no_exit), turned_back_at_junctions=len(turned))
     return totals
 
 
@@ -240,7 +253,8 @@ if __name__ == "__main__":
         print(f"{key:<18} {value}")
     graph = report.get("lane_graph", {})
     ok = (report["above4"] == 0 and report["above16"] == 0 and report["above_deck"] == 0 and report["loose"] == 0
-          and graph.get("missing_successors", 0) == 0 and graph.get("broken_joins", 0) == 0 and report["tunnel_blocked"] == 0)
+          and graph.get("missing_successors", 0) == 0 and graph.get("broken_joins", 0) == 0 and graph.get("turned_back_at_junctions", 0) == 0
+          and report["tunnel_blocked"] == 0)
     print("OK: no terrain above any road or bridge deck, every road end meets its junction, every lane leads on" if ok
           else "PROBLEMS: see above4 / above16 / above_deck / loose / lane_graph / tunnel_blocked")
     sys.exit(0 if ok else 1)

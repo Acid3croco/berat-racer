@@ -1,4 +1,4 @@
-"""What covers the ground, per 4 m terrain vertex, and the dressing that goes with it (fetch_ground.py gets the data).
+"""What covers the ground, per 4 m terrain vertex, and the dressing that goes with it (sources.py gets the data).
 
   class       per vertex, from the most specific source that says something: OSM / BD TOPO areas that name a use (car park, vineyard,
               orchard, cemetery, pitch, farmyard, wood, scrub) > the RPG crop of the declared parcel > OSM generic land use (residential,
@@ -17,12 +17,8 @@
   hedges      BD Haie lines where the LiDAR still sees vegetation; their height from it (HEDGE_HEIGHT), shrubs on them dropped
   tree kind   per LiDAR tree, from the vegetation zone it stands in: broadleaf, conifer, poplar, fruit (orchards), else unknown (hash)
 """
-import gzip
 import io
-import json
 import zlib
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
 import shapely
@@ -69,14 +65,9 @@ PARK_STEP = 3.0               # m between the vertices of a car park's surface
 PARK_LIFT = 0.06              # m over the terrain it covers
 PARK_SMOOTH = 4               # rounds of neighbour averaging of its heights
 HEDGE_STEP = 4.0
-WMS = "https://data.geopf.fr/wms-r/wms"
 BROADLEAF, CONIFER, POPLAR, FRUIT = 1, 2, 3, 4
 TREE_KINDS = {"Forêt fermée de feuillus": BROADLEAF, "Forêt ouverte": BROADLEAF, "Bois": BROADLEAF, "Forêt fermée de conifères": CONIFER,
               "Peupleraie": POPLAR, "Verger": FRUIT}
-
-
-def rpg_codes(vec_dir):
-    return {c["code_culture"]: c["libelle_groupe_culture"] for c in json.loads((Path(vec_dir) / "rpg_codes.json").read_text())}
 
 
 def rpg_class(props, codes):
@@ -102,50 +93,19 @@ def long_axis(poly):
     return float(np.arctan2(e[1], e[0]) % np.pi)
 
 
-def measure_rows(cx, cy):
-    """(direction of the rows in radians 0 .. pi, coherence) on the 20 cm orthophoto around a Lambert-93 point."""
-    import requests
+def measure_rows(cx, cy, get):
+    """(direction of the rows in radians 0 .. pi, coherence) on the 20 cm orthophoto around a Lambert-93 point. `get(params)`: the
+    WMS image bytes (sources.py fetches politely)."""
     from PIL import Image
     from scipy.ndimage import gaussian_filter, sobel
     h = ROW_CROP_HALF
     params = dict(SERVICE="WMS", VERSION="1.3.0", REQUEST="GetMap", STYLES="", CRS="EPSG:2154", LAYERS="ORTHOIMAGERY.ORTHOPHOTOS",
                   BBOX=f"{cx - h},{cy - h},{cx + h},{cy + h}", WIDTH=250, HEIGHT=250, FORMAT="image/jpeg")
-    for attempt in range(4):
-        try:
-            reply = requests.get(WMS, params=params, timeout=60)
-            reply.raise_for_status()
-            img = np.asarray(Image.open(io.BytesIO(reply.content)).convert("L"), float)
-            break
-        except Exception:
-            if attempt == 3:
-                raise
+    img = np.asarray(Image.open(io.BytesIO(get(params))).convert("L"), float)
     gx, gy = sobel(img, 1), -sobel(img, 0)                                              # image rows run south
     jxx, jyy, jxy = (float(gaussian_filter(a, 4).mean()) for a in (gx * gx, gy * gy, gx * gy))
     gradient = 0.5 * np.arctan2(2 * jxy, jxx - jyy)
     return float((gradient + np.pi / 2) % np.pi), float(np.hypot(jxx - jyy, 2 * jxy) / (jxx + jyy + 1e-9))
-
-
-def rows_path(big, tag):
-    return Path(big) / "vec" / f"rows_{tag}.json.gz"
-
-
-def measure_all(parcels, path, threads=6):
-    """Measure the rows of every rowed parcel of ROW_SAMPLE_AREA or more not measured yet; cache {id: [radians, coherence]}."""
-    from fetch import CX, CY
-    done = json.loads(gzip.open(path).read()) if path.exists() else {}
-    todo = [(pid, poly) for pid, poly in parcels if pid not in done and poly.area >= ROW_SAMPLE_AREA]
-    def one(item):
-        pid, poly = item
-        inner = poly.buffer(-10)
-        p = (inner if not inner.is_empty else poly).representative_point()
-        return pid, measure_rows(p.x + CX, p.y + CY)
-    with ThreadPoolExecutor(threads) as pool:
-        for pid, value in pool.map(one, todo):
-            done[pid] = list(value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt") as fh:
-        json.dump(done, fh)
-    return done
 
 
 def row_angle(pid, poly, measured):
@@ -157,7 +117,7 @@ def row_angle(pid, poly, measured):
 
 def areas(load, osm_feats, local, codes, measured):
     """[(polygon, class, rank, row angle or None, id, measured)] of every source, in local metres. `load(name)`: the sector's features
-    of a fetch_ground layer; `local(geometry)`: to local coordinates."""
+    of a ground layer (sources.py); `local(geometry)`: to local coordinates."""
     out = []
     def polys(g):
         return [g] if g.geom_type == "Polygon" else [q for q in getattr(g, "geoms", []) if q.geom_type == "Polygon"]
@@ -292,21 +252,35 @@ def parking_surfaces(area_list, road_polygons, stats=None):
     if not parks:
         return []
     merged = shapely.union_all(parks).buffer(0)
-    roads = shapely.union_all(road_polygons) if road_polygons else None
-    has_roads = roads is not None and not roads.is_empty
     road_tree = shapely.STRtree(road_polygons) if road_polygons else None
-    if has_roads:
+
+    def roads_near(geometry, reach=0.0, skip=()):
+        """Union of the road polygons within `reach` of a geometry (the rest cannot change the answer there)."""
+        if road_tree is None:
+            return Polygon()
+        near = road_tree.query(geometry, predicate="dwithin", distance=reach) if reach > 0 else road_tree.query(geometry, predicate="intersects")
+        return shapely.union_all([road_polygons[k] for k in sorted(near) if k not in skip])
+    roads = roads_near(merged)
+    if not roads.is_empty:
         merged = merged.difference(roads)
     pieces = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "Polygon" and g.area >= PARK_MIN_AREA]
+    touching = [set() for _ in pieces]                                                 # per car park, the road pieces within ACCESS_OTHER
+    if road_tree is not None and pieces:
+        for j, k in zip(*road_tree.query(shapely.buffer(np.array(pieces, dtype=object), ACCESS_OTHER), predicate="intersects").tolist()):
+            touching[j].add(k)
+    by_count = {}
+    for t in touching:
+        for k in t:
+            by_count[k] = by_count.get(k, 0) + 1
     out = []
     for i, q in enumerate(pieces):
-        if has_roads and q.exterior.intersection(roads.buffer(0.5)).length < ACCESS_TOUCH:
-            others = shapely.union_all([p for j, p in enumerate(pieces) if j != i]).buffer(ACCESS_OTHER)      # a road piece touching another
-            aisles = set(road_tree.query(others, predicate="intersects").tolist()) if not others.is_empty else set()   # car park is its aisle
-            public = shapely.union_all([p for k, p in enumerate(road_polygons) if k not in aisles])
+        nearby = roads_near(q, ACCESS_MAX + 1.0)
+        if road_tree is not None and q.exterior.intersection(nearby.buffer(0.5)).length < ACCESS_TOUCH:
+            aisles = {k for k, n in by_count.items() if n - (k in touching[i]) > 0}       # a road piece touching another car park is its aisle
+            public = roads_near(q, ACCESS_MAX + 1.0, aisles)
             gap = q.distance(public) if not public.is_empty else np.inf
             if gap > ACCESS_MAX:                                                       # only aisles nearby: a shared aisle is the way in
-                public, gap = roads, q.distance(roads)
+                public, gap = nearby, (q.distance(nearby) if not nearby.is_empty else np.inf)
             if gap <= ACCESS_MAX:
                 a, b = nearest_points(q, public)
                 if stats is not None:
@@ -314,7 +288,7 @@ def parking_surfaces(area_list, road_polygons, stats=None):
                 d = np.array(b.coords[0]) - a.coords[0]
                 d = d / max(np.hypot(*d), 1e-9)
                 way = LineString([np.array(a.coords[0]) - d * 2.0, np.array(b.coords[0]) + d * 1.0]).buffer(ACCESS_WIDTH / 2, cap_style="flat")
-                joined = q.union(way).difference(roads)
+                joined = q.union(way).difference(roads_near(q.union(way)))
                 q = max(getattr(joined, "geoms", [joined]), key=lambda g: g.area)
                 if stats is not None:
                     stats["entrances"] = stats.get("entrances", 0) + 1
@@ -343,12 +317,12 @@ def parking_mesh(poly, height):
     if len(xy) < 3:
         return np.zeros((0, 3)), np.zeros((0, 3), int)
     tri = Delaunay(xy).simplices
-    mid = xy[tri].mean(axis=1)
-    keep = shapely.contains_xy(poly.buffer(0.05), mid[:, 0], mid[:, 1])
-    for k in range(3):                                                          # an edge midpoint outside: the triangle spans a notch
-        m = 0.5 * (xy[tri[:, k]] + xy[tri[:, (k + 1) % 3]])
-        keep &= shapely.contains_xy(poly.buffer(0.05), m[:, 0], m[:, 1])
-    tri = tri[keep]
+    inside = poly.buffer(0.05)
+    shapely.prepare(inside)
+    keep = shapely.within(shapely.polygons(xy[tri]), inside)                  # a triangle reaching out of the outline spans a notch
+    a, b, c = xy[tri[:, 0]], xy[tri[:, 1]], xy[tri[:, 2]]                      # (its edge passes by the notch's points: the ground and the
+    keep &= np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) > 1e-9     # park would not
+    tri = tri[keep]                                                            # meet); qhull's flat triangles cover nothing
     y = height(xy) + PARK_LIFT
     nbr = [[] for _ in range(len(xy))]
     for a, b, c in tri:

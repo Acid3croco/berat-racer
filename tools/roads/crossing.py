@@ -46,6 +46,8 @@ def crossings(links):
     """[(link, segment, link, segment, (x, north))] of every place where the drawn parts of two links cross."""
     drawn = [k for k, link in enumerate(links) if not link.internal and link.i1 > link.i0]
     lines = [LineString(links[k].xy[links[k].i0:links[k].i1 + 1]) for k in drawn]
+    if not lines:
+        return []
     first, second = shapely.STRtree(lines).query(lines, predicate="crosses")
     out = []
     for a, b in zip(first, second):

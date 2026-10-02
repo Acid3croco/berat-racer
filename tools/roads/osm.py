@@ -1,39 +1,21 @@
-"""OpenStreetMap road attributes, from the osm2pgsql database of the massif-extractor server (read-only, over ssh).
+"""OpenStreetMap road attributes, from the osm2pgsql database of the massif-extractor server (read-only, over ssh; tiles of sources.py).
 
-`fetch` caches the ways of an area as one gzip JSON file; `enrich` matches each BD TOPO edge to the OSM way lying on it and copies
+`load` reads the ways of an area's tiles; `enrich` matches each BD TOPO edge to the OSM way lying on it and copies
 the attributes OSM knows better: surface / track grade, posted speed limit (per direction, French zone codes included), an explicit
 one-way tag, lighting, and lanes / width / name where BD TOPO has none. `level` reads the way's bridge / tunnel / layer / cutting /
 covered tags for `crossing.py`.
 """
-import gzip
-import json
-import os
 import re
-import subprocess
 
 import numpy as np
 import shapely
 from shapely.geometry import LineString
 
 from fetch import CX, CY
-from rasters import BIG
+import sources
 
 from . import config
 from .source import drawn_width
-
-SSH_HOST = os.environ.get("BERAT_OSM_SSH", "mace")
-PSQL = ('PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=300000" '
-        "psql -w -h localhost -p 5411 -U osm_user osm_db -At")
-DRIVABLE = ("motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link",
-            "unclassified", "residential", "living_street", "service", "track", "road")
-QUERY = """
-copy (
-  select json_build_object('id', osm_id, 'highway', highway, 'surface', surface, 'name', name, 'ref', ref, 'tags', hstore_to_json(tags),
-                           'xy', ST_AsGeoJSON(ST_Transform(way, 2154), 2)::json->'coordinates')
-  from planet_osm_line
-  where highway in ({classes}) and way && ST_Transform(ST_MakeEnvelope({x0}, {y0}, {x1}, {y1}, 2154), 4326)
-) to stdout;
-"""
 
 MATCH_DISTANCE = 9.0              # an OSM way further than this from a BD TOPO edge is another road
 MATCH_ANGLE = 30.0                # degrees between the two centrelines
@@ -46,31 +28,9 @@ LIMIT_KEYS = ("maxspeed", "zone:maxspeed", "maxspeed:type", "source:maxspeed")  
 ONEWAY_YES, ONEWAY_REVERSED = {"yes", "true", "1"}, {"-1", "reverse"}
 
 
-def cache_path(tag):
-    return BIG / "osm" / f"roads_{tag}.json.gz"
-
-
-def fetch(area, tag):
-    """Download the drivable OSM ways of `area` (x0, z0, x1, z1 in local metres) into the cache. Returns the path."""
-    x0, z0, x1, z1 = area
-    sql = QUERY.format(classes=", ".join(f"'{c}'" for c in DRIVABLE), x0=x0 + CX, y0=z0 + CY, x1=x1 + CX, y1=z1 + CY)
-    done = subprocess.run(["ssh", "-o", "BatchMode=yes", SSH_HOST, PSQL], input=sql, capture_output=True, text=True, timeout=600)
-    if done.returncode != 0 or done.stderr.strip():
-        raise RuntimeError(f"OSM fetch failed: {done.stderr.strip()[:400]}")
-    ways = [json.loads(line.replace("\\\\", "\\")) for line in done.stdout.splitlines() if line.strip()]
-    path = cache_path(tag)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt", encoding="utf-8") as fh:
-        json.dump(ways, fh)
-    return path, len(ways)
-
-
-def load(tag):
-    path = cache_path(tag)
-    if not path.exists():
-        return None
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        return json.load(fh)
+def load(tiles):
+    """The OSM drivable ways of these tiles (sources.py), by id."""
+    return sorted(sources.read_tiles("osm_roads", tiles), key=lambda w: w["id"])
 
 
 def _speed(text):

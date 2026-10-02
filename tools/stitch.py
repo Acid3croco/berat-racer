@@ -28,17 +28,32 @@ from roads import config
 from roads.terrain import smoothstep
 
 SNAP = 0.01            # m: a fill point this close to a paved outline takes the paved height
-FILL_STEP = 2.0        # m between the fill's inner points
+FILL_STEP = 4.0        # m between the fill's inner points: the 4 m cell itself (a finer grid only adds slivers where it meets a kerb)
 NEIGHBOURS = 16        # edge samples blended at each point
 SAMPLE_STEP = 1.0      # m between edge samples
+BLOCK = 32.0           # m: the fill's boxes are cut by the paved surface of their block of the grid
 
 
-def _densify(points, step):
-    out = [points[:1]]
-    for a, b in zip(points[:-1], points[1:]):
-        n = max(int(np.ceil(np.hypot(*(b[:2] - a[:2])) / step)), 1)
-        out.append(a[None, :] + (b - a)[None, :] * (np.arange(1, n + 1) / n)[:, None])
-    return np.vstack(out)
+def _densify_all(polylines, step):
+    """Every polyline with points added so that none are more than `step` apart (each segment cut into equal parts), one after the other."""
+    if not polylines:
+        return np.zeros((0, 5))
+    firsts = np.array([p[0] for p in polylines])
+    a = np.vstack([p[:-1] for p in polylines])
+    b = np.vstack([p[1:] for p in polylines])
+    seg_counts = np.array([len(p) - 1 for p in polylines])
+    n = np.maximum(np.ceil(np.hypot(b[:, 0] - a[:, 0], b[:, 1] - a[:, 1]) / step).astype(int), 1)
+    seg = np.repeat(np.arange(len(a)), n)
+    k = np.arange(len(seg)) - np.repeat(np.cumsum(n) - n, n) + 1                # 1 .. n within each segment
+    pts = a[seg] + (b[seg] - a[seg]) * (k / n[seg])[:, None]
+    # each polyline: its first point, then the points of its segments
+    per_line = np.add.reduceat(n, np.r_[0, np.cumsum(seg_counts)[:-1]])
+    starts = np.r_[0, np.cumsum(per_line + 1)[:-1]]
+    out = np.empty((len(pts) + len(polylines), polylines[0].shape[1]))
+    rest = np.ones(len(out), bool)
+    rest[starts] = False
+    out[starts], out[rest] = firsts, pts
+    return out
 
 
 def blend_width(xy, y, out, ground):
@@ -54,19 +69,21 @@ def blend_width(xy, y, out, ground):
 class EdgeField:
     """The height field around the paved edges. `edges`: [(points (n, 3) x, north, height along the edge, outward (n, 2))]."""
 
-    def __init__(self, edges, ground):
-        xy, y, out = [], [], []
-        for pts, o in edges:
-            if len(pts) < 2:
-                continue
-            dense = _densify(np.c_[pts, o], SAMPLE_STEP)
-            xy.append(dense[:, :2]); y.append(dense[:, 2])
-            n = dense[:, 3:5]; out.append(n / np.maximum(np.hypot(n[:, 0], n[:, 1]), 1e-9)[:, None])
+    def __init__(self, edges, ground, base=None):
+        dense = _densify_all([np.c_[pts, o] for pts, o in edges if len(pts) >= 2], SAMPLE_STEP)
+        n = dense[:, 3:5]
+        out = n / np.maximum(np.hypot(n[:, 0], n[:, 1]), 1e-9)[:, None]
         self.ground = ground
-        self.xy = np.vstack(xy) if xy else np.zeros((0, 2))
-        self.y = np.concatenate(y) if y else np.zeros(0)
-        self.width = blend_width(self.xy, self.y, np.vstack(out), ground) if xy else np.zeros(0)
+        xy, y = dense[:, :2], dense[:, 2]
+        width = blend_width(xy, y, out, ground) if len(xy) else np.zeros(0)
+        if base is not None:                                                   # `base`'s samples first, as if built from its edges + these
+            xy, y, width = np.vstack([base.xy, xy]), np.r_[base.y, y], np.r_[base.width, width]
+        self.xy, self.y, self.width = xy, y, width
         self.tree = cKDTree(self.xy) if len(self.xy) else None
+
+    def extended(self, edges):
+        """The field of this one's edges and more (each sample is computed alone, so this is the field of all the edges)."""
+        return EdgeField(edges, self.ground, base=self)
 
     def influence(self, p):
         """(heights of the near samples (m, k), their f (m, k)) at plan points p (m, 2)."""
@@ -149,26 +166,32 @@ class PavedHeight:
         flat = tris.reshape(-1, 3)
         self.vtree = cKDTree(flat[:, :2]) if len(flat) else None
         self.vy = flat[:, 2]
-        self.ctree = cKDTree(tris[:, :, :2].mean(axis=1)) if len(tris) else None
-        self.reach = float(np.hypot(*(tris[:, :, :2] - tris[:, :, :2].mean(axis=1)[:, None, :]).transpose(2, 0, 1)).max()) if len(tris) else 0.0
+        if len(tris):                                                                    # each triangle's box, grown by what the barycentric
+            lo, hi = tris[:, :, :2].min(axis=1), tris[:, :, :2].max(axis=1)                # tolerance below can reach beyond it
+            grow = SNAP + 2e-3 * (hi - lo).max(axis=1)
+            self.boxes = shapely.STRtree(shapely.box(lo[:, 0] - grow, lo[:, 1] - grow, hi[:, 0] + grow, hi[:, 1] + grow))
 
     def __call__(self, xy):
         out = np.full(len(xy), np.nan)
-        if self.vtree is None:
+        if self.vtree is None or not len(xy):
             return out
-        for i, hit in enumerate(self.vtree.query_ball_point(xy, SNAP)):
-            best = self.vy[hit].min() if hit else np.inf                                    # every surface meeting there counts, vertex or not
-            for t in self.ctree.query_ball_point(xy[i], self.reach + SNAP):
-                a, b, c = self.tris[t]
-                det = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-                if abs(det) < 1e-9:
-                    continue
-                wb = ((xy[i, 0] - a[0]) * (c[1] - a[1]) - (xy[i, 1] - a[1]) * (c[0] - a[0])) / det
-                wc = ((b[0] - a[0]) * (xy[i, 1] - a[1]) - (b[1] - a[1]) * (xy[i, 0] - a[0])) / det
-                if min(wb, wc, 1 - wb - wc) >= -1e-3:
-                    best = min(best, a[2] + wb * (b[2] - a[2]) + wc * (c[2] - a[2]))
-            out[i] = best if np.isfinite(best) else np.nan
-        return out
+        best = np.full(len(xy), np.inf)
+        hits = self.vtree.query_ball_point(xy, SNAP)                                     # every surface meeting there counts, vertex or not
+        count = np.fromiter((len(h) for h in hits), int, len(hits))
+        if count.any():
+            np.minimum.at(best, np.repeat(np.arange(len(xy)), count), self.vy[np.concatenate([h for h in hits if h])])
+        i, t = self.boxes.query(shapely.points(xy))
+        a, b, c = self.tris[t, 0], self.tris[t, 1], self.tris[t, 2]
+        p = xy[i]
+        det = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
+        ok = np.abs(det) >= 1e-9
+        a, b, c, p, i, det = a[ok], b[ok], c[ok], p[ok], i[ok], det[ok]
+        wb = ((p[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (p[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) / det
+        wc = ((b[:, 0] - a[:, 0]) * (p[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (p[:, 0] - a[:, 0])) / det
+        inside = np.minimum(np.minimum(wb, wc), 1 - wb - wc) >= -1e-3
+        z = a[:, 2] + wb * (b[:, 2] - a[:, 2]) + wc * (c[:, 2] - a[:, 2])
+        np.minimum.at(best, i[inside], z[inside])
+        return np.where(np.isfinite(best), best, np.nan)
 
 
 def cut_cells(surfaces, field, x0, z0, cell, rows, cols):
@@ -191,30 +214,45 @@ def cut_cells(surfaces, field, x0, z0, cell, rows, cols):
 
 
 def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
-    """The ground of one chunk's cut cells around the paved surfaces: (triangles (t, 3, 3) x, north, height wound clockwise seen from
-    above, field weight f (t, 3) per vertex)."""
+    """The ground of one chunk's cut cells around the paved surfaces: (vertices (n, 3) x, north, height; their field weight f (n,);
+    triangles (t, 3) of vertex indices, wound clockwise seen from above)."""
     bx0, bz0, bx1, bz1 = chunk_box
     c0, c1 = int(round((bx0 - x0) / cell)), int(round((bx1 - x0) / cell))
     r0, r1 = int(round((bz0 - z0) / cell)), int(round((bz1 - z0) / cell))
     rr, cc = np.nonzero(cut[r0:r1, c0:c1])
     if not len(rr):
-        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+        return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
     k = int(round(cell / FILL_STEP))
     sx, sz = np.meshgrid(np.arange(k), np.arange(k))
     ox = x0 + (c0 + cc[:, None]) * cell + sx.ravel()[None, :] * FILL_STEP
     oz = z0 + (r0 + rr[:, None]) * cell + sz.ravel()[None, :] * FILL_STEP
     boxes = shapely.box(ox.ravel(), oz.ravel(), ox.ravel() + FILL_STEP, oz.ravel() + FILL_STEP)
     paved = surfaces.intersection(box(bx0 - 1, bz0 - 1, bx1 + 1, bz1 + 1))
-    pieces = shapely.difference(boxes, paved)
-    tris = []
-    for g in pieces:
-        for part in getattr(g, "geoms", [g]):
-            if part.geom_type == "Polygon" and part.area > 1e-5:
-                tris += [np.array(t.exterior.coords)[:3] for t in shapely.constrained_delaunay_triangles(part).geoms]
-    if not tris:
-        return np.zeros((0, 3, 3)), np.zeros((0, 3))
-    pts = np.array(tris)
-    xy = pts.reshape(-1, 2)
+    shapely.prepare(paved)
+    pieces = shapely.box(ox.ravel(), oz.ravel(), ox.ravel() + FILL_STEP, oz.ravel() + FILL_STEP, ccw=False)     # a box the paved surfaces miss stays
+    covered = shapely.contains(paved, boxes)                                               # whole (wound as the difference would give it);
+    touched = shapely.intersects(paved, boxes) & ~covered                                  # one wholly on a paved surface leaves nothing
+    pieces[covered] = None
+    # each box less the paved surface of its block only (BLOCK on the grid: what lies outside the block cannot reach the box, and
+    # an overlay with the chunk's whole surface costs what the whole surface has)
+    bi = np.floor((ox.ravel()[touched] - x0) / BLOCK).astype(np.int64)
+    bj = np.floor((oz.ravel()[touched] - z0) / BLOCK).astype(np.int64)
+    blocks, which = np.unique(np.c_[bi, bj], axis=0, return_inverse=True)
+    block_paved = shapely.intersection(paved, shapely.box(x0 + blocks[:, 0] * BLOCK, z0 + blocks[:, 1] * BLOCK,
+                                                          x0 + (blocks[:, 0] + 1) * BLOCK, z0 + (blocks[:, 1] + 1) * BLOCK))
+    pieces[touched] = shapely.difference(boxes[touched], block_paved[which.ravel()])
+    parts = shapely.get_parts(pieces)
+    parts = parts[(shapely.get_type_id(parts) == shapely.GeometryType.POLYGON) & (shapely.area(parts) > 1e-9)]
+    if not len(parts):
+        return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
+    triangles = shapely.get_parts(shapely.constrained_delaunay_triangles(parts))
+    pts = shapely.get_coordinates(triangles).reshape(len(triangles), 4, 2)[:, :3]
+    a, b, c = (pts[:, k].astype(np.float32) for k in range(3))                        # a triangle with two corners at one point as written (float32:
+    pts = pts[~((a == b).all(1) | (b == c).all(1) | (c == a).all(1))]                 # a road edge through a fill point) covers nothing; its zero-length edge reads as open
+    if not len(pts):
+        return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
+    xy, back = np.unique(np.ascontiguousarray(pts.reshape(-1, 2)).view(np.complex128).ravel(), return_inverse=True)     # a fill point is a corner of
+    xy = np.c_[xy.real, xy.imag]                                                       # ~6 triangles: each is worked out once (as complex: sorted by x then y)
     y, f = field(xy)
     on_paved = shapely.dwithin(paved, shapely.points(xy), SNAP) if not paved.is_empty else np.zeros(len(xy), bool)
     if on_paved.any():
@@ -242,10 +280,8 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     if vz.any():
         t = gx[vz] - cx2[vz]
         y[vz] = H[rz2[vz], cx2[vz]] * (1 - t) + H[rz2[vz], np.minimum(cx2[vz] + 1, H.shape[1] - 1)] * t
-    out = np.dstack([pts, y.reshape(-1, 3)])
-    a, b, c = out[:, 0, :2], out[:, 1, :2], out[:, 2, :2]
+    tri = back.reshape(-1, 3)
+    a, b, c = xy[tri[:, 0]], xy[tri[:, 1]], xy[tri[:, 2]]
     ccw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
-    out[ccw] = out[ccw][:, [0, 2, 1]]
-    fw = f.reshape(-1, 3)
-    fw[ccw] = fw[ccw][:, [0, 2, 1]]
-    return out, fw
+    tri[ccw] = tri[ccw][:, [0, 2, 1]]
+    return np.c_[xy, y], f, tri

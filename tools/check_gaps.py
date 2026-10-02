@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial import cKDTree
+import shapely
 
 from check_roads import parse_mid
 
@@ -97,28 +97,28 @@ class Surface:
 
     def __init__(self, tris):
         self.tris = tris
-        self.tree = cKDTree(tris[:, :, [0, 2]].mean(axis=1)) if len(tris) else None
-        self.reach = float(np.hypot(*(tris[:, :, [0, 2]] - tris[:, :, [0, 2]].mean(axis=1)[:, None, :]).transpose(2, 0, 1)).max()) if len(tris) else 0.0
+        if len(tris):                                                    # each triangle's plan box, a hair larger than the test below
+            lo, hi = tris[:, :, [0, 2]].min(axis=1) - 1e-3, tris[:, :, [0, 2]].max(axis=1) + 1e-3
+            self.tree = shapely.STRtree(shapely.box(lo[:, 0], lo[:, 1], hi[:, 0], hi[:, 1]))
+        else:
+            self.tree = None
 
     def __call__(self, p):
-        out = np.full(len(p), np.nan)
+        out = np.full(len(p), -np.inf)
         if self.tree is None or not len(p):
-            return out
-        for i, cand in enumerate(self.tree.query_ball_point(p, self.reach + 1e-3)):
-            if not cand:
-                continue
-            t = self.tris[cand]
-            a, b, c = t[:, 0], t[:, 1], t[:, 2]
-            det = (b[:, 0] - a[:, 0]) * (c[:, 2] - a[:, 2]) - (b[:, 2] - a[:, 2]) * (c[:, 0] - a[:, 0])
-            ok = np.abs(det) > 1e-10
-            det = np.where(ok, det, 1.0)
-            wb = ((p[i, 0] - a[:, 0]) * (c[:, 2] - a[:, 2]) - (p[i, 1] - a[:, 2]) * (c[:, 0] - a[:, 0])) / det
-            wc = ((b[:, 0] - a[:, 0]) * (p[i, 1] - a[:, 2]) - (b[:, 2] - a[:, 2]) * (p[i, 0] - a[:, 0])) / det
-            inside = ok & (wb >= -1e-6) & (wc >= -1e-6) & (wb + wc <= 1 + 1e-6)
-            if inside.any():
-                y = a[:, 1] + wb * (b[:, 1] - a[:, 1]) + wc * (c[:, 1] - a[:, 1])
-                out[i] = y[inside].max()
-        return out
+            return np.full(len(p), np.nan)
+        i, k = self.tree.query(shapely.points(p), predicate="intersects")
+        t = self.tris[k]
+        a, b, c, q = t[:, 0], t[:, 1], t[:, 2], p[i]
+        det = (b[:, 0] - a[:, 0]) * (c[:, 2] - a[:, 2]) - (b[:, 2] - a[:, 2]) * (c[:, 0] - a[:, 0])
+        ok = np.abs(det) > 1e-10
+        det = np.where(ok, det, 1.0)
+        wb = ((q[:, 0] - a[:, 0]) * (c[:, 2] - a[:, 2]) - (q[:, 1] - a[:, 2]) * (c[:, 0] - a[:, 0])) / det
+        wc = ((b[:, 0] - a[:, 0]) * (q[:, 1] - a[:, 2]) - (b[:, 2] - a[:, 2]) * (q[:, 0] - a[:, 0])) / det
+        inside = ok & (wb >= -1e-6) & (wc >= -1e-6) & (wb + wc <= 1 + 1e-6)
+        y = a[:, 1] + wb * (b[:, 1] - a[:, 1]) + wc * (c[:, 1] - a[:, 1])
+        np.maximum.at(out, i[inside], y[inside])
+        return np.where(np.isfinite(out), out, np.nan)
 
 
 def open_edges(tris):
@@ -141,11 +141,17 @@ def open_edges(tris):
 def check(world, every=1):
     world = Path(world)
     info = json.loads((world / "world.json").read_text())
-    files = sorted((world / "chunks").glob("m_*"))[::every]
-    cache = {}
+    files = sorted((world / "chunks").glob("m_*"), key=lambda f: tuple(map(int, f.name[2:-7].split("_"))))           # column by column
+    files = [f for f in files if int(f.name[2:-7].split("_")[0]) % every == 0]          # every n-th whole column: a chunk's neighbours stay cached
+    from collections import OrderedDict
+    cache = OrderedDict()                                               # the chunks used last (a chunk is ~15 MB parsed): bounded on any map
 
     def load(ci, cj):
-        if (ci, cj) not in cache:
+        if (ci, cj) in cache:
+            cache.move_to_end((ci, cj))
+        else:
+            while len(cache) >= 16:                                     # 9 around a chunk, the column walk reuses 6
+                cache.popitem(last=False)
             p = world / "chunks" / f"m_{ci}_{cj}.bin.gz"
             if not p.exists():
                 cache[(ci, cj)] = None
@@ -159,8 +165,10 @@ def check(world, every=1):
 
     totals = dict(chunks=0, open_edges=0, hole=0, crack=0, step=0)
     spots = []
-    for path in files:
+    for k, path in enumerate(files):
         ci, cj = map(int, path.name[2:-7].split("_"))
+        if k % 500 == 0:
+            print(f"{k}/{len(files)} chunks", file=sys.stderr, flush=True)
         here = load(ci, cj)
         if here is None:
             continue

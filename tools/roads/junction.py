@@ -173,16 +173,23 @@ def clear_mouths(junction, graph, links):
     arms = junction.arms
     reach = {id(a): _polygons(shapely.make_valid(_reach(a))) for a in arms}
     for _ in range(4):
-        pieces = _pieces(junction, graph, links, lambda arm: _dense_mouth(arm))
+        pieces = [(owner, _polygons(shapely.make_valid(p))) for owner, p in _pieces(junction, graph, links, lambda arm: _dense_mouth(arm))]
         moved = False
         for a in arms:
-            others = shapely.unary_union([part for owner, p in pieces if owner is not a for part in _polygons(shapely.make_valid(p))]
-                                         + [part for b in arms if b is not a and b.link != a.link for part in reach[id(b)]])
-            while a.trim < a.u[-1] + 1.0 and _mouth_line(a).intersection(others).length > 0.01:       # touching at the corners is fine
+            others = np.array([part for owner, parts in pieces if owner is not a for part in parts]
+                              + [part for b in arms if b is not a and b.link != a.link for part in reach[id(b)]], dtype=object)
+            while a.trim < a.u[-1] + 1.0 and _length_inside(_mouth_line(a), others) > 0.01:          # touching at the corners is fine
                 a.trim += 1.0
                 moved = True
         if not moved:
             break
+
+
+def _length_inside(line, polygons):
+    """Length of the line inside the union of the polygons (the union of its pieces in each: no union of the polygons themselves)."""
+    if not len(polygons):
+        return 0.0
+    return shapely.union_all(shapely.intersection(line, polygons)).length
 
 
 def _make_junction(graph, links, nodes, touching, internal):
@@ -210,13 +217,14 @@ def _make_shared(nodes):
     return _make_junction(graph, links, nodes, touching, internal)
 
 
-def build_junctions(graph, links, jobs=1):
+def build_junctions(graph, links, jobs=1, active=None):
     """Group junction nodes into junctions and trim every arm. Sets `junction`, `trim`, `internal` on the links. Returns the junction list.
+    `active`: the junction nodes to build (None: all); a link end at another node is left as a dead end.
 
     Every junction node starts as its own junction. A link left with nothing to draw between its two trims is swallowed and its
     junctions merge; only the junctions that changed are built again, until nothing changes. The junctions of one pass are built
     side by side: a junction only reads the links, and those change between passes, not within one."""
-    parent = {n: n for n in range(len(graph.nodes)) if graph.is_junction(n)}
+    parent = {n: n for n in range(len(graph.nodes)) if graph.is_junction(n) and (active is None or n in active)}
     members = {n: [n] for n in parent}
     touching = {n: [] for n in parent}
     for k, link in enumerate(links):

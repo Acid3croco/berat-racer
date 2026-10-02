@@ -11,3 +11,4 @@ Stages (each a module, run in this order by `build.build`):
 
 Run `uv run python -m roads --help` from tools/.
 """
+import machine                    # noqa: F401  half the machine, single-threaded maths, before numpy loads (machine.py)
