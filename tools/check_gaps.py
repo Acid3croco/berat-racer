@@ -142,13 +142,15 @@ def check(world, every=1):
     world = Path(world)
     info = json.loads((world / "world.json").read_text())
     files = sorted((world / "chunks").glob("m_*"), key=lambda f: tuple(map(int, f.name[2:-7].split("_"))))[::every]     # column by column
-    cache = {}
+    from collections import OrderedDict
+    cache = OrderedDict()                                               # the chunks used last (a chunk is ~15 MB parsed): bounded on any map
 
     def load(ci, cj):
-        if (ci, cj) not in cache:
-            if len(cache) > 600:                                        # the three columns of chunks in use: bounded on any map
-                for key in [k for k in cache if abs(k[0] - ci) > 1]:
-                    del cache[key]
+        if (ci, cj) in cache:
+            cache.move_to_end((ci, cj))
+        else:
+            while len(cache) >= 64:
+                cache.popitem(last=False)
             p = world / "chunks" / f"m_{ci}_{cj}.bin.gz"
             if not p.exists():
                 cache[(ci, cj)] = None
