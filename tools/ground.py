@@ -317,12 +317,12 @@ def parking_mesh(poly, height):
     if len(xy) < 3:
         return np.zeros((0, 3)), np.zeros((0, 3), int)
     tri = Delaunay(xy).simplices
-    mid = xy[tri].mean(axis=1)
-    keep = shapely.contains_xy(poly.buffer(0.05), mid[:, 0], mid[:, 1])
-    for k in range(3):                                                          # an edge midpoint outside: the triangle spans a notch
-        m = 0.5 * (xy[tri[:, k]] + xy[tri[:, (k + 1) % 3]])
-        keep &= shapely.contains_xy(poly.buffer(0.05), m[:, 0], m[:, 1])
-    tri = tri[keep]
+    inside = poly.buffer(0.05)
+    shapely.prepare(inside)
+    keep = shapely.within(shapely.polygons(xy[tri]), inside)                  # a triangle reaching out of the outline spans a notch
+    a, b, c = xy[tri[:, 0]], xy[tri[:, 1]], xy[tri[:, 2]]                      # (its edge passes by the notch's points: the ground and the
+    keep &= np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) > 1e-9     # park would not
+    tri = tri[keep]                                                            # meet); qhull's flat triangles cover nothing
     y = height(xy) + PARK_LIFT
     nbr = [[] for _ in range(len(xy))]
     for a, b, c in tri:
