@@ -765,6 +765,9 @@ def surface_tile(job):
     return dict(tile=t, pieces=len(pieces), meshes=len(meshes), elements=len(out), seconds=round(time.time() - clock, 2))
 
 
+MOUTH_SNAP = 1.5                  # m: a junction vertex this close to an arm's mouth corner is that corner
+
+
 def seal_mouths(network, which):
     """Put the mouth corners of these junctions exactly on the edge points of their arms' links as the links' owners made them. A
     junction's owner outlined it with its own copy of a link owned by another tile, which can differ in the last digits (a few
@@ -778,11 +781,11 @@ def seal_mouths(network, which):
         if not corners:
             continue
         v = j.vertices.copy()
-        for a, b in j.boundary[j.boundary[:, 2] == 1][:, :2]:
-            miss = [float(np.hypot(*(v[a] - right)) + np.hypot(*(v[b] - left))) for right, left in corners]
-            k = int(np.argmin(miss))
-            if miss[k] < 4.0:
-                v[a], v[b] = corners[k]
+        for corner in (c for pair in corners for c in pair):                    # mouths flagged or not (an invalid junction's are not)
+            d = np.hypot(*(v - corner).T)
+            k = int(np.argmin(d))
+            if d[k] < MOUTH_SNAP:
+                v[k] = corner
         j.vertices = v
 
 
