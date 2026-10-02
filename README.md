@@ -65,9 +65,16 @@ file). No force feedback yet, so the wheel does not centre itself.
 
 ## Run it
 
-0. **Just want to play?** Download `BeratRacer-windows-x64.zip` from the [latest release](../../releases/latest), unzip it and run `BeratRacer\BeratRacer.exe` (Windows 10/11 x64; unsigned, so SmartScreen may ask you to confirm with *More info ▸ Run anyway*). It contains the berat70 map (70 x 70 km, new road pipeline). Logs: `%LOCALAPPDATA%\BeratRacer\berat.log`.
-1. Get the map data into `world/`: either `tools/fetch_world.sh` (downloads the berat70 world of the latest release, ~1.9 GB, a few minutes), or generate it yourself (about 30-60 min of downloading plus processing; see *Build the map data* below). It is not committed.
-2. Install Unity **6000.0.84f1** (Apple Silicon build), open the `unity/` folder, run *Berat ▸ Build macOS* (or `BuildTools.BuildMac` in batch mode; `-world path/to/world_x` packs another world than `world/`). *Berat ▸ Build Windows* (`BuildTools.BuildWindows`, needs the *Windows Build Support (Mono)* module) cross-builds `Build/win/BeratRacer.exe` from the Mac.
+0. **Just want to play?** From the [latest release](../../releases/latest) download the game for your system and the map (two files):
+   - Windows 10/11 x64: `BeratRacer-windows-x64.zip`, unzip it: you get a `BeratRacer` folder.
+     macOS (Apple Silicon or Intel): `BeratRacer-macos.zip`, unzip it into a new folder: you get `BeratRacer.app`.
+   - The map: `berat-map-1.zip` and `berat-map-2.zip` (~1.95 GB each), unzipped **in the same folder as the game**: next to
+     `BeratRacer.exe` (inside the `BeratRacer` folder), or next to `BeratRacer.app`. You then have `berat` and `berat-2` folders beside it.
+   - Run `BeratRacer.exe` (unsigned: SmartScreen may ask, *More info ▸ Run anyway*) or `BeratRacer.app` (not notarised: the first
+     time, macOS refuses it; open *System Settings ▸ Privacy & Security* and click *Open Anyway*, or run
+     `xattr -dr com.apple.quarantine BeratRacer.app`). Logs: `%LOCALAPPDATA%\BeratRacer\berat.log`, `~/Library/Logs/BeratRacer/berat.log` on a Mac.
+1. Get the map data into `world/`: either `tools/fetch_world.sh` (downloads the map of the latest release, two files of ~1.95 GB, and puts them together), or generate it yourself (about 30-60 min of downloading plus processing; see *Build the map data* below). It is not committed.
+2. Install Unity **6000.0.84f1** (Apple Silicon build), open the `unity/` folder, run *Berat ▸ Build macOS* (or `BuildTools.BuildMac` in batch mode; `-world path/to/world_x` packs another world than `world/`, `-noworld` packs none: the game then reads a `berat` folder beside it, as a release ships it). *Berat ▸ Build Windows* (`BuildTools.BuildWindows`, needs the *Windows Build Support (Mono)* module) cross-builds `Build/win/BeratRacer.exe` from the Mac.
 3. Launch `Build/BeratRacer.app`. Logs: `~/Library/Logs/BeratRacer/berat.log`.
 
 ## Build the map data

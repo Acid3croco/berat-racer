@@ -13,7 +13,7 @@ using UnityEngine;
 /// </summary>
 public static class NetProtocol
 {
-    public const byte Version = 2;                     // 2: engine sound (rpm, load, slip) in State
+    public const byte Version = 3;                     // 2: engine sound (rpm, load, slip) in State; 3: the v0.6 map (BM08 chunks): a v0.5 game has another map
     public const int DefaultPort = 27960, MaxPlayers = 8, MaxDatagram = 1200;
     public const byte HostId = 0;
 

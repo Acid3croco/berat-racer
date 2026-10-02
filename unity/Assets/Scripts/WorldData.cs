@@ -444,18 +444,33 @@ public class WorldData
     public static bool InBounds(float x, float z, float margin = 0f) => x > X0 + margin && x < MaxX - margin && z > Z0 + margin && z < MaxZ - margin;
     public static Vector2 ChunkCenter(int ci, int cj) => new Vector2(X0 + (ci + 0.5f) * ChunkSize, Z0 + (cj + 0.5f) * ChunkSize);
     static string dir;
-    /// <summary>Generated world: StreamingAssets/berat inside a build, or ../world next to the Unity project when running from the editor. BERAT_WORLD overrides both.</summary>
+    /// <summary>Generated world: a "berat" folder beside the game (next to BeratRacer.exe, or next to BeratRacer.app: the map is a
+    /// separate download), else StreamingAssets/berat inside a build, else ../world next to the Unity project in the editor.
+    /// BERAT_WORLD overrides them all.</summary>
     public static string Dir
     {
         get
         {
             if (dir != null) return dir;
             var env = System.Environment.GetEnvironmentVariable("BERAT_WORLD");
+            var beside = Path.GetFullPath(Application.platform == RuntimePlatform.OSXPlayer
+                ? Path.Combine(Application.dataPath, "..", "..", "berat")           // dataPath: BeratRacer.app/Contents
+                : Path.Combine(Application.dataPath, "..", "berat"));              // dataPath: BeratRacer_Data, beside the exe
             var built = Path.Combine(Application.streamingAssetsPath, "berat");
             var project = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "world"));
-            foreach (var p in new[] { env, built, project }) if (!string.IsNullOrEmpty(p) && File.Exists(Path.Combine(p, "far.bin"))) return dir = p;
+            foreach (var p in new[] { env, beside, built, project }) if (!string.IsNullOrEmpty(p) && File.Exists(Path.Combine(p, "far.bin"))) return dir = p;
             return dir = built;
         }
+    }
+
+    /// <summary>Folders holding chunk files: the world's own "chunks", then "chunks" of its numbered siblings ("berat-2", "berat-3",
+    /// ...): a map downloaded in several parts, each part unzipped beside the others.</summary>
+    public static List<string> ChunkDirs()
+    {
+        var dirs = new List<string> { Path.Combine(Dir, "chunks") };
+        string root = Dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        for (int k = 2; Directory.Exists(Path.Combine(root + "-" + k, "chunks")); k++) dirs.Add(Path.Combine(root + "-" + k, "chunks"));
+        return dirs;
     }
 
     public int FarNx, FarNz; public float FarCell;

@@ -134,12 +134,18 @@ public class WorldBuilder : MonoBehaviour
     void ScanChunks()
     {
         exists = new HashSet<int>();
-        foreach (var f in Directory.GetFiles(Path.Combine(WorldData.Dir, "chunks"), "m_*.bin.gz"))
-        {   // m_{ci}_{cj}.bin.gz
-            var parts = Path.GetFileName(f).Split('_'); if (parts.Length != 3) continue;
-            int ci, cj; if (int.TryParse(parts[1], out ci) && int.TryParse(parts[2].Split('.')[0], out cj)) exists.Add(cj * WorldData.NCX + ci);
-        }
-        Log.I("world", $"{exists.Count} chunk files");
+        chunkFiles = new Dictionary<string, string>();
+        var dirs = WorldData.ChunkDirs();
+        foreach (var d in dirs)
+            foreach (var f in Directory.GetFiles(d, "*.bin.gz"))
+            {
+                var name = Path.GetFileName(f);
+                if (!chunkFiles.ContainsKey(name)) chunkFiles[name] = f;
+                if (!name.StartsWith("m_")) continue;
+                var parts = name.Split('_'); if (parts.Length != 3) continue;      // m_{ci}_{cj}.bin.gz
+                int ci, cj; if (int.TryParse(parts[1], out ci) && int.TryParse(parts[2].Split('.')[0], out cj)) exists.Add(cj * WorldData.NCX + ci);
+            }
+        Log.I("world", $"{exists.Count} chunk files in {dirs.Count} folder(s)");
     }
 
     int farTilesX, farTilesZ; int[] farNeeded;
@@ -185,7 +191,12 @@ public class WorldBuilder : MonoBehaviour
     }
 
     // ------------------------------------------------------------------ streaming
-    string PathOf(string kind, int ci, int cj) => Path.Combine(WorldData.Dir, "chunks", $"{kind}_{ci}_{cj}.bin.gz");
+    Dictionary<string, string> chunkFiles = new Dictionary<string, string>();    // file name -> path, over every chunk folder (ScanChunks)
+    string PathOf(string kind, int ci, int cj)
+    {
+        var name = $"{kind}_{ci}_{cj}.bin.gz";
+        return chunkFiles.TryGetValue(name, out var path) ? path : Path.Combine(WorldData.Dir, "chunks", name);
+    }
 
     struct Req { public float prio; public int ci, cj; public bool near; }
     readonly List<Req> reqs = new List<Req>();

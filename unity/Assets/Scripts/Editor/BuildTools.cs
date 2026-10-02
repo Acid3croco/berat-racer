@@ -50,6 +50,7 @@ public static class BuildTools
         var report = BuildPipeline.BuildPlayer(opts);
         Debug.Log($"[berat] build {target} {report.summary.result} {report.summary.totalSize / 1048576} MB");
         if (report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded) { EditorApplication.Exit(1); return; }
+        if (System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-noworld") >= 0) { Debug.Log("[berat] -noworld: no map packed (a release ships it apart, unzipped beside the game)"); return; }
         CopyWorld(streamingAssets);
     }
 
