@@ -173,16 +173,23 @@ def clear_mouths(junction, graph, links):
     arms = junction.arms
     reach = {id(a): _polygons(shapely.make_valid(_reach(a))) for a in arms}
     for _ in range(4):
-        pieces = _pieces(junction, graph, links, lambda arm: _dense_mouth(arm))
+        pieces = [(owner, _polygons(shapely.make_valid(p))) for owner, p in _pieces(junction, graph, links, lambda arm: _dense_mouth(arm))]
         moved = False
         for a in arms:
-            others = shapely.unary_union([part for owner, p in pieces if owner is not a for part in _polygons(shapely.make_valid(p))]
-                                         + [part for b in arms if b is not a and b.link != a.link for part in reach[id(b)]])
-            while a.trim < a.u[-1] + 1.0 and _mouth_line(a).intersection(others).length > 0.01:       # touching at the corners is fine
+            others = np.array([part for owner, parts in pieces if owner is not a for part in parts]
+                              + [part for b in arms if b is not a and b.link != a.link for part in reach[id(b)]], dtype=object)
+            while a.trim < a.u[-1] + 1.0 and _length_inside(_mouth_line(a), others) > 0.01:          # touching at the corners is fine
                 a.trim += 1.0
                 moved = True
         if not moved:
             break
+
+
+def _length_inside(line, polygons):
+    """Length of the line inside the union of the polygons (the union of its pieces in each: no union of the polygons themselves)."""
+    if not len(polygons):
+        return 0.0
+    return shapely.union_all(shapely.intersection(line, polygons)).length
 
 
 def _make_junction(graph, links, nodes, touching, internal):

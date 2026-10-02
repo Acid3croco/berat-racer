@@ -131,12 +131,13 @@ def clearances(link, terrain):
     """(left, right) per sample: how far from the centreline the driver can see sideways before something stands above eye level
     (surface model: LiDAR ground + height above ground: a cutting, a hedge, a wood, a house), scanned out to SIGHT_SCAN."""
     out = []
+    offsets = np.arange(0.5, config.SIGHT_SCAN, config.SIGHT_SCAN_STEP)
     for side in (1.0, -1.0):
         clear = np.full(len(link.s), config.SIGHT_SCAN)
-        for offset in np.arange(0.5, config.SIGHT_SCAN, config.SIGHT_SCAN_STEP):
-            at = link.xy + side * link.nrm * (link.hw + offset)[:, None]
-            surface = terrain.sample(terrain.mnt, at[:, 0], at[:, 1], 2) + terrain.sample(terrain.mnh, at[:, 0], at[:, 1], 2)
-            hit = (surface > link.z + config.SIGHT_EYE) & (clear >= config.SIGHT_SCAN)
+        at = (link.xy[None] + side * link.nrm[None] * (link.hw[None, :] + offsets[:, None])[:, :, None]).reshape(-1, 2)     # every offset at once
+        surface = (terrain.sample(terrain.mnt, at[:, 0], at[:, 1], 2) + terrain.sample(terrain.mnh, at[:, 0], at[:, 1], 2)).reshape(len(offsets), -1)
+        for offset, row in zip(offsets, surface):
+            hit = (row > link.z + config.SIGHT_EYE) & (clear >= config.SIGHT_SCAN)
             clear[hit] = link.hw[hit] + offset
         out.append(clear)
     return out

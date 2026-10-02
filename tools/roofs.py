@@ -149,52 +149,57 @@ class Skeleton:
         return self._tidy(lav)
 
     def _next_events(self, lavs):
+        """(time to the next event, the events then): the wavefront's edges shrinking to nothing, its reflex vertices running into an
+        edge. Every pair is worked out at once; the candidates are then offered in the order of the wavefront (edge events first, then
+        split events by vertex and edge), the first of a group within 1e-7 setting the time."""
+        verts = [v for lav in lavs for v in lav]
+        starts = np.cumsum([0] + [len(lav) for lav in lavs])[:-1]
+        nxt = np.concatenate([s + (np.arange(len(lav)) + 1) % len(lav) for s, lav in zip(starts, lavs)])
+        P = np.array([v.p for v in verts])
+        W = np.array([v.w for v in verts])
+        A = np.array([v.a for v in verts])
+        B = np.array([v.b for v in verts])
+        candidates = []
+        d = P[nxt] - P                                                           # edge events
+        length = np.hypot(d[:, 0], d[:, 1])
+        unit = d / np.maximum(length, 1e-12)[:, None]
+        dw = W[nxt] - W
+        rate = np.where(length > 1e-12, dw[:, 0] * unit[:, 0] + dw[:, 1] * unit[:, 1], -1.0)
+        for i in np.flatnonzero(rate < -1e-9):
+            candidates.append((-length[i] / rate[i], ("edge", verts[i], verts[nxt[i]])))
+        da, db = self.d[A], self.d[B]                                            # split events: reflex vertices against the wavefront's edges
+        reflex = np.flatnonzero(da[:, 0] * db[:, 1] - da[:, 1] * db[:, 0] < -1e-9)
+        edges = np.flatnonzero(B == A[nxt])                                      # l -> r along edge f
+        if len(reflex) and len(edges):
+            f = B[edges]
+            nf, sf, along = self.n[f], self.speed[f], self.d[f]
+            lp = self.p0[f] + self.n[f] * self.speed[f][:, None] * self.time
+            pv, wv = P[reflex][:, None, :], W[reflex][:, None, :]
+            denom = sf[None, :] - (nf[None, :, 0] * wv[..., 0] + nf[None, :, 1] * wv[..., 1])
+            rel = pv - lp[None, :, :]
+            num = nf[None, :, 0] * rel[..., 0] + nf[None, :, 1] * rel[..., 1]
+            ok = denom > 1e-9
+            ok &= (f[None, :] != A[reflex][:, None]) & (f[None, :] != B[reflex][:, None])
+            ok &= (edges[None, :] != reflex[:, None]) & (nxt[edges][None, :] != reflex[:, None])
+            dt = np.where(ok, num / np.where(ok, denom, 1.0), -1.0)
+            ok &= dt > 1e-9
+            vi, ei = np.nonzero(ok)
+            t = dt[vi, ei][:, None]
+            hit = P[reflex[vi]] + W[reflex[vi]] * t
+            li, ri = edges[ei], nxt[edges[ei]]
+            lt, rt = P[li] + W[li] * t, P[ri] + W[ri] * t
+            al = along[ei]
+            inside = ((hit - lt) * al).sum(axis=1) >= -1e-6
+            inside &= ((rt - hit) * al).sum(axis=1) >= -1e-6
+            for k in np.flatnonzero(inside):
+                candidates.append((dt[vi[k], ei[k]], ("split", verts[reflex[vi[k]]], verts[li[k]], verts[ri[k]])))
         best, events = None, []
-
-        def offer(dt, ev):
-            nonlocal best, events
-            if dt is None or dt < -1e-9:
-                return
-            dt = max(dt, 0.0)
+        for dt, ev in candidates:
+            dt = max(float(dt), 0.0)
             if best is None or dt < best - 1e-7:
                 best, events = dt, [ev]
             elif abs(dt - best) <= 1e-7:
                 events.append(ev)
-
-        active = [(v, lav) for lav in lavs for v in lav]
-        for lav in lavs:
-            m = len(lav)
-            for i in range(m):                                                   # edge events
-                u, v = lav[i], lav[(i + 1) % m]
-                d = v.p - u.p
-                length = np.hypot(*d)
-                rate = np.dot(v.w - u.w, d / max(length, 1e-12)) if length > 1e-12 else -1.0
-                if rate < -1e-9:
-                    offer(-length / rate, ("edge", u, v))
-        for v, lav in active:                                                    # split events: reflex vertices
-            na, nb = self.n[v.a], self.n[v.b]
-            if self.d[v.a][0] * self.d[v.b][1] - self.d[v.a][1] * self.d[v.b][0] >= -1e-9:
-                continue                                                         # convex or straight
-            for lav2 in lavs:
-                m = len(lav2)
-                for i in range(m):
-                    l, r = lav2[i], lav2[(i + 1) % m]
-                    f = l.b
-                    if f != r.a or f in (v.a, v.b) or l is v or r is v:
-                        continue
-                    nf, sf = self.n[f], self.speed[f]
-                    denom = sf - np.dot(nf, v.w)
-                    if denom <= 1e-9:
-                        continue
-                    dt = (np.dot(nf, v.p - self._line_point(f))) / denom
-                    if dt <= 1e-9:
-                        continue
-                    hit = v.p + v.w * dt
-                    lt, rt = l.p + l.w * dt, r.p + r.w * dt
-                    along = self.d[f]
-                    if np.dot(hit - lt, along) < -1e-6 or np.dot(rt - hit, along) < -1e-6:
-                        continue
-                    offer(dt, ("split", v, l, r))
         return best, events
 
     def _apply(self, lavs, events):

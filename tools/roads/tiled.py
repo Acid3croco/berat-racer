@@ -19,7 +19,7 @@ import os
 import pickle
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import replace
 from pathlib import Path
 
@@ -271,16 +271,30 @@ def align_tile(job):
                 seconds=round(time.time() - clock, 2))
 
 
+def heaviest_first(tiles):
+    """The tiles by the size of their surveyed roads, largest first: the slow tiles start first, so the end of a pass does not wait on
+    one (the tiles of a pass or round are independent: the order changes no result)."""
+    def size(t):
+        path = sources.vector_path("roads", *t)
+        return path.stat().st_size if path.exists() else 0
+    return sorted(tiles, key=lambda t: (-size(t), t))
+
+
 def run_batched(function, area, tiles, jobs, fresh):
-    """`function((area, tile, fresh))` for the tiles, side by side, in fresh worker processes every jobs x WORKER_TASKS tiles (a long-lived
-    worker piles memory up; max_tasks_per_child hangs the pool when many tasks are queued)."""
-    stats = []
-    step = jobs * WORKER_TASKS
-    for start in range(0, len(tiles), step):
-        with ProcessPoolExecutor(jobs) as pool:
-            for f in as_completed([pool.submit(function, (area, t, fresh)) for t in tiles[start:start + step]]):
-                stats.append(f.result())
-    return stats
+    """`function((area, tile, fresh))` for the tiles, side by side, heaviest first. A worker is renewed every WORKER_TASKS tiles (a
+    long-lived worker piles memory up); at most jobs + 1 tiles are queued (max_tasks_per_child hangs the pool when many are)."""
+    stats, todo, pending = [], iter(heaviest_first(tiles)), set()
+    with ProcessPoolExecutor(jobs, max_tasks_per_child=WORKER_TASKS) as pool:
+        while True:
+            while len(pending) < jobs + 1:
+                t = next(todo, None)
+                if t is None:
+                    break
+                pending.add(pool.submit(function, (area, t, fresh)))
+            if not pending:
+                return stats
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            stats += [f.result() for f in done]
 
 
 def run_rounds(function, area, jobs, fresh, log, label):

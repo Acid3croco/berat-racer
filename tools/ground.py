@@ -264,12 +264,19 @@ def parking_surfaces(area_list, road_polygons, stats=None):
     if not roads.is_empty:
         merged = merged.difference(roads)
     pieces = [g for g in getattr(merged, "geoms", [merged]) if g.geom_type == "Polygon" and g.area >= PARK_MIN_AREA]
+    touching = [set() for _ in pieces]                                                 # per car park, the road pieces within ACCESS_OTHER
+    if road_tree is not None and pieces:
+        for j, k in zip(*road_tree.query(shapely.buffer(np.array(pieces, dtype=object), ACCESS_OTHER), predicate="intersects").tolist()):
+            touching[j].add(k)
+    by_count = {}
+    for t in touching:
+        for k in t:
+            by_count[k] = by_count.get(k, 0) + 1
     out = []
     for i, q in enumerate(pieces):
         nearby = roads_near(q, ACCESS_MAX + 1.0)
         if road_tree is not None and q.exterior.intersection(nearby.buffer(0.5)).length < ACCESS_TOUCH:
-            others = shapely.union_all([p for j, p in enumerate(pieces) if j != i]).buffer(ACCESS_OTHER)      # a road piece touching another
-            aisles = set(road_tree.query(others, predicate="intersects").tolist()) if not others.is_empty else set()   # car park is its aisle
+            aisles = {k for k, n in by_count.items() if n - (k in touching[i]) > 0}       # a road piece touching another car park is its aisle
             public = roads_near(q, ACCESS_MAX + 1.0, aisles)
             gap = q.distance(public) if not public.is_empty else np.inf
             if gap > ACCESS_MAX:                                                       # only aisles nearby: a shared aisle is the way in

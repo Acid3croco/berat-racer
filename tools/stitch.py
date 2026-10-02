@@ -31,6 +31,7 @@ SNAP = 0.01            # m: a fill point this close to a paved outline takes the
 FILL_STEP = 2.0        # m between the fill's inner points
 NEIGHBOURS = 16        # edge samples blended at each point
 SAMPLE_STEP = 1.0      # m between edge samples
+BLOCK = 32.0           # m: the fill's boxes are cut by the paved surface of their block of the grid
 
 
 def _densify_all(polylines, step):
@@ -232,7 +233,14 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     covered = shapely.contains(paved, boxes)                                               # whole (wound as the difference would give it);
     touched = shapely.intersects(paved, boxes) & ~covered                                  # one wholly on a paved surface leaves nothing
     pieces[covered] = None
-    pieces[touched] = shapely.difference(boxes[touched], paved)
+    # each box less the paved surface of its block only (BLOCK on the grid: what lies outside the block cannot reach the box, and
+    # an overlay with the chunk's whole surface costs what the whole surface has)
+    bi = np.floor((ox.ravel()[touched] - x0) / BLOCK).astype(np.int64)
+    bj = np.floor((oz.ravel()[touched] - z0) / BLOCK).astype(np.int64)
+    blocks, which = np.unique(np.c_[bi, bj], axis=0, return_inverse=True)
+    block_paved = shapely.intersection(paved, shapely.box(x0 + blocks[:, 0] * BLOCK, z0 + blocks[:, 1] * BLOCK,
+                                                          x0 + (blocks[:, 0] + 1) * BLOCK, z0 + (blocks[:, 1] + 1) * BLOCK))
+    pieces[touched] = shapely.difference(boxes[touched], block_paved[which.ravel()])
     parts = shapely.get_parts(pieces)
     parts = parts[(shapely.get_type_id(parts) == shapely.GeometryType.POLYGON) & (shapely.area(parts) > 1e-9)]
     if not len(parts):
@@ -243,7 +251,8 @@ def fill(surfaces, cut, H, x0, z0, cell, chunk_box, field, paved_height):
     pts = pts[~((a == b).all(1) | (b == c).all(1) | (c == a).all(1))]                 # a road edge through a fill point) covers nothing; its zero-length edge reads as open
     if not len(pts):
         return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), int)
-    xy, back = np.unique(pts.reshape(-1, 2), axis=0, return_inverse=True)            # a fill point is a corner of ~6 triangles: each is worked out once
+    xy, back = np.unique(np.ascontiguousarray(pts.reshape(-1, 2)).view(np.complex128).ravel(), return_inverse=True)     # a fill point is a corner of
+    xy = np.c_[xy.real, xy.imag]                                                       # ~6 triangles: each is worked out once (as complex: sorted by x then y)
     y, f = field(xy)
     on_paved = shapely.dwithin(paved, shapely.points(xy), SNAP) if not paved.is_empty else np.zeros(len(xy), bool)
     if on_paved.any():

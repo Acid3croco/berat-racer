@@ -141,7 +141,8 @@ def open_edges(tris):
 def check(world, every=1):
     world = Path(world)
     info = json.loads((world / "world.json").read_text())
-    files = sorted((world / "chunks").glob("m_*"), key=lambda f: tuple(map(int, f.name[2:-7].split("_"))))[::every]     # column by column
+    files = sorted((world / "chunks").glob("m_*"), key=lambda f: tuple(map(int, f.name[2:-7].split("_"))))           # column by column
+    files = [f for f in files if int(f.name[2:-7].split("_")[0]) % every == 0]          # every n-th whole column: a chunk's neighbours stay cached
     from collections import OrderedDict
     cache = OrderedDict()                                               # the chunks used last (a chunk is ~15 MB parsed): bounded on any map
 
@@ -149,7 +150,7 @@ def check(world, every=1):
         if (ci, cj) in cache:
             cache.move_to_end((ci, cj))
         else:
-            while len(cache) >= 64:
+            while len(cache) >= 16:                                     # 9 around a chunk, the column walk reuses 6
                 cache.popitem(last=False)
             p = world / "chunks" / f"m_{ci}_{cj}.bin.gz"
             if not p.exists():
@@ -164,8 +165,10 @@ def check(world, every=1):
 
     totals = dict(chunks=0, open_edges=0, hole=0, crack=0, step=0)
     spots = []
-    for path in files:
+    for k, path in enumerate(files):
         ci, cj = map(int, path.name[2:-7].split("_"))
+        if k % 500 == 0:
+            print(f"{k}/{len(files)} chunks", file=sys.stderr, flush=True)
         here = load(ci, cj)
         if here is None:
             continue

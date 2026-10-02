@@ -1059,6 +1059,10 @@ def main():
     secs = [tuple(map(int, s.split(":"))) for s in a.sectors.split(",")] if a.sectors else world
     for s in secs: assert s in world, f"sector {s} is not in {a.list}"
 
+    def weight(s):                                                                   # the buildings make a sector slow: those with most start first
+        path = sources.vector_path("buildings", *s)
+        return path.stat().st_size if path.exists() else 0
+    secs = sorted(secs, key=lambda s: (-weight(s), s))
     jobs = [(i, j, str(out / "chunks"), CPS * si_min, CPS * sj_min, far_cell, road_tag, not a.fresh) for i, j in secs]
 
     def stop_reason():
