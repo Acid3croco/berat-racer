@@ -355,7 +355,7 @@ Toulouse's centre (168 CPU-s), so a map's cost follows its towns more than its a
 | output + intermediates <= 20 GB, output ~1 MB/km² | met: 11.0 GB; 0.89 MB/km² |
 | sources <= 1 MB/km², per tile, leanest lossless | met: 0.29 MB/km² |
 | RAM per worker bounded, the same on 9, 100, 484 sectors | met: the same sector needs the same memory in a 9-, 20-, 100- or 484-sector build (1.8 / 2.0 GB); a worker's peak is its densest tile's (roads <= 2.3 GB, world <= 5.3 GB), the whole build within 16 GB |
-| small map: no regression | `check_roads` OK (12,096 lane elements, 1 without exit, as master); `check_gaps` 7 cm-level gaps (master 6, the same problem area); roadtest better (harshness 0.10 vs 0.28 m/s², 0 wheel hops vs 14, 0 respawns vs 1); autotest 2,166 m, one stop at a village junction corner where a building stands 0.35 m from the junction (master has the same building and junction; its random route did not pass there); world 71 MB vs 92; shots: the same scenes |
+| small map: no regression | `check_roads` OK (12,096 lane elements, 1 without exit, as master); `check_gaps` 4 cm-level gaps after the step-8 car-park fix (7 before it; master 6, the same problem area); roadtest better (harshness 0.10 vs 0.28 m/s², 0 wheel hops vs 14, 0 respawns vs 1); autotest 2,166 m, one stop at a village junction corner where a building stands 0.35 m from the junction (master has the same building and junction; its random route did not pass there); world 71 MB vs 92; shots: the same scenes |
 | chunks only, no global state, incremental by content | met for every stage (far terrain as patches, `far.bin` streamed) |
 
 ## What is left
