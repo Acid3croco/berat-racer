@@ -9,6 +9,7 @@ Measured at the Bérat centre (400 m): the 1 m ground holds 8 cm rms (34 cm p99)
 p99): ditches, banks, kerbs. Fetch: uv run python -m package --list L fetch-hires [--no-ortho].
 """
 import io
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -28,7 +29,7 @@ THREADS = 4                       # the WMS pool sources.py uses
 
 
 NO_DATA = np.iinfo(np.int32).min
-_zc = None
+_zc = threading.local()
 
 
 def mnt_path(i, j):
@@ -42,12 +43,12 @@ def ortho_path(si, sj, a, b):
 def encode(a):
     """Heights (m, NaN = no data) as whole centimetres (the LiDAR is good to ~10 cm), each row as differences, zstd: ~4 x smaller
     than float32 and within 5 mm."""
-    global _zc
     import zstandard
-    _zc = _zc or zstandard.ZstdCompressor(level=12)
+    if not hasattr(_zc, "c"):                                                         # one compressor per thread: they are not
+        _zc.c = zstandard.ZstdCompressor(level=12)                                     # thread-safe (a shared one crashed the fetch)
     q = np.where(np.isfinite(a), np.round(np.nan_to_num(a) * 100), NO_DATA).astype(np.int64)
     d = np.diff(q, axis=1, prepend=0).astype("<i4")                                  # int32 wraps cleanly round NO_DATA
-    return _zc.compress(d.tobytes())
+    return _zc.c.compress(d.tobytes())
 
 
 def decode(data):
