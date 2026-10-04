@@ -5,7 +5,7 @@ build) on the road pipeline's finished roads, then written in the package's form
 once every sector is done their common range is known and the 16-bit PNGs are written from them.
 """
 import machine                    # first: half the machine, single-threaded maths
-import datetime, gzip, json, shutil, subprocess, time, traceback
+import datetime, gzip, json, os, shutil, subprocess, time, traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -28,6 +28,7 @@ from roads import build as road_build
 
 from . import buildings as pbuildings
 from . import gltf
+from . import hires
 from . import roads as proads
 from . import terrain
 
@@ -66,19 +67,20 @@ def write_geojson(path, feats):
     Path(path).write_text(json.dumps(dict(type="FeatureCollection", features=feats), ensure_ascii=False, separators=(",", ":")))
 
 
-def sample(h, origin, x, y):
-    """The carved terrain (row 0 south) at plan points."""
-    return map_coordinates(h, [(np.asarray(y) - origin[1]) / terrain.CELL, (np.asarray(x) - origin[0]) / terrain.CELL], order=1, mode="nearest")
+def sample(h, origin, cell, x, y):
+    """The carved terrain (row 0 south, `cell` m) at plan points."""
+    return map_coordinates(h, [(np.asarray(y) - origin[1]) / cell, (np.asarray(x) - origin[0]) / cell], order=1, mode="nearest")
 
 
 # ------------------------------------------------------------------ layers
 
-def land_cover(w, origin):
-    """(classes, row directions) per 2 m vertex of the sector (row 0 south); car parks get the parking class."""
-    cls, rows = land.rasterize(w.garea, origin[0], origin[1], terrain.SAMPLES, terrain.CELL)
+def land_cover(w, origin, cell):
+    """(classes, row directions) per terrain vertex of the sector (row 0 south); car parks get the parking class."""
+    n = terrain.samples(cell)
+    cls, rows = land.rasterize(w.garea, origin[0], origin[1], n, cell)
     parks = [shapely.union_all(shapely.polygons(v[t][:, :, :2])) for v, t in w.park_meshes]
     if parks:
-        transform = from_origin(origin[0] - terrain.CELL / 2, origin[1] + (terrain.SAMPLES - 0.5) * terrain.CELL, terrain.CELL, terrain.CELL)
+        transform = from_origin(origin[0] - cell / 2, origin[1] + (n - 0.5) * cell, cell, cell)
         mask = rfeatures.rasterize([(p, 1) for p in parks], out_shape=cls.shape, transform=transform, dtype=np.uint8)[::-1].astype(bool)
         cls[mask] = land.PARKING
     return cls, rows
@@ -91,17 +93,19 @@ def colour(w, origin):
     return np.clip(w.C[r0:r0 + n, c0:c0 + n], 0, 255).astype(np.uint8)
 
 
-def vegetation(w, h, origin):
+def vegetation(w, h, origin, cell):
+    sample_ = lambda x, y: sample(h, origin, cell, x, y)
+
     def rows(a, kinds=None):
-        z = sample(h, origin, a[:, 0], a[:, 2]) if len(a) else np.zeros(0)
+        z = sample_(a[:, 0], a[:, 2]) if len(a) else np.zeros(0)
         out = np.c_[a[:, 0], a[:, 2], z, a[:, 3]] if len(a) else np.zeros((0, 4))
         out = np.round(out, 2)
         if kinds is not None:
             return [[*r, int(k)] for r, k in zip(out.tolist(), kinds)]
         return out.tolist()
-    hedges = [dict(height=round(float(hh), 2), points=np.round(np.c_[xy, sample(h, origin, xy[:, 0], xy[:, 1])], 2).tolist()) for hh, xy in w.hedge_list]
+    hedges = [dict(height=round(float(hh), 2), points=np.round(np.c_[xy, sample_(xy[:, 0], xy[:, 1])], 2).tolist()) for hh, xy in w.hedge_list]
     vines = np.asarray(w.vines, float).reshape(-1, 4)
-    vine_rows = [[round(a, 2) for a in (x0, y0, float(sample(h, origin, [x0], [y0])[0]), x1, y1, float(sample(h, origin, [x1], [y1])[0]))] for x0, y0, x1, y1 in vines.tolist()]
+    vine_rows = [[round(a, 2) for a in (x0, y0, float(sample_([x0], [y0])[0]), x1, y1, float(sample_([x1], [y1])[0]))] for x0, y0, x1, y1 in vines.tolist()]
     return dict(trees=dict(columns=["x", "y", "z", "height", "kind"], kinds=TREE_KINDS, rows=rows(w.trees, w.tree_kind)),
                 shrubs=dict(columns=["x", "y", "z", "height"], rows=rows(w.shrubs)),
                 hedges=hedges, vines=dict(columns=["x0", "y0", "z0", "x1", "y1", "z1"], rows=vine_rows))
@@ -160,7 +164,7 @@ def places(si, sj, w, origin):
 # ------------------------------------------------------------------ one sector
 
 def export_sector(args):
-    si, sj, out, tag = args
+    si, sj, out, tag, cell = args
     t0 = time.time()
     lap = build_world.Laps()
     origin = (-HALF + si * SECTOR, -HALF + sj * SECTOR)
@@ -170,16 +174,17 @@ def export_sector(args):
     w = build_world.compute_sector(si, sj, pieces, meshes, lanes, lap)
     stats = dict(sector=[si, sj])
 
-    h, holes, stats["terrain"] = terrain.carved(w)
-    stats["road_on_terrain"] = terrain.surface_gap(h, origin, pieces, meshes)
-    transform = from_origin(CX + origin[0] - terrain.CELL / 2, CY + origin[1] + SECTOR + terrain.CELL / 2, terrain.CELL, terrain.CELL)
-    with rasterio.open(d / "height.tif", "w", driver="GTiff", width=terrain.SAMPLES, height=terrain.SAMPLES, count=1, dtype="float32",
+    h, holes, stats["terrain"] = terrain.carved(w, cell)
+    stats["road_on_terrain"] = terrain.surface_gap(h, origin, cell, pieces, meshes)
+    n = terrain.samples(cell)
+    transform = from_origin(CX + origin[0] - cell / 2, CY + origin[1] + SECTOR + cell / 2, cell, cell)       # pixel centres on the vertices
+    with rasterio.open(d / "height.tif", "w", driver="GTiff", width=n, height=n, count=1, dtype="float32",
                        crs="EPSG:2154", transform=transform, compress="deflate", predictor=3) as f:
         f.write(north_up(h).astype(np.float32), 1)
     write_png(d / "holes.png", north_up(holes.astype(np.uint8) * 255))
     lap("package_terrain")
 
-    cls, rows = land_cover(w, origin)
+    cls, rows = land_cover(w, origin, cell)
     write_png(d / "classes.png", north_up(cls))
     write_png(d / "rows.png", north_up(rows))
     Image.fromarray(north_up(colour(w, origin))).save(d / "colour.jpg", quality=92)
@@ -188,6 +193,17 @@ def export_sector(args):
         shutil.copy(ortho, d / "ortho.jpg")
     elif ortho is not None:
         Image.open(ortho).convert("RGB").save(d / "ortho.jpg", quality=95)
+    fine = [(a, b) for a in range(hires.ORTHO_SPLIT) for b in range(hires.ORTHO_SPLIT)]
+    if all(hires.ortho_path(si, sj, a, b).exists() for a, b in fine):                 # the 0.2 m orthophoto, linked from the cache
+        (d / "ortho20").mkdir(exist_ok=True)
+        for a, b in fine:
+            target = d / "ortho20" / f"{a}_{b}.jpg"
+            target.unlink(missing_ok=True)
+            try:
+                os.link(hires.ortho_path(si, sj, a, b), target)
+            except OSError:
+                shutil.copy(hires.ortho_path(si, sj, a, b), target)
+        stats["ortho20"] = True
     stats["classes"] = {land.NAMES[k]: int(v) for k, v in enumerate(np.bincount(cls.ravel(), minlength=len(land.NAMES))) if v}
     lap("package_ground")
 
@@ -217,7 +233,7 @@ def export_sector(args):
     stats["buildings"] = dict(count=len(feats), triangles=len(mesh))
     lap("package_buildings")
 
-    veg = vegetation(w, h, origin)
+    veg = vegetation(w, h, origin, cell)
     write_json_gz(d / "vegetation.json.gz", veg)
     write_geojson(d / "water.geojson", water(w, origin))
     (d / "places.json").write_text(json.dumps(places(si, sj, w, origin), ensure_ascii=False, separators=(",", ":")))
@@ -280,7 +296,7 @@ def git_commit():
         return None
 
 
-def build(list_path, out, jobs=0, log=print):
+def build(list_path, out, jobs=0, log=print, cell=2.0):
     """Export every sector of `list_path` into `out`, then the manifest. Returns the manifest."""
     sectors = [tuple(s) for s in json.loads(Path(list_path).read_text())["sectors"]]
     tag = road_build.tag_of(list_path)
@@ -295,7 +311,7 @@ def build(list_path, out, jobs=0, log=print):
     jobs = machine.jobs(jobs)
     results, failed = [], []
     with ProcessPoolExecutor(jobs, max_tasks_per_child=20) as ex:
-        futures = [ex.submit(export_safe, (si, sj, str(out), tag)) for si, sj in sectors]
+        futures = [ex.submit(export_safe, (si, sj, str(out), tag, cell)) for si, sj in sectors]
         for k, fut in enumerate(as_completed(futures), 1):
             st = fut.result()
             if "error" in st:
@@ -306,10 +322,12 @@ def build(list_path, out, jobs=0, log=print):
     if failed:
         raise SystemExit(f"failed sectors: {failed}")
     lo, hi = finish_heights(out, sectors)
-    files = sorted(p.name for p in sector_dir(out, *sectors[0]).iterdir())
+    files = sorted(p.name for p in sector_dir(out, *sectors[0]).iterdir() if p.is_file())
     manifest = dict(format=FORMAT, version=VERSION, tag=tag, crs="EPSG:2154", origin=[CX, CY], z_datum="NGF-IGN69",
                     axes="x east, y north, z up, metres from origin", sector_size=SECTOR, sector_origin="x = 3200 si - 16000, y = 3200 sj - 16000",
-                    cell=terrain.CELL, samples=terrain.SAMPLES, sectors=[list(s) for s in sorted(sectors)], files=files,
+                    cell=cell, samples=terrain.samples(cell), sectors=[list(s) for s in sorted(sectors)], files=files,
+                    ortho20=dict(cell=hires.ORTHO_RES, tiles=f"{hires.ORTHO_SPLIT} x {hires.ORTHO_SPLIT} per sector, ortho20/<a>_<b>.jpg, a east, b north, {hires.ORTHO_SIDE} px",
+                                 sectors=sum(1 for r in results if r.get("ortho20"))),
                     height=dict(min=lo, max=hi, png="z = min + v / 65535 * (max - min)"),
                     classes=land.NAMES, tree_kinds=TREE_KINDS, openings=pbuildings.OPENINGS,
                     materials=dict(roads=sorted(proads.MATERIALS), buildings=sorted(pbuildings.MATERIALS)),

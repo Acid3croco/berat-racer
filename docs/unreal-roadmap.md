@@ -10,24 +10,24 @@ The Unity player stays as it is (v0.6.0) until Unreal drives better; no new work
 
 ## Phase A: the map package (Mac)
 
-Every step runs first on the **small map** (`tools/data/big/small_sectors.json`, 9 sectors, minutes per build), then on
-`berat70scale` (484 sectors). Code goes in `tools/package/`, run with `uv run python -m package <sectors.json> --tag <tag>`.
+Every step ran first on the **small map** (`tools/data/big/small_sectors.json`, 9 sectors), then on `berat70scale` (484 sectors).
+Code: `tools/package/`; commands in `docs/map-package.md`.
 
-| # | Step | Output | Done when |
-|---|---|---|---|
-| A0 | Rebuild the small map's road stages (deleted in the cleanup): `uv run python -m roads build` (the small map is the default list) | `tools/data/big/roads/small/` | the stages exist for the 9 sectors |
-| A1 | Package skeleton: grid, sector folders, `manifest.json`, writers (PNG 16-bit, glTF via `uv add`, GeoJSON) | empty package with a valid manifest | a reader lists the sectors and the origin |
-| A2 | **Carved terrain**: the 2 m ground, roads burnt in (surface − 0.05 m, blended shoulders), water beds, holes. Move the carving out of `build_world.process_sector` into a function both can call | `height.png`, `holes.png` | road mesh never under or floating over the terrain (max gap measured per sector, < 5 cm) |
-| A3 | Land cover: `ground.rasterize` at 2 m, row directions, bare-ground colour | `classes.png`, `rows.png`, `colour.jpg` | class preview image per sector looks right against the orthophoto |
-| A4 | Roads: pieces and junctions to glTF with road UVs; markings mesh; centrelines with attributes | `roads.glb`, `roads.geojson` | opens in Blender on top of the terrain; attributes readable in QGIS |
-| A5 | Buildings: today's walls and roofs to glTF; attributes to GeoJSON | `buildings.glb`, `buildings.geojson` | opens in Blender; heights match the LiDAR |
-| A6 | Vegetation, water, lane graph, places | `vegetation.json.gz`, `water.geojson`, `lanes.json.gz`, `places.json` | counts match today's BN02 chunks |
-| A7 | `check` command: decode every file, compare to the sources (heights vs LiDAR, roads on terrain, ids resolve across sectors), write one preview PNG per sector | report + previews | clean report on the small map |
-| A8 | Full `berat70scale` package, timed and measured | `package/berat70scale/` | size and build time in this file |
-| A9 | Transfer to the PC over the LAN (below) | package on the PC | checksums match |
+| # | Step | Status |
+|---|---|---|
+| A0 | Small map's road stages rebuilt (`uv run python -m roads build`) | done, 34 s |
+| A1 | `build_world.compute_sector` apart from the Unity chunk writer; package skeleton, manifest, writers (numpy glTF writer, no new dependency) | done; the Unity chunks are unchanged by the split (decompressed, file for file) |
+| A2 | **Carved terrain** at 2, 1 or 0.5 m: LiDAR ground, roads burnt in, shoulders, cap, water beds, holes | done: the terrain is never above a road edge (2 cm under at least), seams between sectors 0.000 m |
+| A3 | Land cover classes and row directions per vertex, bare-ground colour, orthophoto 4 m and 0.2 m | done |
+| A4 | Roads: strips with road UVs, junctions, car parks, skirts, bridge deck sides, French markings; attributes; lane graph | done; Khronos validator 0 errors 0 warnings |
+| A5 | Buildings: walls and roofs (faces checked outward), every measure and the facade layout | done |
+| A6 | Vegetation, water (levels per outline point), places | done |
+| A7 | `check`: decode, seams, ids, lane links, face orientation, road on terrain, previews | done, small map passes |
+| A8 | Full `berat70scale` package | see below |
+| A9 | Transfer to the PC over the LAN | when the PC is reachable (below) |
 
-A2 is the one real piece of new work: today the carved terrain exists only in memory and inside the Unity chunks. The rest is
-writing out what the pipeline already computes.
+Fixed on the way, in the shared code: the water level of a canal depended on the sector's window (up to 0.4 m between sectors;
+the Unity world had the same seams), now a function of position only; the drawn road width is x 1.33 (was 1.27).
 
 ### Transfer to the PC
 
@@ -56,6 +56,8 @@ Milestone 1 is **driving a stock car on the small map in Unreal**; milestone 2 i
 
 ## Open questions
 
-- Terrain resolution: 2 m is the LiDAR raster we hold; 1 m would need the point cloud (only one tile on disk).
+- Terrain resolution: the package can be built at 2, 1 or 0.5 m (the IGN serves the LiDAR ground at 0.5 m, cached in centimetres).
+  1 m over 70 km is ~70k samples a side: the landscape choice of B2 decides what Unreal takes; a coarser landscape can always be
+  made from the finer package.
 - B2's landscape choice decides how far one Unreal world can reach (70 km today, a département next, France later).
 - ODbL: what an OSM-derived package means for a commercial release (see the licences in `docs/map-package.md`).

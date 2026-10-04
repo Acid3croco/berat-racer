@@ -1,12 +1,18 @@
-"""The terrain of a sector at 2 m, carved under the roads: what the engine's landscape is made from.
+"""The terrain of a sector, carved under the roads: what the engine's landscape is made from. Vertex spacing `cell`: 2 m from the
+2 m LiDAR tiles, 1 m or 0.5 m from the 0.5 m ones (package/hires.py).
 
-  ground   the LiDAR HD ground (mnt, 2 m) sampled at the vertices, plus what the world build does to its 4 m grid (water beds
-           scooped below the level, stream beds cut, the ground dropped under bridge decks), carried over as a difference
-  roads    under every ground-level paved surface (carriageways, junctions, car parks) the ground is the surface ROAD_SINK below it;
-           around them the edge field of stitch.py blends from the paved edges back to the ground, exactly as the 4 m world does
-  holes    vertices of cells cut away over the tunnel portals (the 4 m world's tunnel holes, at 2 m)
+  ground    the LiDAR HD ground sampled at the vertices, plus what the world build does to its 4 m grid (water beds scooped below
+            the level, stream beds cut, the ground dropped under bridge decks), carried over as a difference
+  roads     under every ground-level paved surface (carriageways, junctions, car parks) the ground is the surface ROAD_SINK below
+            it; around them the edge field of stitch.py blends from the paved edges back to the ground, as the 4 m world does
+  shoulder  a vertex of a cell the paved surface touches, outside it, takes the nearest paved edge's height (less ROAD_SINK): the
+            cells along a road edge neither lift the ground over it (a cutting) nor drop it away (an embankment)
+  cap       wherever the bilinear terrain still stands within EDGE_CLEARANCE of a paved edge (two roads at different levels closer
+            than a cell: a retaining wall), the corners of that cell are lowered by the excess
+  holes     vertices of cells cut away over the tunnel portals (the 4 m world's tunnel holes)
 
-Vertices: (SAMPLES x SAMPLES) on the sector's square, 2 m apart, row 0 = south here (flipped to north-up when written).
+The work is done on the sector and APRON metres around it, so both sectors of a border see the same roads and agree on its
+vertices exactly. Rows south first here (flipped to north-up when written).
 """
 import numpy as np
 import shapely
@@ -18,23 +24,32 @@ import build_world
 import stitch
 from roads import config as road_config
 
-CELL = 2.0
-SAMPLES = int(build_world.SECTOR / CELL) + 1        # 1601
-REACH = 64.0                                        # m of ground computed around the sector, for the field near its border
+from . import hires
 
-
-SHOULDER_REACH = CELL * np.sqrt(2.0) + 0.1      # m: the paved edges a shoulder vertex follows
+CELLS = (2.0, 1.0, 0.5)
+REACH = 64.0                                     # m of ground computed around the sector, for the field near its border
+APRON = 32.0                                     # m of the work grid past each side of the sector
 CAP_ROUNDS = 8
 EDGE_CLEARANCE = 0.02                            # m: the terrain stays at least this far under every paved edge
-APRON = 16                                       # cells worked out past each side of the sector, so both sectors of a border see the same
-                                                 # roads around it and agree on its vertices (shoulders, caps reach a few cells)
+BLOCK = 400_000                                  # vertices evaluated at a time (the edge field holds 16 neighbours each)
 
 
-def touched_vertices(tris, origin, n):
-    """(n, n) row 0 south: vertices of the 2 m cells of an n x n vertex grid from `origin` that any paved triangle (t, 3, 3) touches."""
+def samples(cell):
+    return int(round(build_world.SECTOR / cell)) + 1
+
+
+def grid(origin, size, cell):
+    """Plan coordinates (n, n) of a vertex grid from `origin`, `size` metres wide."""
+    n = int(round(size / cell)) + 1
+    v = np.arange(n) * cell
+    return np.meshgrid(origin[0] + v, origin[1] + v)
+
+
+def touched_vertices(tris, origin, n, cell):
+    """(n, n) row 0 south: vertices of the cells of an n x n vertex grid from `origin` that any paved triangle (t, 3, 3) touches."""
     cells = np.zeros((n - 1, n - 1), bool)
     if len(tris):
-        transform = from_origin(origin[0], origin[1] + (n - 1) * CELL, CELL, CELL)
+        transform = from_origin(origin[0], origin[1] + (n - 1) * cell, cell, cell)
         shapes = ((shapely.Polygon(t[:, :2]), 1) for t in tris)
         cells = rasterize(shapes, out_shape=cells.shape, transform=transform, dtype=np.uint8, all_touched=True)[::-1].astype(bool)
     out = np.zeros((n, n), bool)
@@ -42,13 +57,12 @@ def touched_vertices(tris, origin, n):
     return out
 
 
-def cap_under_edges(h, origin, xy, ceiling):
+def cap_under_edges(h, origin, cell, xy, ceiling):
     """Lower the terrain (n x n grid from `origin`) wherever it stands over a paved edge sample's `ceiling`: the four corners of its
-    cell by the excess, round after round (a corner shared with a neighbouring cell may lift that one's edge again). The engine's
-    bilinear terrain then never rises over a road edge, even between two roads at different levels closer than a cell (a retaining
-    wall; the road's skirt shows there). In place; returns how many vertices were lowered."""
+    cell by the excess (bilinear weights add up to one: the terrain there drops by exactly that much), round after round (a corner
+    shared with a neighbouring cell may lift that one's edge again). In place; returns how many vertices were lowered."""
     n = h.shape[0]
-    fx, fy = (xy[:, 0] - origin[0]) / CELL, (xy[:, 1] - origin[1]) / CELL
+    fx, fy = (xy[:, 0] - origin[0]) / cell, (xy[:, 1] - origin[1]) / cell
     c, r = np.floor(fx).astype(int), np.floor(fy).astype(int)
     ok = (c >= 0) & (c < n - 1) & (r >= 0) & (r < n - 1)
     c, r, fx, fy, ceiling = c[ok], r[ok], fx[ok] - c[ok], fy[ok] - r[ok], ceiling[ok]
@@ -60,35 +74,48 @@ def cap_under_edges(h, origin, xy, ceiling):
         over = t > ceiling + 1e-4
         if not over.any():
             break
-        excess = t[over] - ceiling[over]                                              # lowering all four corners by it lowers the
-        for dr in (0, 1):                                                             # bilinear terrain there by exactly that much
+        excess = t[over] - ceiling[over]
+        for dr in (0, 1):
             for dc in (0, 1):
                 idx = (r[over] + dr) * n + c[over] + dc
                 np.minimum.at(flat, idx, flat[idx] - excess)
     return int((flat < before - 1e-6).sum())
 
 
-def grid(origin, size, cell):
-    """Plan coordinates (n, n) of a vertex grid from `origin`, `size` metres wide."""
-    n = int(round(size / cell)) + 1
-    v = np.arange(n) * cell
-    return np.meshgrid(origin[0] + v, origin[1] + v)
+def edge_samples(pieces, meshes, park_meshes, step):
+    """Points (x, y, z) along every ground-level paved edge, at most `step` apart."""
+    lines = [pts for pts, _ in stitch.paved_edges(pieces, meshes, park_meshes) if len(pts) >= 2]
+    return stitch._densify_all(lines, step) if lines else np.zeros((0, 3))
 
 
-def carved(w):
-    """(heights (SAMPLES, SAMPLES) row 0 south, hole mask (SAMPLES, SAMPLES), stats) of the sector computed in `w` (a SectorWorld)."""
+def ground_sampler(w, cell):
+    """The ground (x, y) -> z the terrain starts from: the 2 m tiles for a 2 m cell; finer, the 0.5 m tiles (the 2 m where they have
+    no data)."""
     win = w.win
-    # ground at 2 m over the sector and REACH around it
+    coarse = lambda x, y: win.sample(win.mnt, x, y, 2)
+    if cell >= 2.0:
+        return coarse
+    return hires.Ground(w.ox - REACH, w.oz - REACH, w.ox + build_world.SECTOR + REACH, w.oz + build_world.SECTOR + REACH, coarse)
+
+
+def carved(w, cell=2.0):
+    """(heights (n, n) row 0 south, hole mask (n, n), stats) of the sector computed in `w` (a SectorWorld), n = samples(cell)."""
+    assert cell in CELLS, f"cell {cell}: one of {CELLS}"
+    n = samples(cell)
+    win = w.win
+    sample = ground_sampler(w, cell)
+    # ground over the sector and REACH around it
     x0, y0 = w.ox - REACH, w.oz - REACH
-    gx, gy = grid((x0, y0), build_world.SECTOR + 2 * REACH, CELL)
-    n = gx.shape[0]
-    mnt = win.sample(win.mnt, gx.ravel(), gy.ravel(), 2).reshape(n, n)
+    gx, gy = grid((x0, y0), build_world.SECTOR + 2 * REACH, cell)
+    size = gx.shape[0]
     shaped = map_coordinates(w.H - w.h0, [(gy.ravel() - win.z0) / build_world.CELL, (gx.ravel() - win.x0) / build_world.CELL],
-                             order=1, mode="nearest").reshape(n, n)
-    ground = mnt + np.minimum(shaped, 0.0)                                            # the world build only ever lowers the ground
+                             order=1, mode="nearest").reshape(size, size)
+    ground = sample(gx.ravel(), gy.ravel()).reshape(size, size) + np.minimum(shaped, 0.0)    # the world build only ever lowers it
+    lowered = round(float(-np.minimum(shaped, 0).min()), 2)
+    del gx, gy, shaped, sample
 
     def ground_at(xy):
-        return map_coordinates(ground, [(xy[:, 1] - y0) / CELL, (xy[:, 0] - x0) / CELL], order=1, mode="nearest")
+        return map_coordinates(ground, [(xy[:, 1] - y0) / cell, (xy[:, 0] - x0) / cell], order=1, mode="nearest")
 
     field = stitch.EdgeField(stitch.paved_edges(w.pieces, w.meshes, []), ground_at)
     if w.park_meshes:
@@ -96,54 +123,58 @@ def carved(w):
     tris = stitch.paved_triangles(w.pieces, w.meshes, w.park_meshes, build_world.road_surface.junction_triangles)
     paved = stitch.PavedHeight(tris)
 
-    # the work grid: the sector and APRON cells around it
-    k0 = int(round(REACH / CELL)) - APRON
-    m = SAMPLES + 2 * APRON
-    work = (slice(k0, k0 + m), slice(k0, k0 + m))
-    origin = (w.ox - APRON * CELL, w.oz - APRON * CELL)
-    h = ground[work].copy()
-    pts = np.c_[gx[work].ravel(), gy[work].ravel()]
-    near = np.zeros(len(pts), bool)
+    # the work grid: the sector and APRON around it
+    apron = int(round(APRON / cell))
+    k0 = int(round(REACH / cell)) - apron
+    m = n + 2 * apron
+    origin = (w.ox - apron * cell, w.oz - apron * cell)
+    flat = ground[k0:k0 + m, k0:k0 + m].copy().ravel()
+    wx, wy = grid(origin, (m - 1) * cell, cell)
+    pts = np.c_[wx.ravel(), wy.ravel()]
+    del wx, wy
+    n_paved = n_shoulder = n_capped = n_near = 0
     if field.tree is not None:
-        near = np.isfinite(field.tree.query(pts, k=1, distance_upper_bound=road_config.RIBBON_REACH)[0])
-    flat = h.ravel()
-    n_paved = n_shoulder = n_capped = 0
-    if near.any():
-        z, _ = field(pts[near])
-        flat[near] = z
-        pz = paved(pts[near])
-        on = np.isfinite(pz)
-        idx = np.flatnonzero(near)[on]
-        flat[idx] = pz[on] - road_config.ROAD_SINK
-        n_paved = len(idx)
-        # the shoulder: a vertex of a cell the paved surface touches, outside it, takes the nearest paved edge's height (less
-        # ROAD_SINK), so the cells along a road edge neither lift the ground over it (a cutting) nor drop it away (an embankment)
-        touched = touched_vertices(tris, origin, m)
-        inside = np.zeros(len(pts), bool); inside[idx] = True
-        shoulder = np.flatnonzero(touched.ravel() & ~inside)
+        inside = np.zeros(len(pts), bool)
+        for start in range(0, len(pts), BLOCK):                                     # the edge field, block by block
+            p = pts[start:start + BLOCK]
+            near = np.isfinite(field.tree.query(p, k=1, distance_upper_bound=road_config.RIBBON_REACH)[0])
+            if not near.any():
+                continue
+            idx = np.flatnonzero(near) + start
+            n_near += len(idx)
+            flat[idx] = field(pts[idx])[0]
+            pz = paved(pts[idx])
+            on = np.isfinite(pz)
+            flat[idx[on]] = pz[on] - road_config.ROAD_SINK
+            inside[idx[on]] = True
+        n_paved = int(inside.sum())
+        shoulder = np.flatnonzero(touched_vertices(tris, origin, m, cell).ravel() & ~inside)
         if len(shoulder):
-            d, i = field.tree.query(pts[shoulder], k=1, distance_upper_bound=SHOULDER_REACH)
+            d, i = field.tree.query(pts[shoulder], k=1, distance_upper_bound=cell * np.sqrt(2.0) + 0.1)
             ok = np.isfinite(d)
             flat[shoulder[ok]] = field.y[i[ok]] - road_config.ROAD_SINK
             n_shoulder = int(ok.sum())
-        n_capped = cap_under_edges(flat.reshape(m, m), origin, field.xy, field.y - EDGE_CLEARANCE)
-    h = flat.reshape(m, m)[APRON:APRON + SAMPLES, APRON:APRON + SAMPLES].copy()
+        e = edge_samples(w.pieces, w.meshes, w.park_meshes, min(stitch.SAMPLE_STEP, cell / 2))
+        n_capped = cap_under_edges(flat.reshape(m, m), origin, cell, e[:, :2], e[:, 2] - EDGE_CLEARANCE)
+    h = flat.reshape(m, m)[apron:apron + n, apron:apron + n].copy()
 
-    # tunnel portals: the 4 m hole cells, each a 2 x 2 block of 2 m cells; a vertex is a hole if a cell around it is
+    # tunnel portals: each 4 m hole cell covers (4 / cell)^2 cells; a vertex is a hole if a cell around it is
     r0 = int(round((w.oz - win.z0) / build_world.CELL)); c0 = int(round((w.ox - win.x0) / build_world.CELL))
-    span = (SAMPLES - 1) // 2
-    cells = np.kron(w.tunnel[r0:r0 + span, c0:c0 + span], np.ones((2, 2), bool))
-    holes = np.zeros((SAMPLES, SAMPLES), bool)
+    span = int(build_world.SECTOR / build_world.CELL)
+    k = int(round(build_world.CELL / cell))
+    cells = np.kron(w.tunnel[r0:r0 + span, c0:c0 + span], np.ones((k, k), bool))
+    holes = np.zeros((n, n), bool)
     holes[:-1, :-1] |= cells; holes[1:, :-1] |= cells; holes[:-1, 1:] |= cells; holes[1:, 1:] |= cells
 
-    stats = dict(paved_vertices=n_paved, field_vertices=int(near.sum()), shoulder_vertices=n_shoulder, capped_vertices=n_capped,
-                 hole_vertices=int(holes.sum()), lowered_by_water_m=round(float(-np.minimum(shaped, 0).min()), 2))
+    stats = dict(cell=cell, paved_vertices=n_paved, field_vertices=n_near, shoulder_vertices=n_shoulder, capped_vertices=n_capped,
+                 hole_vertices=int(holes.sum()), lowered_by_water_m=lowered)
     return h, holes, stats
 
 
-def surface_gap(h, origin, pieces, meshes):
-    """How the carved terrain meets the road surface: (terrain above the road: max, terrain below: p99, max) in metres, over the
-    vertices of the ground-level paved surfaces inside the sector (the terrain read as the engine does, bilinear between vertices)."""
+def surface_gap(h, origin, cell, pieces, meshes):
+    """How the carved terrain meets the drawn road surface, over the edge vertices of the ground-level carriageways and the junction
+    vertices inside the sector (the terrain read as the engine does, bilinear between vertices): terrain above the road (max, count
+    over 2 cm), terrain below it (p99, max), in metres."""
     pts = []
     for p in pieces:
         if p.bridge or p.tunnel or not p.drawn.any():
@@ -161,7 +192,7 @@ def surface_gap(h, origin, pieces, meshes):
     pts = pts[inside]
     if not len(pts):
         return dict(points=0)
-    t = map_coordinates(h, [(pts[:, 1] - y0) / CELL, (pts[:, 0] - x0) / CELL], order=1, mode="nearest")
+    t = map_coordinates(h, [(pts[:, 1] - y0) / cell, (pts[:, 0] - x0) / cell], order=1, mode="nearest")
     d = t - pts[:, 2]
     return dict(points=int(len(pts)), terrain_above_road_max=round(float(d.max()), 3),
                 terrain_above_road_over_2cm=int((d > 0.02).sum()),
