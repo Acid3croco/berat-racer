@@ -23,7 +23,8 @@ from . import gltf
 CLASS_COLOURS = {"none": (150, 140, 120), "meadow": (120, 170, 90), "cereal": (215, 195, 110), "row crop": (180, 150, 90), "vineyard": (140, 90, 120),
                  "orchard": (90, 150, 70), "fallow": (190, 180, 130), "parking": (90, 90, 95), "garden": (110, 160, 100), "yard": (160, 150, 140),
                  "forest": (40, 100, 50), "cemetery": (130, 130, 150), "pitch": (80, 190, 80), "scrub": (100, 130, 70)}
-MESH_SLACK = 40.0          # m a road or building mesh may reach past its sector (a segment owned by its midpoint, a wall)
+MESH_SLACK = 400.0         # m a mesh may reach past its sector: a junction, car park or building belongs to the sector holding its
+                           # centre, and a Toulouse warehouse or interchange is large
 SEAM_TOLERANCE = 0.05      # m between the shared edges of two sectors
 
 
@@ -52,7 +53,7 @@ def check(out, log=print):
     step = (hi - lo) / 65535
     heights, lane_ids, lane_refs, road_ids, building_ids = {}, {}, [], set(), set()
     (out / "previews").mkdir(exist_ok=True)
-    over, wrong_faces = {}, [0, 0]
+    over, wrong_faces, overhang = {}, [0, 0], [0.0]
     for si, sj in sectors:
         d = out / "sectors" / f"{si}_{sj}"
         ox, oy = -16000 + size * si, -16000 + size * sj
@@ -85,6 +86,8 @@ def check(out, log=print):
                 if not np.isfinite(v).all():
                     problems.append(f"{si}_{sj}: {name} {material} has NaN")
                     continue
+                reach = np.maximum.reduce([ox - v[:, 0], v[:, 0] - ox - size, oy - v[:, 1], v[:, 1] - oy - size]).max(initial=0.0)
+                overhang[0] = max(overhang[0], float(reach))
                 outside = (v[:, 0] < ox - MESH_SLACK) | (v[:, 0] > ox + size + MESH_SLACK) | (v[:, 1] < oy - MESH_SLACK) | (v[:, 1] > oy + size + MESH_SLACK)
                 if outside.any():
                     problems.append(f"{si}_{sj}: {name} {material}: {int(outside.sum())} vertices beyond the sector")
@@ -137,7 +140,7 @@ def check(out, log=print):
         problems.append(f"terrain stands up to {above:.3f} m over a road")
     overview(out / "previews" / "overview.png", over, sectors)
     summary = dict(sectors=len(sectors), roads=len(road_ids), buildings=len(building_ids), lanes=len(lane_ids), lane_links=len(lane_refs),
-                   lane_links_beyond_border=len(border), wrong_faces=wrong_faces, seam_max_m=round(seam, 4), height_step_m=round(step, 4),
+                   lane_links_beyond_border=len(border), wrong_faces=wrong_faces, mesh_overhang_max_m=round(overhang[0], 1), seam_max_m=round(seam, 4), height_step_m=round(step, 4),
                    terrain_above_road_max_m=above, road_over_terrain_max_m=below, problems=problems)
     (out / "check.json").write_text(json.dumps(dict(summary=summary, sectors=notes), indent=1))
     log(json.dumps(summary, indent=1))

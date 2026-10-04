@@ -282,6 +282,54 @@ def spawn(out, sectors):
     return best[1] if best else None
 
 
+def unify_seams(out, sectors, log=print):
+    """Make the shared edge rows / columns of neighbouring sectors identical: both take the lower of the two (so the terrain stays
+    under the roads of both), repeated until the corners shared by four sectors agree too. The sectors are computed apart and
+    agree almost everywhere; where a car park near a border is cut a little differently by the roads each sector loads, they
+    differ by a few centimetres (berat70scale at 2 m: 2 borders of ~900 over 5 cm, 16 cm at most). Returns (vertices changed, max change)."""
+    have = set(sectors)
+    edges = {}
+    for s in sectors:
+        with rasterio.open(sector_dir(out, *s) / "height.tif") as f:
+            a = f.read(1)                                                             # row 0 north
+        edges[s] = dict(n=a[0].copy(), s=a[-1].copy(), w=a[:, 0].copy(), e=a[:, -1].copy())
+    original = {s: {k: v.copy() for k, v in e.items()} for s, e in edges.items()}
+
+    def corners(e):                                                                   # the corner vertices live in two edges each
+        e["n"][0] = e["w"][0] = min(e["n"][0], e["w"][0]); e["n"][-1] = e["e"][0] = min(e["n"][-1], e["e"][0])
+        e["s"][0] = e["w"][-1] = min(e["s"][0], e["w"][-1]); e["s"][-1] = e["e"][-1] = min(e["s"][-1], e["e"][-1])
+
+    for _ in range(4):
+        changed = False
+        for si, sj in sectors:
+            for other, mine, theirs in (((si + 1, sj), "e", "w"), ((si, sj + 1), "n", "s")):
+                if other not in have:
+                    continue
+                low = np.minimum(edges[(si, sj)][mine], edges[other][theirs])
+                if (low != edges[(si, sj)][mine]).any() or (low != edges[other][theirs]).any():
+                    changed = True
+                    edges[(si, sj)][mine], edges[other][theirs] = low.copy(), low.copy()
+        for e in edges.values():
+            corners(e)
+        if not changed:
+            break
+    count, worst = 0, 0.0
+    for s in sectors:
+        diff = {k: original[s][k] - edges[s][k] for k in edges[s]}
+        if not any(d.any() for d in diff.values()):
+            continue
+        count += sum(int((d != 0).sum()) for d in diff.values())
+        worst = max(worst, max(float(d.max()) for d in diff.values()))
+        path = sector_dir(out, *s) / "height.tif"
+        with rasterio.open(path) as f:
+            a, profile = f.read(1), f.profile
+        a[0], a[-1], a[:, 0], a[:, -1] = edges[s]["n"], edges[s]["s"], edges[s]["w"], edges[s]["e"]
+        with rasterio.open(path, "w", **profile) as f:
+            f.write(a, 1)
+    log(f"seams: {count} edge vertices lowered to their neighbour's, {worst:.3f} m at most")
+    return count, round(worst, 3)
+
+
 def finish_heights(out, sectors):
     """The common height range, then every sector's height.png from its height.tif."""
     lo, hi = np.inf, -np.inf
@@ -349,6 +397,7 @@ def build(list_path, out, jobs=0, log=print, cell=2.0, fresh=False):
             log(f"[{k}/{len(todo)}] {st['sector']} {st['secs']} s  road on terrain {st['road_on_terrain']}  elapsed {time.time() - t0:.0f} s")
     if failed:
         raise SystemExit(f"failed sectors: {failed}")
+    seams = unify_seams(out, sectors, log)
     lo, hi = finish_heights(out, sectors)
     files = sorted(p.name for p in sector_dir(out, *sectors[0]).iterdir() if p.is_file())
     manifest = dict(format=FORMAT, version=VERSION, tag=tag, crs="EPSG:2154", origin=[CX, CY], z_datum="NGF-IGN69",
@@ -366,7 +415,7 @@ def build(list_path, out, jobs=0, log=print, cell=2.0, fresh=False):
     docs = Path(__file__).resolve().parents[2] / "docs"                               # the format and the plan travel with the data
     shutil.copy(docs / "map-package.md", out / "README.md")
     shutil.copy(docs / "unreal-roadmap.md", out / "ROADMAP.md")
-    totals = dict(sectors=len(results), buildings=sum(r["buildings"]["count"] for r in results), trees=sum(r["vegetation"]["trees"] for r in results),
+    totals = dict(sectors=len(results), seam_vertices_lowered=seams[0], seam_lowered_max_m=seams[1], buildings=sum(r["buildings"]["count"] for r in results), trees=sum(r["vegetation"]["trees"] for r in results),
                   road_triangles=sum(r["roads"]["triangles"] for r in results),
                   terrain_above_road_max=max(r["road_on_terrain"].get("terrain_above_road_max", 0) for r in results))
     (out / "report.json").write_text(json.dumps(dict(totals=totals, sectors=sorted(results, key=lambda r: r["sector"])), indent=1))
