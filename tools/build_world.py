@@ -30,7 +30,7 @@ Usage: uv run python build_world.py [--sectors 4:4,4:5,5:4,5:5] [--jobs N] [--ou
        (the world geometry always comes from --list; --sectors only selects which of them to (re)build)
 """
 import machine                    # first: half the machine, single-threaded maths (machine.py)
-import argparse, functools, os, shutil, gzip, math, hashlib, json, struct, sys, time, collections, zlib
+import argparse, functools, os, shutil, gzip, math, hashlib, json, struct, sys, time, collections, types, zlib
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 import numpy as np
@@ -510,20 +510,14 @@ class Laps:
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (2**20 if sys.platform == "darwin" else 2**10)
         return dict(parts=self.parts, cpu=round(time.process_time() - self.cpu0, 1), rss_mb=round(peak))
 
-def process_sector(args):
-    si, sj, out_dir, ci0, cj0, far_cell, road_tag, reuse = args                                # (ci0, cj0): chunk index of the world origin
-    t0 = time.time()
-    lap = Laps()
-    out_dir = Path(out_dir)
-    ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
+class SectorWorld(types.SimpleNamespace):
+    """What compute_sector made of a sector (see its fields there)."""
 
-    # ---- roads: the finished surface of the road pipeline, cut to this window (the same geometry in every sector, so borders match)
-    pieces, meshes, lanes = road_build.load_sector(road_tag, si, sj)
-    made_from, stamp = sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes), key_file(out_dir, si, sj)
-    if reuse and stamp.exists() and stamp.read_text() == made_from and all(f.exists() for f in chunk_files(out_dir, si, sj, ci0, cj0)) and far_file(out_dir, si, sj).exists():
-        return si, sj, dict(sector=(si, sj), unchanged=True, secs=round(time.time() - t0, 1))
-    stamp.unlink(missing_ok=True)                                                    # from here on the chunks on disk are not what that key described
-    lap("roads")
+
+def compute_sector(si, sj, pieces, meshes, lanes, lap):
+    """Everything a sector is made of, before it is cut into chunks: terrain, colour, water, buildings, plants, ground classes (a SectorWorld).
+    Read by the chunk writer below and by the map package (tools/package)."""
+    ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
     win = Window(si, sj)
     lap("rasters")
     wbox = box(win.x0 + 10, win.z0 + 10, win.x0 + win.size - 10, win.z0 + win.size - 10)
@@ -564,6 +558,7 @@ def process_sector(args):
     mnt_s = uniform_filter(win.mnt, 2, mode="nearest")
     h = win.sample(mnt_s, gx.ravel(), gz.ravel(), 2)
     pts = np.c_[gx.ravel(), gz.ravel()]
+    h0 = h.reshape(nv, nv).copy()                                                    # the ground before water beds and bridge drops (map package)
     wmask, wlevel = water_level_field(areas, h.reshape(nv, nv), win.x0, win.z0, nv)
     if wmask.any():                                                                  # scoop the bed below the surface, deeper away from the shore
         shore = distance_transform_edt(wmask) * CELL
@@ -615,8 +610,8 @@ def process_sector(args):
     paved_height = stitch.PavedHeight(stitch.paved_triangles(pieces, meshes, park_meshes, road_surface.junction_triangles))
     # the 16 m terrain, drawn far away without ribbons, keeps the old embankments: blended to the road, then benched under it
     H_far = road_terrain.bench(road_terrain.blend(h.reshape(nv, nv), win.x0, win.z0, CELL, footprint, cloud), win.x0, win.z0, CELL, footprint, cloud, road_config.ROAD_SINK)
-    ribbon_piece, ribbon_junction = {}, {}                                          # the field replaced the per-edge ribbons: none exported
-    holes = tunnel_holes(H, pieces, win.x0, win.z0) | band_cut
+    tunnel = tunnel_holes(H, pieces, win.x0, win.z0)
+    holes = tunnel | band_cut
     troughs = carried_water(areas, H, wmask, wlevel, pieces, win.x0, win.z0, nv)
     lod_kernel = np.zeros((5, 5)); lod_kernel[::2, ::2] = 1.0 / 9.0                  # each 16 m vertex averages the 3 x 3 vertices 8 m around it
     LOW = correlate(H_far, lod_kernel, mode="nearest")[::LOD_CELL // CELL, ::LOD_CELL // CELL]
@@ -841,6 +836,26 @@ def process_sector(args):
                         car_park_m2=round(sum(land.plan_area(v[t]) for v, t in park_meshes)))
 
     lap("ground")
+    return SectorWorld(win=win, ox=ox, oz=oz, pieces=pieces, meshes=meshes, lanes=lanes, road_pts=road_pts, footprint=footprint, paved=paved, garea=garea, parks=parks, park_meshes=park_meshes, surfaces=surfaces, field=field, paved_height=paved_height, areas=areas, wlines=wlines, wmask=wmask, wlevel=wlevel, troughs=troughs, h0=h0, H=H, LOW=LOW, tunnel=tunnel, holes=holes, band_cut=band_cut, C=C, far_raw=far_raw, low_col=low_col, buildings=buildings, bpolys=bpolys, roof_stats=roof_stats, facade_stats=facade_stats, trees=trees, shrubs=shrubs, tree_kind=tree_kind, G=G, A=A, vines=vines, bays=bays, hedge_list=hedge_list, hedge_pieces=hedge_pieces, ground_stats=ground_stats)
+
+
+def process_sector(args):
+    si, sj, out_dir, ci0, cj0, far_cell, road_tag, reuse = args                                # (ci0, cj0): chunk index of the world origin
+    t0 = time.time()
+    lap = Laps()
+    out_dir = Path(out_dir)
+    ox, oz = -HALF + si * SECTOR, -HALF + sj * SECTOR
+
+    # ---- roads: the finished surface of the road pipeline, cut to this window (the same geometry in every sector, so borders match)
+    pieces, meshes, lanes = road_build.load_sector(road_tag, si, sj)
+    made_from, stamp = sector_key(si, sj, ci0, cj0, far_cell, pieces, meshes, lanes), key_file(out_dir, si, sj)
+    if reuse and stamp.exists() and stamp.read_text() == made_from and all(f.exists() for f in chunk_files(out_dir, si, sj, ci0, cj0)) and far_file(out_dir, si, sj).exists():
+        return si, sj, dict(sector=(si, sj), unchanged=True, secs=round(time.time() - t0, 1))
+    stamp.unlink(missing_ok=True)                                                    # from here on the chunks on disk are not what that key described
+    lap("roads")
+    w = compute_sector(si, sj, pieces, meshes, lanes, lap)
+    ribbon_piece, ribbon_junction = {}, {}                                          # the field replaced the per-edge ribbons: none exported
+    (win, park_meshes, surfaces, field, paved_height, areas, wlines, wlevel, troughs, H, LOW, holes, band_cut, C, far_raw, low_col, buildings, roof_stats, facade_stats, trees, shrubs, tree_kind, G, A, vines, bays, hedge_pieces, ground_stats) = (w.win, w.park_meshes, w.surfaces, w.field, w.paved_height, w.areas, w.wlines, w.wlevel, w.troughs, w.H, w.LOW, w.holes, w.band_cut, w.C, w.far_raw, w.low_col, w.buildings, w.roof_stats, w.facade_stats, w.trees, w.shrubs, w.tree_kind, w.G, w.A, w.vines, w.bays, w.hedge_pieces, w.ground_stats)
     # ---- bucket everything by chunk and write
     def bucket_xy(arr, xcol=0, zcol=2):
         d = collections.defaultdict(list)
