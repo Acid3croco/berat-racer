@@ -208,7 +208,8 @@ def export_sector(args):
     lap("package_ground")
 
     mesh = gltf.Mesh()
-    stats["roads"] = proads.surfaces(mesh, pieces, meshes, w.park_meshes, origin, SECTOR, build_world.road_surface.junction_triangles)
+    ground = lambda xy: sample(h, origin, cell, xy[:, 0], xy[:, 1])
+    stats["roads"] = proads.surfaces(mesh, pieces, meshes, w.park_meshes, origin, SECTOR, build_world.road_surface.junction_triangles, ground)
     paint = proads.Paint()
     for p in pieces:
         proads.paint_piece(paint, p, proads.piece_segments(p, origin, SECTOR), origin, SECTOR)

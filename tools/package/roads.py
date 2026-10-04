@@ -14,7 +14,8 @@ import numpy as np
 from roads import lanes as road_lanes
 
 LIFT = 0.02                     # m: paint above the surface
-SKIRT = 1.2                     # m: the side of a ground-level road or junction below its edge (a retaining wall between two levels)
+SKIRT = 1.2                     # m: the side of a ground-level road or junction below its edge at least ...
+SKIRT_BURY = 0.3                # ... and down to this far under the terrain there (a retaining wall where two levels meet)
 DECK_DEPTH = 1.2                # m: the side of a bridge deck below its surface
 MATERIALS = dict(asphalt=dict(colour=(0.18, 0.18, 0.19)), dirt=dict(colour=(0.45, 0.38, 0.28)),
                  deck=dict(colour=(0.6, 0.6, 0.58)), paint=dict(colour=(0.92, 0.92, 0.9), roughness=0.6))
@@ -60,15 +61,18 @@ def strip(top, bottom, s, facing, both=False):
     return pos, tri, uv
 
 
-def skirt(mesh, material, edge, inward, s):
-    """A strip hanging SKIRT below an edge polyline (n, 3), facing away from `inward` (n - 1, 2): wherever the 2 m terrain dips
-    under a road edge, it shows the road's side instead of a gap."""
+def skirt(mesh, material, edge, inward, s, ground):
+    """A strip hanging from an edge polyline (n, 3), facing away from `inward` (n - 1, 2), down SKIRT or to SKIRT_BURY under the
+    terrain (`ground(xy)`), whichever is lower: wherever the terrain dips under a road edge, it shows the road's side (a retaining
+    wall between two roads at different levels) instead of a gap."""
     away = np.c_[-np.asarray(inward)[:, :2], np.zeros(len(inward))]
-    pos, tri, uv = strip(edge, edge - (0, 0, SKIRT), s, away)
+    bottom = edge.copy()
+    bottom[:, 2] = np.minimum(edge[:, 2] - SKIRT, ground(edge[:, :2]) - SKIRT_BURY)
+    pos, tri, uv = strip(edge, bottom, s, away)
     mesh.add(material, pos, tri, uv)
 
 
-def add_piece(mesh, p, segs):
+def add_piece(mesh, p, segs, ground):
     """The carriageway of segments `segs` as strips sharing their vertices, its skirts, and for a bridge deck its two sides."""
     material = surface_material(p.edge)
     across = np.hypot(*(p.left[:, :2] - p.right[:, :2]).T)
@@ -85,8 +89,8 @@ def add_piece(mesh, p, segs):
                 pos, tri, uv = strip(edge, edge - (0, 0, DECK_DEPTH), s, np.c_[-inward, np.zeros(len(inward))], both=True)
                 mesh.add("deck", pos, tri, uv)
         elif not p.tunnel:
-            skirt(mesh, material, left, into, s)
-            skirt(mesh, material, right, -into, s)
+            skirt(mesh, material, left, into, s, ground)
+            skirt(mesh, material, right, -into, s, ground)
 
 
 def ccw_up(v, t):
@@ -98,12 +102,12 @@ def ccw_up(v, t):
     return t
 
 
-def surfaces(mesh, pieces, meshes, park_meshes, origin, size, junction_triangles):
-    """Every surface owned by the sector into `mesh`. Returns counts."""
+def surfaces(mesh, pieces, meshes, park_meshes, origin, size, junction_triangles, ground):
+    """Every surface owned by the sector into `mesh`; `ground(xy)`: the package terrain (for the skirts). Returns counts."""
     n_seg = n_junction = n_park = 0
     for p in pieces:
         segs = piece_segments(p, origin, size)
-        add_piece(mesh, p, segs)
+        add_piece(mesh, p, segs, ground)
         n_seg += len(segs)
     for j, v in meshes:
         if not owned(np.array([j.centre[0]]), np.array([j.centre[1]]), origin, size)[0]:
@@ -113,7 +117,7 @@ def surfaces(mesh, pieces, meshes, park_meshes, origin, size, junction_triangles
         mesh.add(material, v, t, v[:, :2], v[:, :2])
         for a, b in j.boundary[j.boundary[:, 2] == 0][:, :2]:                          # outline edges that are not a road's mouth;
             d = v[b, :2] - v[a, :2]                                                    # the surface lies on their left (stitch.py)
-            skirt(mesh, material, v[[a, b]], np.array([[-d[1], d[0]]]), np.array([0.0, float(np.hypot(*d))]))
+            skirt(mesh, material, v[[a, b]], np.array([[-d[1], d[0]]]), np.array([0.0, float(np.hypot(*d))]), ground)
         n_junction += 1
     for v, t in park_meshes:
         c = v[:, :2].mean(axis=0)

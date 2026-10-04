@@ -29,7 +29,7 @@ from . import hires
 CELLS = (2.0, 1.0, 0.5)
 REACH = 64.0                                     # m of ground computed around the sector, for the field near its border
 APRON = 32.0                                     # m of the work grid past each side of the sector
-CAP_ROUNDS = 8
+CAP_ROUNDS = 12
 EDGE_CLEARANCE = 0.02                            # m: the terrain stays at least this far under every paved edge
 BLOCK = 400_000                                  # vertices evaluated at a time (the edge field holds 16 neighbours each)
 
@@ -58,9 +58,10 @@ def touched_vertices(tris, origin, n, cell):
 
 
 def cap_under_edges(h, origin, cell, xy, ceiling):
-    """Lower the terrain (n x n grid from `origin`) wherever it stands over a paved edge sample's `ceiling`: the four corners of its
-    cell by the excess (bilinear weights add up to one: the terrain there drops by exactly that much), round after round (a corner
-    shared with a neighbouring cell may lift that one's edge again). In place; returns how many vertices were lowered."""
+    """Lower the terrain (n x n grid from `origin`) wherever it stands over a paved edge sample's `ceiling`: the corners of its cell
+    that stand above the ceiling, by the excess but never below the ceiling, round after round (a corner shared with a
+    neighbouring cell may lift that one's edge again). Where two roads at different levels share a cell (a retaining wall) the
+    terrain follows the lower one and the upper road's skirt reaches down to it. In place; returns how many vertices were lowered."""
     n = h.shape[0]
     fx, fy = (xy[:, 0] - origin[0]) / cell, (xy[:, 1] - origin[1]) / cell
     c, r = np.floor(fx).astype(int), np.floor(fy).astype(int)
@@ -68,17 +69,20 @@ def cap_under_edges(h, origin, cell, xy, ceiling):
     c, r, fx, fy, ceiling = c[ok], r[ok], fx[ok] - c[ok], fy[ok] - r[ok], ceiling[ok]
     flat = h.ravel()
     before = flat.copy()
-    for _ in range(CAP_ROUNDS):
+    for round_ in range(CAP_ROUNDS + 1):
         at = lambda dr, dc: flat[(r + dr) * n + c + dc]
         t = at(0, 0) * (1 - fx) * (1 - fy) + at(0, 1) * fx * (1 - fy) + at(1, 0) * (1 - fx) * fy + at(1, 1) * fx * fy
         over = t > ceiling + 1e-4
         if not over.any():
             break
-        excess = t[over] - ceiling[over]
+        excess, cap = t[over] - ceiling[over], ceiling[over]
+        if round_ == CAP_ROUNDS:                                                      # the last round: straight to the ceiling,
+            excess = np.full(len(cap), np.inf)                                        # so the terrain is under every edge for sure
         for dr in (0, 1):
-            for dc in (0, 1):
-                idx = (r[over] + dr) * n + c[over] + dc
-                np.minimum.at(flat, idx, flat[idx] - excess)
+            for dc in (0, 1):                                                         # a corner above the edge comes down by the
+                idx = (r[over] + dr) * n + c[over] + dc                               # excess, never below the edge: one under it
+                z = flat[idx]                                                         # stays (a cascade between two roads at different
+                np.minimum.at(flat, idx, np.where(z > cap, np.maximum(z - excess, cap), z))   # levels would dig a pit otherwise)
     return int((flat < before - 1e-6).sum())
 
 
