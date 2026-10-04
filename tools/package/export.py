@@ -335,6 +335,9 @@ def build(list_path, out, jobs=0, log=print, cell=2.0):
                     built=dict(commit=git_commit(), date=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                                seconds=round(time.time() - t0), jobs=jobs))
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False))
+    docs = Path(__file__).resolve().parents[2] / "docs"                               # the format and the plan travel with the data
+    shutil.copy(docs / "map-package.md", out / "README.md")
+    shutil.copy(docs / "unreal-roadmap.md", out / "ROADMAP.md")
     totals = dict(sectors=len(results), buildings=sum(r["buildings"]["count"] for r in results), trees=sum(r["vegetation"]["trees"] for r in results),
                   road_triangles=sum(r["roads"]["triangles"] for r in results),
                   terrain_above_road_max=max(r["road_on_terrain"].get("terrain_above_road_max", 0) for r in results))
