@@ -24,6 +24,7 @@ def main():
     b = commands.add_parser("build")
     b.add_argument("--cell", type=float, default=2.0, help="terrain vertex spacing in metres: 2, 1 or 0.5 (under 2: fetch-hires first)")
     b.add_argument("--jobs", type=int, default=0, help="worker processes (default and most: half the cores, machine.py)")
+    b.add_argument("--fresh", action="store_true", help="export every sector again (default: keep those already exported at this cell)")
     f = commands.add_parser("fetch-hires")
     f.add_argument("--no-ortho", action="store_true", help="the 0.5 m ground only")
     commands.add_parser("check")
@@ -33,7 +34,7 @@ def main():
     log = functools.partial(print, flush=True)
     if a.command == "build":
         from . import export
-        export.build(a.list, out, a.jobs, log, cell=a.cell)
+        export.build(a.list, out, a.jobs, log, cell=a.cell, fresh=a.fresh)
     elif a.command == "fetch-hires":
         from . import hires
         sectors = [tuple(s) for s in json.loads(Path(a.list).read_text())["sectors"]]

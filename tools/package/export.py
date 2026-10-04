@@ -6,7 +6,7 @@ once every sector is done their common range is known and the 16-bit PNGs are wr
 """
 import machine                    # first: half the machine, single-threaded maths
 import datetime, gzip, json, os, shutil, subprocess, time, traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
@@ -245,6 +245,15 @@ def export_sector(args):
     return stats
 
 
+def finished(out, si, sj, cell):
+    """The stats of a sector already exported at `cell` (None when it is not complete)."""
+    path = sector_dir(out, si, sj) / "stats.json"
+    if not path.exists():
+        return None
+    st = json.loads(path.read_text())
+    return st if st.get("terrain", {}).get("cell") == cell else None
+
+
 def export_safe(args):
     try:
         return export_sector(args)
@@ -296,7 +305,7 @@ def git_commit():
         return None
 
 
-def build(list_path, out, jobs=0, log=print, cell=2.0):
+def build(list_path, out, jobs=0, log=print, cell=2.0, fresh=False):
     """Export every sector of `list_path` into `out`, then the manifest. Returns the manifest."""
     sectors = [tuple(s) for s in json.loads(Path(list_path).read_text())["sectors"]]
     tag = road_build.tag_of(list_path)
@@ -309,16 +318,35 @@ def build(list_path, out, jobs=0, log=print, cell=2.0):
     (out / "sectors").mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     jobs = machine.jobs(jobs)
-    results, failed = [], []
+    results, failed, todo = [], [], []
+    for si, sj in sectors:                                                            # resume: stats.json is written last, so a sector
+        done = finished(out, si, sj, cell) if not fresh else None                     # that has it at this cell is complete
+        if done:
+            results.append(done)
+        else:
+            todo.append((si, sj))
+    if results:
+        log(f"{len(results)} sectors already exported at {cell} m (--fresh to redo them)")
+    # submitted a few at a time, never all at once: a pool given every task and recycling its workers (max_tasks_per_child) stalled
+    # for good when the first workers retired (berat70scale, 100 of 484 sectors)
+    pending, queue, k = set(), iter(todo), 0
     with ProcessPoolExecutor(jobs, max_tasks_per_child=20) as ex:
-        futures = [ex.submit(export_safe, (si, sj, str(out), tag, cell)) for si, sj in sectors]
-        for k, fut in enumerate(as_completed(futures), 1):
-            st = fut.result()
+        while True:
+            while len(pending) < jobs + 1:
+                s = next(queue, None)
+                if s is None:
+                    break
+                pending.add(ex.submit(export_safe, (*s, str(out), tag, cell)))
+            if not pending:
+                break
+            fut = next(iter(wait(pending, return_when=FIRST_COMPLETED)[0]))
+            pending.discard(fut)
+            st, k = fut.result(), k + 1
             if "error" in st:
-                failed.append(st["sector"]); log(f"[{k}/{len(sectors)}] FAILED {st['sector']} {st['error']}\n{st['trace']}")
+                failed.append(st["sector"]); log(f"[{k}/{len(todo)}] FAILED {st['sector']} {st['error']}\n{st['trace']}")
                 continue
             results.append(st)
-            log(f"[{k}/{len(sectors)}] {st['sector']} {st['secs']} s  road on terrain {st['road_on_terrain']}  elapsed {time.time() - t0:.0f} s")
+            log(f"[{k}/{len(todo)}] {st['sector']} {st['secs']} s  road on terrain {st['road_on_terrain']}  elapsed {time.time() - t0:.0f} s")
     if failed:
         raise SystemExit(f"failed sectors: {failed}")
     lo, hi = finish_heights(out, sectors)
