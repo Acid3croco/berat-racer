@@ -319,11 +319,10 @@ def water_level_field(areas, h0, vx0, vz0, nv):
         return np.where(denb > 2e-3, np.minimum(inside, bankh - 0.15), inside), den
 
     level, _ = level_of(mask, bank)
-    void = h0 < level - CARRIED_WATER
-    if (mask & void).any():
-        again, den = level_of(mask & ~void, bank & ~void)
-        level = np.where(den > 1e-3, again, level)                                  # (no water left within the box: keep the first level)
-    return mask, level.astype(np.float32)
+    void = h0 < level - CARRIED_WATER                                                # always taken out (not only when some water of the
+    again, den = level_of(mask & ~void, bank & ~void)                                # window lies over a void): the level then depends on
+    level = np.where(den > 1e-3, again, level)                                      # the ~120 m around a point only, so sectors agree
+    return mask, level.astype(np.float32)                                           # (no water left within the box: keep the first level)
 
 def carried_water(areas, ground, mask, level, pieces, vx0, vz0, nv):
     """Plan polygons of the water carried by a structure (a canal on an aqueduct over a road trench). Seeds: water over ground lying CARRIED_WATER
@@ -737,7 +736,7 @@ def compute_sector(si, sj, pieces, meshes, lanes, lap):
         buildings.append(dict(k=kind, n="", fe=fe, tw=tower, cp=cp, cn=[len(ring)] + [len(h) for h in courtyards], p=np.round(ring, 2).ravel().tolist(), b=round(ground - 0.8, 2), h=round(wall + 0.8, 2),
                               r=round(rise, 2), rc=[], c=roof, w=list(WALLS[seed % len(WALLS)]),
                               rm=int(roof_code[0]) if roof_code[:1].isdigit() else 255, rv=rv, rt=rt.reshape(-1, 3), rg=shaped["wall"],
-                              facade_in=facade_in))
+                              id=p["cleabs"], shape=shaped["shape"], pitch=round(float(shaped["pitch"]), 1), facade_in=facade_in))      # id, shape, pitch: for the map package
         bpolys.append(poly)
 
     lap("buildings")

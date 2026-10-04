@@ -57,7 +57,7 @@ Speed limits: a numeric `maxspeed`, else a French code in `maxspeed`, `zone:maxs
 (`FR:urban` 50, `FR:rural` 80, `FR:30` / `FR:zone30` 30, `FR:living_street` 20, ...); `maxspeed:forward` / `:backward` give a limit
 per direction (none on the small map; ~30 ways over berat70). The surface string (asphalt, concrete, gravel, sett, ...) is exported.
 
-Drawn width = surveyed width x 1.27 (the 1.15 the game had, plus 10 %), at least 5.0 m for a paved two-way road (two cars must
+Drawn width = surveyed width x 1.33 (the 1.15 the game had, then 1.27), at least 5.0 m for a paved two-way road (two cars must
 pass), 3.6 m for a paved one-way road, 3.2 m for a track. Where BD TOPO has no surveyed width (28 % of the sections, mostly tracks
 and new streets) the width is estimated, in this order: by nature (roundabout 6 m, track 3 m, gravel road 3.2 m), by lane count
 (1 lane 3 m, 2 lanes 5 m, 2.8 m per lane beyond), by importance class (7.2 m for class 1 down to 4.4 m for class 6), else 5.2 m;

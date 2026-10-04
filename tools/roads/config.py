@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 # ---------------------------------------------------------------- widths
 
-WIDTH_SCALE = 1.27                # drawn carriageway = surveyed width x this (the game had 1.15; +10 % on top: easier cruising, cars are wider than they look)
+WIDTH_SCALE = 1.33                # drawn carriageway = surveyed width x this (the game had 1.15, then 1.27; 1.33 for the Unreal map: easier cruising, cars are wider than they look)
 MIN_WIDTH_PAVED = 3.6             # narrowest drawn paved road (one-way)
 MIN_WIDTH_TWO_WAY = 5.0           # narrowest drawn paved two-way road: two cars must be able to pass (the survey has many at 3 - 3.5 m)
 MIN_WIDTH_DIRT = 3.2
@@ -30,8 +30,8 @@ LANES_INFERRED_ONEWAY_WIDTH = 6.5    # a one-way road without a lane count has t
 MARKED_ONE_LANE_CLASSES = ("collector",)
 MARKED_MIN_WIDTH = 4.0            # m surveyed: a paved two-way road this wide gets a centre line whatever its class. A gameplay choice (it
                                   # helps to read the road while driving), not the ortho: real one-lane locals and streets are mostly unpainted
-EDGE_DASHED_WIDTH = 7.0           # drawn width from which a marked road has dashed edge lines (the 5.5 m surveyed the game used, x WIDTH_SCALE)
-EDGE_SOLID_WIDTH = 8.3            # ... solid edge lines (6.5 m surveyed)
+EDGE_DASHED_WIDTH = 7.3           # drawn width from which a marked road has dashed edge lines (the 5.5 m surveyed the game used, x WIDTH_SCALE)
+EDGE_SOLID_WIDTH = 8.6            # ... solid edge lines (6.5 m surveyed)
 EDGE_STYLE_WINDOW = 40.0          # the edge style is the majority over this length
 SIGHT_EYE = 1.0                   # eye and object height above the road for overtaking sight
 SIGHT_SCAN = 40.0                 # the side view is scanned this far from the road edge (LiDAR surface model) ...

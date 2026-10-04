@@ -20,3 +20,4 @@ dist/
 world_hg/
 world_*/
 tools/data/
+/package/
