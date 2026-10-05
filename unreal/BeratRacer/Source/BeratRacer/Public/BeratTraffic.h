@@ -24,6 +24,10 @@ struct FBeratTrafficCar
 	float Length = 450.f;
 	float Stopped = 0.f;         // seconds held at a stop line
 	bool bActive = false;
+	bool bDynamic = false;       // a physics body near the player, steered along its lane by velocity
+	bool bWrecked = false;       // knocked off its lane: free physics until it is far and out of sight
+	float WreckTime = 0.f;
+	FVector LastSetVelocity = FVector::ZeroVector;   // the velocity steering set last tick (an impact changes it)
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
 	// head lamps (0, 1) and tail lamps (2, 3): small emissive blocks on the body, shown at night
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Lamps;
@@ -64,6 +68,18 @@ private:
 	float LampClock = 0.f;
 	bool bLampsOn = false;
 	void FitLamps(FBeratTrafficCar& C);
+	// Near the player (DynamicRadius) a car is a real physics body with its mass, so a hit is shared instead of the
+	// kinematic car acting as a wall; a hit (off its line or tipped) wrecks it.
+	UPROPERTY(EditAnywhere, Category = "Traffic") float DynamicRadius = 1500.f;
+	void SetDynamic(FBeratTrafficCar& C, bool bOn, const FVector& Velocity);
+public:
+	// tests: the active car nearest a point; wrecks and physics bodies now
+	bool NearestCar(const FVector& From, FVector& OutPos, FVector& OutDir, float& OutSpeed) const;
+	int32 NumWrecked() const;
+	int32 NumDynamic() const;
+private:
+	void Release(FBeratTrafficCar& C);
+	FVector PlayerPos = FVector::ZeroVector;
 	void UpdateLamps(float Dt);
 
 	// Occupancy: lane index -> cars on it (indices into Cars), rebuilt every tick.

@@ -326,6 +326,46 @@ void ABeratPlayerController::Tick(float Dt)
 		Handling(Car, Dt);
 		return;
 	}
+	// -BeratCrash: at 12 s, 25 m behind the nearest traffic car on its line, 30 km/h faster, throttle on: a rear-end hit
+	if (Car && FParse::Param(FCommandLine::Get(), TEXT("BeratCrash")))
+	{
+		ABeratTraffic* Tr = nullptr;
+		for (TActorIterator<ABeratTraffic> It(GetWorld()); It; ++It) { Tr = *It; }
+		static int32 Phase = 0;
+		static float Before = 0.f, Clock = 0.f;
+		FVector P, D; float V;
+		if (Phase == 0 && TestClock > 12.f && Tr && Tr->NearestCar(Car->GetActorLocation(), P, D, V))
+		{
+			Car->SetActorLocationAndRotation(P - D * 1200.f + FVector(0, 0, 60.f), D.Rotation(), false, nullptr, ETeleportType::TeleportPhysics);
+			Car->GetMesh()->SetPhysicsLinearVelocity(D * (V + 830.f));
+			Car->AutoThrottle = 1.f; Car->AutoSteer = 0.f; Car->AutoBrake = 0.f;
+			UE_LOG(LogTemp, Display, TEXT("[berat-crash] 12 m behind a traffic car at %.0f km/h, closing at 30 km/h"), V * 0.036f);
+			Phase = 1; Clock = 0.f;
+		}
+		else if (Phase == 1)
+		{
+			Clock += Dt;
+			if (Clock < 0.3f) { Before = Car->GetSpeedKmh(); }
+			if (Tr && Tr->NearestCar(Car->GetActorLocation(), P, D, V))      // aim at it
+			{
+				const FVector L = Car->GetActorTransform().InverseTransformPosition(P);
+				Car->AutoSteer = FMath::Clamp(FMath::Atan2(L.Y, L.X) * 3.f, -1.f, 1.f);
+			}
+			if (Clock > 1.0f && Clock < 1.0f + Dt * 1.5f || Clock > 4.f)
+			{
+				UE_LOG(LogTemp, Display, TEXT("[berat-crash] t+%.1f s: player %.0f km/h (was %.0f), traffic dynamic %d, wrecked %d"),
+					Clock, Car->GetSpeedKmh(), Before, Tr ? Tr->NumDynamic() : -1, Tr ? Tr->NumWrecked() : -1);
+				if (Clock > 4.f) { TestShot(TEXT("crash")); Phase = 2; }
+			}
+		}
+		else if (Phase == 2)
+		{
+			Car->AutoThrottle = 0.f; Car->AutoBrake = 1.f;
+			Clock += Dt;
+			if (Clock > 5.f) { FGenericPlatformMisc::RequestExit(false); }
+		}
+		return;
+	}
 	// -BeratStart=x,y (package metres): put the car on the nearest lane there, along it, once.
 	// -BeratOffroad=x,y,heading (degrees from east, counter-clockwise): exactly there on the ground, then straight ahead on
 	// part throttle instead of the autopilot (grip and drag per surface).

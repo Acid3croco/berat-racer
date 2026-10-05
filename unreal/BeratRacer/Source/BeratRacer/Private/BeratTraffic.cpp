@@ -178,6 +178,23 @@ void ABeratTraffic::Tick(float Dt)
 		FRotator R;
 		PC->GetPlayerViewPoint(ViewPos, R);
 		ViewDir = R.Vector();
+		PlayerPos = PC->GetPawn() ? PC->GetPawn()->GetActorLocation() : ViewPos;
+	}
+
+	// wrecks: free physics; back to the pool when far and out of sight (or after a minute)
+	for (FBeratTrafficCar& C : Cars)
+	{
+		if (!C.bWrecked)
+		{
+			continue;
+		}
+		C.WreckTime += Dt;
+		const FVector At = C.Body->GetComponentLocation();
+		const bool bSeen = FVector::DotProduct((At - ViewPos).GetSafeNormal(), ViewDir) > 0.3f;
+		if ((C.WreckTime > 20.f && FVector::Dist(At, PlayerPos) > 8000.f && !bSeen) || C.WreckTime > 60.f || At.Z < -100000.f)
+		{
+			Release(C);
+		}
 	}
 
 	OnLane.Reset();
@@ -242,8 +259,12 @@ void ABeratTraffic::Tick(float Dt)
 		{
 			Place(C);
 		}
-		else
+		else if (!C.bWrecked)
 		{
+			if (C.bDynamic)
+			{
+				SetDynamic(C, false, FVector::ZeroVector);
+			}
 			C.Body->SetVisibility(false);
 			C.Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		}
@@ -267,7 +288,75 @@ void ABeratTraffic::Place(FBeratTrafficCar& C)
 	Graph->Sample(C.Lane, FMath::Max(C.S - Half, 0.f), Pr, D);
 	const FVector Dir = (Pf - Pr).GetSafeNormal();
 	const FVector Mid = (Pf + Pr) * 0.5f;
+	const float Near = FVector::Dist(Mid, PlayerPos);
+	if (!C.bDynamic && Near < DynamicRadius)
+	{
+		C.Body->SetWorldLocationAndRotation(Mid, Dir.Rotation(), false, nullptr, ETeleportType::TeleportPhysics);
+		SetDynamic(C, true, Dir * C.Speed);
+		return;
+	}
+	if (C.bDynamic)
+	{
+		const FVector At = C.Body->GetComponentLocation();
+		const FVector Up = C.Body->GetUpVector();
+		// knocked off its line or tipped: a wreck (free physics, out of the lane bookkeeping)
+		const FVector Now = C.Body->GetPhysicsLinearVelocity();
+		const bool bImpact = !C.LastSetVelocity.IsZero() && FVector::Dist2D(Now, C.LastSetVelocity) > 250.f;
+		if (bImpact || FVector::Dist2D(At, Mid) > 180.f || Up.Z < 0.85f)
+		{
+			C.bWrecked = true;
+			C.bActive = false;
+			C.WreckTime = 0.f;
+			return;
+		}
+		if (Near > DynamicRadius * 1.4f)
+		{
+			SetDynamic(C, false, FVector::ZeroVector);
+			C.Body->SetWorldLocationAndRotation(Mid, Dir.Rotation(), false, nullptr, ETeleportType::TeleportPhysics);
+			return;
+		}
+		// steered along the lane by velocity: lane speed plus a pull back onto the line; yaw turned to the lane heading
+		const FVector V = C.Body->GetPhysicsLinearVelocity();
+		FVector Want = Dir * C.Speed + (Mid - At) * 3.f;
+		Want.Z = V.Z;
+		C.Body->SetPhysicsLinearVelocity(Want);
+		C.LastSetVelocity = Want;
+		const float Yaw = FRotator::NormalizeAxis(Dir.Rotation().Yaw - C.Body->GetComponentRotation().Yaw);
+		FVector W = C.Body->GetPhysicsAngularVelocityInDegrees();
+		W.Z = FMath::Clamp(Yaw * 4.f, -90.f, 90.f);
+		C.Body->SetPhysicsAngularVelocityInDegrees(W);
+		return;
+	}
 	C.Body->SetWorldLocationAndRotation(Mid, Dir.Rotation(), false, nullptr, ETeleportType::TeleportPhysics);
+}
+
+void ABeratTraffic::SetDynamic(FBeratTrafficCar& C, bool bOn, const FVector& Velocity)
+{
+	C.bDynamic = bOn;
+	C.LastSetVelocity = FVector::ZeroVector;
+	C.Body->SetSimulatePhysics(bOn);
+	if (bOn)
+	{
+		// mass from the model's length: 4 m car ~1250 kg, 7 m van ~3500 kg
+		const float Mass = FMath::Clamp(C.Length / 100.f * 310.f, 900.f, 4000.f);
+		C.Body->SetMassOverrideInKg(NAME_None, Mass, true);
+		C.Body->SetLinearDamping(0.05f);
+		C.Body->SetAngularDamping(0.4f);
+		C.Body->SetPhysicsLinearVelocity(Velocity);
+	}
+}
+
+void ABeratTraffic::Release(FBeratTrafficCar& C)
+{
+	C.bWrecked = false;
+	C.bActive = false;
+	SetDynamic(C, false, FVector::ZeroVector);
+	C.Body->SetVisibility(false);
+	C.Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	for (UStaticMeshComponent* L : C.Lamps)
+	{
+		L->SetVisibility(false);
+	}
 }
 
 float ABeratTraffic::GapAhead(int32 Car, float& OutLeaderSpeed) const
@@ -416,7 +505,7 @@ void ABeratTraffic::SpawnSome()
 	int32 Budget = 6;
 	for (int32 i = 0; i < Cars.Num() && Budget > 0; ++i)
 	{
-		if (!Cars[i].bActive)
+		if (!Cars[i].bActive && !Cars[i].bWrecked)
 		{
 			TrySpawn(i);
 			--Budget;
@@ -486,4 +575,46 @@ bool ABeratTraffic::TrySpawn(int32 Car)
 	Place(C);
 	OnLane.FindOrAdd(L).Add(Car);
 	return true;
+}
+
+
+bool ABeratTraffic::NearestCar(const FVector& From, FVector& OutPos, FVector& OutDir, float& OutSpeed) const
+{
+	float Best = 1e18f;
+	for (const FBeratTrafficCar& C : Cars)
+	{
+		if (!C.bActive)
+		{
+			continue;
+		}
+		const float D = FVector::DistSquared(C.Body->GetComponentLocation(), From);
+		if (D < Best)
+		{
+			Best = D;
+			OutPos = C.Body->GetComponentLocation();
+			OutDir = C.Body->GetForwardVector();
+			OutSpeed = C.Speed;
+		}
+	}
+	return Best < 1e18f;
+}
+
+int32 ABeratTraffic::NumWrecked() const
+{
+	int32 N = 0;
+	for (const FBeratTrafficCar& C : Cars)
+	{
+		N += C.bWrecked;
+	}
+	return N;
+}
+
+int32 ABeratTraffic::NumDynamic() const
+{
+	int32 N = 0;
+	for (const FBeratTrafficCar& C : Cars)
+	{
+		N += C.bDynamic && !C.bWrecked;
+	}
+	return N;
 }
