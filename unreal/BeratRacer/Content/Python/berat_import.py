@@ -148,15 +148,18 @@ def world_uv(g, metres, col=5, rotate=0.0):
     div = g.node(unreal.MaterialExpressionDivide, col, const_b=metres * 100.0)
     g.link(mask, "", div, "A")
     if rotate:
-        rot = g.node(unreal.MaterialExpressionRotator, col - 1, speed=0.0, time=rotate)
-        g.link(div, "", rot, "Coordinate")
-        return rot
+        # a non-integer offset per tiling scale: the two scales never line up, the repetition breaks
+        off = g.node(unreal.MaterialExpressionConstant2Vector, col, r=rotate * 0.37, g=rotate * 0.61)
+        add = g.node(unreal.MaterialExpressionAdd, col - 1)
+        g.link(div, "", add, "A")
+        g.link(off, "", add, "B")
+        return add
     return div
 
 
 # Terrain layer -> (surface role, tile metres, tint sRGB multiplier). Roles come from fetch_textures.py.
 TERRAIN = {
-    "none": ("bare", 3.0, (1.0, 0.97, 0.92)),
+    "bare": ("bare", 3.0, (1.0, 0.97, 0.92)),
     "meadow": ("meadow", 2.5, (0.92, 1.0, 0.85)),
     "cereal": ("cereal", 3.0, (1.12, 1.02, 0.78)),
     "row_crop": ("row_crop", 3.0, (1.0, 0.95, 0.9)),
@@ -393,8 +396,10 @@ def water_material():
         pan = g.node(unreal.MaterialExpressionPanner, 3, speed_x=0.01, speed_y=0.006)
         g.link(uv1, "", pan, "Coordinate")
         n = g.texture(wn, pan, normal=True)
-        flat = g.node(unreal.MaterialExpressionFlattenNormal, 1, )
-        g.link(n, "RGB", flat, "Normal")
+        up = g.node(unreal.MaterialExpressionConstant3Vector, 2, constant=unreal.LinearColor(0, 0, 1, 1))
+        flat = g.node(unreal.MaterialExpressionLinearInterpolate, 1, const_alpha=0.35)   # 35 % of the ripples
+        g.link(up, "", flat, "A")
+        g.link(n, "RGB", flat, "B")
         g.out(flat, "", unreal.MaterialProperty.MP_NORMAL)
     return g.save()
 
@@ -566,7 +571,7 @@ def setup_sky_and_game(lane_graph, traffic_models):
     fc = fog.component
     fc.set_editor_property("fog_density", 0.004)
     fc.set_editor_property("fog_height_falloff", 0.08)
-    fc.set_editor_property("volumetric_fog", True)
+    fc.set_editor_property("enable_volumetric_fog", True)
     pp = spawn(unreal.PostProcessVolume, "Berat_PostProcess")
     pp.set_editor_property("unbound", True)
     s = pp.settings
@@ -608,6 +613,23 @@ def lamp_mesh():
     return unreal.load_asset("/Engine/BasicShapes/Cylinder")
 
 
+def save():
+    """Every dirty package, World Partition's external actor packages included (save_all_dirty_levels skips them)."""
+    unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True)
+
+
+def finish():
+    """The steps after the landscape and the meshes: lane graph (reloaded), sky, game actors, save."""
+    t0 = time.time()
+    graph = unreal.load_asset(f"{ROOT}/Data/LaneGraph")
+    with step("sky and game"):
+        setup_sky_and_game(graph, [])
+    with step("save"):
+        unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).save_all_dirty_levels()
+        eal.save_directory(ROOT, only_if_is_dirty=True, recursive=True)
+    unreal.log(f"[berat] finish done in {time.time() - t0:.0f} s")
+
+
 def run(skip_textures=False):
     t0 = time.time()
     block = json.load(open(os.path.join(CACHE, "block.json")))
@@ -619,19 +641,27 @@ def run(skip_textures=False):
         materials = make_materials(layer_names)
     with step("map"):
         new_map()
-    with step("landscape"):
-        import_landscape(materials["terrain"])
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    if any(isinstance(a, unreal.Landscape) for a in eas.get_all_level_actors()):
+        unreal.log("[berat] landscape already in the map: kept")
+    else:
+        with step("landscape"):
+            import_landscape(materials["terrain"])
+        with step("save landscape"):
+            save()
     with step("height check"):
         check_heights()
-    with step("sector meshes"):
-        import_sector_meshes(materials)
+    if not any(a.get_actor_label().startswith("roads_") for a in eas.get_all_level_actors()):
+        with step("sector meshes"):
+            import_sector_meshes(materials)
+        with step("save meshes"):
+            save()
     with step("lane graph"):
         graph = unreal.BeratImporter.import_lane_graph(os.path.join(CACHE, "lanes.json"), f"{ROOT}/Data/LaneGraph")
     with step("sky and game"):
         setup_sky_and_game(graph, [])
     with step("save"):
-        unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).save_all_dirty_levels()
-        eal.save_directory(ROOT, only_if_is_dirty=True, recursive=True)
+        save()
     log["seconds"]["total"] = round(time.time() - t0, 1)
     out = os.path.join(unreal.Paths.project_saved_dir(), "berat_import.json")
     with open(out, "w") as f:

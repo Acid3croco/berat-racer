@@ -30,6 +30,11 @@ def read_png(path: Path) -> np.ndarray:
     return np.asarray(im, dtype=np.uint16 if im.mode.startswith("I;16") else np.uint8)
 
 
+def layer_name(cls: str) -> str:
+    """Unreal layer name of a package class. "none" would be Unreal's NAME_None (FName is case-insensitive): it is "bare"."""
+    return "bare" if cls == "none" else cls.replace(" ", "_")
+
+
 def box_blur(a: np.ndarray, r: int) -> np.ndarray:
     """Mean over a (2r+1)^2 window, edges clamped. float32 in, float32 out."""
     if r <= 0:
@@ -122,7 +127,7 @@ def main() -> None:
     layers = []
     for k in present:
         wgt = np.round(soft[k] / total * 255).astype(np.uint8)
-        name = names[k].replace(" ", "_")
+        name = layer_name(names[k])
         wgt.tofile(out / f"layer_{name}.r8")
         layers.append({"id": k, "name": name, "share": float((classes == k).mean())})
     del soft, total
