@@ -1043,7 +1043,7 @@ def prop_meshes(baked=False):
 
 # finish -> (surface role, metres per tile, colour from the data (vertex colour) weight, plinth and grime)
 FINISHES = {
-    "wall_render": ("wall_plaster", 2.5, 0.7, True), "wall_brick": ("wall_brick", 1.2, 0.1, True),
+    "wall_render": ("wall_plaster_c", 1.6, 1.0, True), "wall_brick": ("wall_brick", 1.2, 0.1, True),
     "wall_stone": ("wall_stone", 2.0, 0.15, True), "wall_concrete": ("wall_concrete", 2.0, 0.3, True),
     "wall_metal": ("wall_metal", 2.0, 0.35, False), "wall_wood": ("wall_wood", 2.0, 0.2, True),
     "roof_canal": ("roof_canal", 2.0, 0.55, False), "roof_canal_b": ("roof_canal_b", 2.0, 0.55, False),
@@ -1051,6 +1051,9 @@ FINISHES = {
     "roof_metal": ("roof_metal", 2.0, 0.3, False), "roof_fibre": ("roof_fibre", 2.5, 0.25, False),
     "roof_flat": ("roof_flat", 3.0, 0.3, False),
 }
+
+# finishes whose texture colour pattern is too loud: share of its luminance contrast kept
+FLAT_PATTERN = {"wall_render": 0.35}
 
 
 def building_material(name, role, metres, colour_weight, weathering):
@@ -1066,6 +1069,11 @@ def building_material(name, role, metres, colour_weight, weathering):
     vc = g.node(unreal.MaterialExpressionVertexColor, 4)
     lum = g.node(unreal.MaterialExpressionDesaturation, 3)
     g.link(c, "RGB", lum, "")
+    if name in FLAT_PATTERN:
+        # keep the grain (normal, roughness) but not the texture's colour pattern: luminance pulled toward 0.5
+        flat = g.node(unreal.MaterialExpressionLinearInterpolate, 3, const_a=0.5, const_alpha=FLAT_PATTERN[name])
+        g.link(lum, "", flat, "B")
+        lum = flat
     tinted = g.node(unreal.MaterialExpressionMultiply, 3)
     g.link(lum, "", tinted, "A")
     g.link(vc, "", tinted, "B")
@@ -1083,6 +1091,30 @@ def building_material(name, role, metres, colour_weight, weathering):
     base = g.node(unreal.MaterialExpressionMultiply, 1)
     g.link(mix, "", base, "A")
     g.link(shade, "", base, "B")
+    # weathering at large scale (world space, texture-based noise): patches 0.84..1.06 over a few metres, and on walls
+    # vertical rain streaks 0.86..1 (noise stretched along Z)
+    wp = g.node(unreal.MaterialExpressionWorldPosition, 4)
+    pd = g.node(unreal.MaterialExpressionDivide, 3, const_b=350.0)
+    g.link(wp, "", pd, "A")
+    patch = g.node(unreal.MaterialExpressionNoise, 2, scale=1.0, levels=3, output_min=0.78, output_max=1.08,
+                   noise_function=unreal.NoiseFunction.NOISEFUNCTION_GRADIENT_TEX, quality=1)
+    g.link(pd, "", patch, "Position")
+    pm = g.node(unreal.MaterialExpressionMultiply, 1)
+    g.link(base, "", pm, "A")
+    g.link(patch, "", pm, "B")
+    base = pm
+    if name.startswith("wall"):
+        sv = g.node(unreal.MaterialExpressionConstant3Vector, 4, constant=unreal.LinearColor(1.0 / 45.0, 1.0 / 45.0, 1.0 / 700.0, 1))
+        sp = g.node(unreal.MaterialExpressionMultiply, 3)
+        g.link(wp, "", sp, "A")
+        g.link(sv, "", sp, "B")
+        streak = g.node(unreal.MaterialExpressionNoise, 2, scale=1.0, levels=2, output_min=0.74, output_max=1.0,
+                        noise_function=unreal.NoiseFunction.NOISEFUNCTION_GRADIENT_TEX, quality=1)
+        g.link(sp, "", streak, "Position")
+        sm = g.node(unreal.MaterialExpressionMultiply, 1)
+        g.link(base, "", sm, "A")
+        g.link(streak, "", sm, "B")
+        base = sm
     if weathering:
         # metres up the wall (UV0.y), unscaled
         tc0 = g.node(unreal.MaterialExpressionTextureCoordinate, 4, coordinate_index=0)

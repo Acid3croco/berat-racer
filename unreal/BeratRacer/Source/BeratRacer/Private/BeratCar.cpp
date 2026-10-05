@@ -403,7 +403,7 @@ void ABeratCar::UpdateWheelFx(float Dt)
 		switch (S.PhysMaterial->SurfaceType)
 		{
 		case SurfaceType1: case SurfaceType2:                  // asphalt, concrete: tyre smoke when sliding hard
-			Intensity = FMath::Clamp((Slip - 400.f) / 400.f, 0.f, 1.5f);
+			Intensity = FMath::Clamp((Slip - 900.f) / 600.f, 0.f, 1.5f);
 			Fx = 1;
 			break;
 		case SurfaceType3: Fx = 1; break;                       // gravel
