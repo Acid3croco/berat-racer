@@ -23,8 +23,13 @@ Code: `tools/package/`; commands in `docs/map-package.md`.
 | A5 | Buildings: walls and roofs (faces checked outward), every measure and the facade layout | done |
 | A6 | Vegetation, water (levels per outline point), places | done |
 | A7 | `check`: decode, seams, ids, lane links, face orientation, road on terrain, previews | done, small map passes |
-| A8 | Full `berat70scale` package | see below |
+| A8 | Full `berat70scale` package | done at 2 m (below); 1 m with the 0.2 m orthophoto once `fetch-hires` is complete |
 | A9 | Transfer to the PC over the LAN | when the PC is reachable (below) |
+
+**`berat70scale` at 2 m** (`package/berat70scale-2m`, 2026-10-05): 484 sectors (4,956 km², Toulouse to the Pyrenean foothills) in
+37.6 min at 5 workers after the roads (20.5 min); 13 GB. 752,748 buildings, 9.0 M trees, 231,347 road pieces, 921,390 lanes,
+106 M road triangles. `check`: no problem; the terrain under every road edge (2 cm at least), seams identical, 1,568 of 62 M faces
+ambiguous (walls between adjoining buildings), retaining walls up to 11 m closed by skirts (bridge abutments in Toulouse).
 
 Fixed on the way, in the shared code: the water level of a canal depended on the sector's window (up to 0.4 m between sectors;
 the Unity world had the same seams), now a function of position only; the drawn road width is x 1.33 (was 1.27).
