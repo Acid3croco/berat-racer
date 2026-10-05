@@ -212,7 +212,8 @@ int32 ABeratCar::GetGear() const
 
 float ABeratCar::GetRpm() const
 {
-	return GetVehicleMovementComponent()->GetEngineRotationSpeed();
+	const UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+	return W ? W->GetEngineRotationSpeed() : 0.f;
 }
 
 void ABeratCar::ResetOnRoad()
@@ -261,7 +262,7 @@ void ABeratCar::ConfigureChaos()
 	W->SteeringInputRate.FallRate = Assists.SteerFall;
 
 	// Arcade controls of Chaos: level in the air, no roll-overs from a kerb, a little turn-in from steering.
-	W->TargetRotationControl.bEnabled = Assists.AirLevelling > 0.f;
+	W->TargetRotationControl.Enabled = Assists.AirLevelling > 0.f;
 	W->TargetRotationControl.bRollVsSpeedEnabled = false;
 	W->TargetRotationControl.RollControlScaling = Assists.AirLevelling;
 	W->TargetRotationControl.PitchControlScaling = Assists.AirLevelling;
@@ -273,7 +274,7 @@ void ABeratCar::ConfigureChaos()
 	W->TargetRotationControl.AutoCentreRollStrength = Assists.AirLevelling;
 	W->TargetRotationControl.AutoCentrePitchStrength = Assists.AirLevelling * 0.5f;
 	W->TargetRotationControl.AutoCentreYawStrength = 0.f;
-	W->TorqueControl.bEnabled = Assists.YawFromSteering > 0.f;
+	W->TorqueControl.Enabled = Assists.YawFromSteering > 0.f;
 	W->TorqueControl.YawFromSteering = Assists.YawFromSteering;
 	W->TorqueControl.YawTorqueScaling = 1.f;
 	W->TorqueControl.RotationDamping = Assists.RotationDamping;

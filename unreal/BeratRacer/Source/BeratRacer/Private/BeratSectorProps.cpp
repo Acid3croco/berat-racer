@@ -118,12 +118,8 @@ void ABeratLampLights::Tick(float Dt)
 		}
 	}
 	const int32 N = FMath::Min(Near.Num(), Pool.Num());
-	if (Near.Num() > N)
-	{
-		Algo::NthElement(Near, N, [](const auto& A, const auto& B) { return A.Key < B.Key; });
-	}
-	Near.SetNum(N);
 	Near.Sort([](const auto& A, const auto& B) { return A.Key < B.Key; });
+	Near.SetNum(N);
 	for (int32 i = 0; i < Pool.Num(); ++i)
 	{
 		UPointLightComponent* L = Pool[i];

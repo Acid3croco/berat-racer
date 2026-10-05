@@ -13,7 +13,7 @@
 		{ "Name": "PythonScriptPlugin", "Enabled": true },
 		{ "Name": "EditorScriptingUtilities", "Enabled": true },
 		{ "Name": "Interchange", "Enabled": true },
-		{ "Name": "GLTFImporter", "Enabled": true },
+		{ "Name": "InterchangeEditor", "Enabled": true },
 		{ "Name": "PCG", "Enabled": true },
 		{ "Name": "Water", "Enabled": true },
 		{ "Name": "ModelingToolsEditorMode", "Enabled": true, "TargetAllowList": [ "Editor" ] },

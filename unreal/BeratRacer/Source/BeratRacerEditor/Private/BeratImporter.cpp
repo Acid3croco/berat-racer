@@ -11,6 +11,7 @@
 #include "HAL/PlatformTime.h"
 #include "Landscape.h"
 #include "LandscapeConfigHelper.h"
+#include "LandscapeEdit.h"
 #include "LandscapeImportHelper.h"
 #include "LandscapeInfo.h"
 #include "LandscapeLayerInfoObject.h"
@@ -132,7 +133,6 @@ ALandscape* UBeratImporter::ImportLandscape(const FString& BlockDir, UMaterialIn
 	ALandscape* Land = World->SpawnActor<ALandscape>(Location, FRotator::ZeroRotator, P);
 	Land->SetActorRelativeScale3D(FVector(Scl[0]->AsNumber(), Scl[1]->AsNumber(), Scl[2]->AsNumber()));
 	Land->LandscapeMaterial = Material;
-	Land->bCanHaveLayersContent = true;
 	Land->Import(FGuid::NewGuid(), 0, 0, W - 1, H - 1, Sections, Quads, HeightPerLayer, nullptr, MaterialPerLayer,
 		ELandscapeImportAlphamapType::Additive, TArrayView<const FLandscapeLayer>());
 	Land->SetActorLabel(TEXT("BeratLandscape"));
@@ -151,7 +151,8 @@ ALandscape* UBeratImporter::ImportLandscape(const FString& BlockDir, UMaterialIn
 	if (WorldPartitionGridSize > 0 && World->GetWorldPartition())
 	{
 		ULandscapeInfo* Info = Land->GetLandscapeInfo();
-		FLandscapeConfigHelper::ChangeGridSize(Info, WorldPartitionGridSize, TSet<AActor*>());
+		TSet<AActor*> Modified;
+		FLandscapeConfigHelper::ChangeGridSize(Info, WorldPartitionGridSize, Modified);
 	}
 	OutSeconds = FPlatformTime::Seconds() - T0;
 	UE_LOG(LogBerat, Display, TEXT("landscape %dx%d imported in %.1f s"), W, H, OutSeconds);
