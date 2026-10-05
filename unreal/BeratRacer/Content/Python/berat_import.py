@@ -507,10 +507,9 @@ def setup_mesh(mesh, materials, collision, nanite=True):
 
 
 def place(mesh, label, si, sj, collision):
-    """Actor at the sector's south-west corner (the glTF node's translation), in Unreal axes."""
-    x, y = 3200 * si - 16000, 3200 * sj - 16000
-    actor = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).spawn_actor_from_object(
-        mesh, unreal.Vector(x * 100.0, -y * 100.0, 0.0))
+    """Actor at the world origin: Unreal's glTF import (Interchange) bakes the node's translation (the sector's south-west
+    corner) into the vertices and converts glTF axes to Unreal's (UE.Y = -north), so the mesh is already in world space."""
+    actor = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).spawn_actor_from_object(mesh, unreal.Vector(0.0, 0.0, 0.0))
     actor.set_actor_label(label)
     comp = actor.static_mesh_component
     comp.set_collision_enabled(unreal.CollisionEnabled.QUERY_AND_PHYSICS if collision else unreal.CollisionEnabled.NO_COLLISION)
