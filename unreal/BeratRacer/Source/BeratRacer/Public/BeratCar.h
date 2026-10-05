@@ -37,6 +37,10 @@ struct FBeratDriveAssists
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float YawFromSteering = 0.15f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float RotationDamping = 0.3f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") bool bApplyToVehicle = true;
+	// Automatic gearbox shift points as a share of max RPM, light throttle -> full throttle (Chaos's own automatic shifts
+	// at one fixed RPM: 1st held to 57 km/h when cruising). 0 keeps Chaos's automatic.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") FVector2D ShiftUp = FVector2D(0.5, 0.92);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") FVector2D ShiftDown = FVector2D(0.25, 0.55);
 };
 
 UCLASS(Abstract)
@@ -85,6 +89,8 @@ public:
 	float AutoThrottle = -1.f;
 	float AutoSteer = 0.f;
 	float AutoBrake = 0.f;
+	// Wheel puffs spawned so far (test report).
+	int32 WheelFxSpawned = 0;
 
 protected:
 	virtual void BeginPlay() override;
@@ -96,6 +102,8 @@ private:
 	void ShapeInput(float Dt);
 	void UpdateCamera(float Dt);
 	void UpdateLights();
+	void UpdateWheelFx(float Dt);
+	void UpdateGearbox(float Dt);
 
 	void OnThrottle(const FInputActionValue& V) { ThrottleIn = V.Get<float>(); }
 	void OnBrake(const FInputActionValue& V) { BrakeIn = V.Get<float>(); }
@@ -122,4 +130,9 @@ private:
 	int32 CameraMode = 0;            // 0 chase, 1 far chase, 2 bonnet
 	int32 LightMode = 0;             // 0 auto, 1 on, 2 off
 	float UpsideDownTime = 0.f;
+
+	// Wheel puffs per surface (berat_fx.py): dust, gravel dust / tyre smoke, grass bits, mud clods.
+	UPROPERTY(Transient) TArray<TObjectPtr<class UNiagaraSystem>> WheelFx;
+	float WheelFxClock[8] = {};
+	float ShiftHold = 0.f;
 };

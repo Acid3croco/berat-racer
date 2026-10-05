@@ -60,4 +60,21 @@ public:
 	static ABeratSectorProps* ImportSectorProps(UObject* WorldContext, const FString& SectorDir, int32 Si, int32 Sj,
 		const TArray<FBeratKindMeshes>& Kinds, UStaticMesh* LampMesh, FVector LampHead,
 		float PlantCullDistance, int32& OutPlants, int32& OutLamps);
+
+	// Reflection helpers for assets Python cannot reach (Niagara lightweight emitters: their modules and renderers are
+	// UObjects behind engine-internal headers). Objects of a Niagara system: each stateless emitter, then its modules,
+	// then its renderers.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Edit")
+	static TArray<UObject*> NiagaraStatelessObjects(UObject* System);
+
+	// Property names of an object (with their C++ type), a property as exported text, a property set from text.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Edit")
+	static TArray<FString> PropertyNames(UObject* Object);
+	UFUNCTION(BlueprintCallable, Category = "Berat|Edit")
+	static FString GetPropertyText(UObject* Object, const FString& Name);
+	UFUNCTION(BlueprintCallable, Category = "Berat|Edit")
+	static bool SetPropertyText(UObject* Object, const FString& Name, const FString& Text);
+	// PostEditChange on each (rebuilds a Niagara emitter's data), then marks the package dirty.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Edit")
+	static void NotifyChanged(const TArray<UObject*>& Objects);
 };

@@ -1,6 +1,9 @@
 #include "BeratCar.h"
 
 #include "BeratTimeOfDay.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include "Camera/CameraComponent.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "Components/PointLightComponent.h"
@@ -326,6 +329,105 @@ void ABeratCar::Tick(float Dt)
 	ShapeInput(Dt);
 	UpdateCamera(Dt);
 	UpdateLights();
+	UpdateGearbox(Dt);
+	UpdateWheelFx(Dt);
+}
+
+void ABeratCar::UpdateGearbox(float Dt)
+{
+	// Chaos's gearbox, shifted by a throttle-dependent schedule: SetTargetGear with Chaos's automatic off. Reverse and
+	// first from rest stay Chaos's (bReverseAsBrake picks them from the inputs).
+	UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+	if (!W || Assists.ShiftUp.X <= 0.f)
+	{
+		return;
+	}
+	if (W->GetUseAutoGears())
+	{
+		W->SetUseAutomaticGears(false);
+	}
+	ShiftHold -= Dt;
+	const int32 Gear = W->GetTargetGear();
+	const TArray<float>& R = W->TransmissionSetup.ForwardGearRatios;
+	if (Gear < 1 || Gear > R.Num() || ShiftHold > 0.f || W->GetCurrentGear() != Gear)
+	{
+		return;
+	}
+	const float Max = W->EngineSetup.MaxRPM;
+	const float Rpm = W->GetEngineRotationSpeed();
+	const float T = FMath::Clamp(W->GetThrottleInput(), 0.f, 1.f);
+	const float Up = Max * FMath::Lerp(Assists.ShiftUp.X, Assists.ShiftUp.Y, T);
+	const float Down = Max * FMath::Lerp(Assists.ShiftDown.X, Assists.ShiftDown.Y, T);
+	if (Gear < R.Num() && Rpm > Up && Rpm * R[Gear] / R[Gear - 1] > Down * 1.1f)
+	{
+		W->SetTargetGear(Gear + 1, false);
+		ShiftHold = 0.6f;
+	}
+	else if (Gear > 1 && Rpm < Down && Rpm * R[Gear - 2] / R[Gear - 1] < Up * 0.95f)
+	{
+		W->SetTargetGear(Gear - 1, false);
+		ShiftHold = 0.4f;
+	}
+}
+
+void ABeratCar::UpdateWheelFx(float Dt)
+{
+	if (WheelFx.Num() == 0)
+	{
+		for (const TCHAR* N : {TEXT("Dust"), TEXT("Gravel"), TEXT("Grass"), TEXT("Mud")})
+		{
+			WheelFx.Add(LoadObject<UNiagaraSystem>(nullptr, *FString::Printf(TEXT("/Game/Berat/FX/NS_Wheel%s.NS_Wheel%s"), N, N)));
+		}
+	}
+	UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+	if (!W)
+	{
+		return;
+	}
+	const FVector V = GetVelocity();
+	const float Kmh = V.Size() * 0.036f;
+	const FVector Back = Kmh > 3.f ? -V.GetSafeNormal() : -GetActorForwardVector();
+	for (int32 i = 0; i < FMath::Min(W->GetNumWheels(), 8); ++i)
+	{
+		const FWheelStatus& S = W->GetWheelState(i);
+		if (!S.bInContact || !S.PhysMaterial.IsValid())
+		{
+			WheelFxClock[i] = 0.f;
+			continue;
+		}
+		// slip: wheel spin or slide (cm/s); intensity grows with speed and slip
+		const float Slip = FMath::Max(FMath::Abs(S.SlipMagnitude), FMath::Abs(S.SkidMagnitude));
+		float Intensity = FMath::Clamp(Kmh / 60.f, 0.f, 1.f) + FMath::Clamp(Slip / 500.f, 0.f, 1.5f);
+		// surface types: DefaultEngine.ini PhysicsSettings (berat_import.SURFACES)
+		int32 Fx = INDEX_NONE;
+		switch (S.PhysMaterial->SurfaceType)
+		{
+		case SurfaceType1: case SurfaceType2:                  // asphalt, concrete: tyre smoke when sliding hard
+			Intensity = FMath::Clamp((Slip - 400.f) / 400.f, 0.f, 1.5f);
+			Fx = 1;
+			break;
+		case SurfaceType3: Fx = 1; break;                       // gravel
+		case SurfaceType4: case SurfaceType6: Fx = 0; break;    // dirt, field
+		case SurfaceType8: Fx = 0; Intensity *= 0.5f; break;    // forest floor
+		case SurfaceType5: Fx = 2; break;                       // grass
+		case SurfaceType7: Fx = 3; break;                       // mud
+		default: break;
+		}
+		if (Fx == INDEX_NONE || !WheelFx[Fx] || Intensity < 0.15f)
+		{
+			continue;
+		}
+		WheelFxClock[i] += Dt;
+		if (WheelFxClock[i] < FMath::Clamp(0.12f / Intensity, 0.03f, 0.4f))
+		{
+			continue;
+		}
+		WheelFxClock[i] = 0.f;
+		const FVector Up = (FVector::UpVector + Back * 0.7f).GetSafeNormal();
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, WheelFx[Fx], S.ContactPoint + FVector(0, 0, 10.f),
+			FRotationMatrix::MakeFromZ(Up).Rotator(), FVector::OneVector, true, true, ENCPoolMethod::AutoRelease, true);
+		++WheelFxSpawned;
+	}
 }
 
 void ABeratCar::ConfigureChaos()

@@ -37,6 +37,9 @@ CARS = {
 }
 
 ENGINE = {"BP_Car_Sport": (750.0, 1500.0), "BP_Car_Offroad": (300.0, 1500.0)}   # torque N.m, mass kg
+# Forward gear ratios where the source's are wrong: Epic's off-road template lists 8 forward gears, 5-8 repeating 1-4 (a
+# shift into 5th fell back to a 1st-gear ratio).
+GEARS = {"BP_Car_Offroad": [3.0, 2.0, 1.4, 1.05, 0.85]}
 
 TRAFFIC = ["/Game/VehicleVarietyPack/Meshes/SM_Hatchback", "/Game/VehicleVarietyPack/Meshes/SM_SUV",
            "/Game/VehicleVarietyPack/Meshes/SM_Pickup", "/Game/VehicleVarietyPack/Meshes/SM_SportsCar",
@@ -154,6 +157,11 @@ def run():
                 eng.set_editor_property("max_torque", ENGINE[name][0])
                 dv.set_editor_property("engine_setup", eng)
                 dv.set_editor_property("mass", ENGINE[name][1])
+            if name in GEARS:
+                dv = unreal.get_default_object(unreal.EditorAssetLibrary.load_blueprint_class(f"{ROOT}/{name}")).get_editor_property("vehicle_movement_component")
+                t = dv.get_editor_property("transmission_setup")
+                t.set_editor_property("forward_gear_ratios", GEARS[name])
+                dv.set_editor_property("transmission_setup", t)
         cdo = unreal.get_default_object(unreal.EditorAssetLibrary.load_blueprint_class(f"{ROOT}/{name}"))
         mv = cdo.get_editor_property("vehicle_movement_component")
         unreal.log(f"[berat] {name}: mesh {cdo.get_editor_property('mesh').get_editor_property('skeletal_mesh_asset')}, "

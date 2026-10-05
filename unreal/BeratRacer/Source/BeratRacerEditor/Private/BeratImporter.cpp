@@ -561,3 +561,92 @@ ABeratSectorProps* UBeratImporter::ImportSectorProps(UObject* WorldContext, cons
 	}
 	return A;
 }
+
+
+TArray<UObject*> UBeratImporter::NiagaraStatelessObjects(UObject* System)
+{
+	TArray<UObject*> Out;
+	FArrayProperty* HP = System ? FindFProperty<FArrayProperty>(System->GetClass(), TEXT("EmitterHandles")) : nullptr;
+	FStructProperty* SP = HP ? CastField<FStructProperty>(HP->Inner) : nullptr;
+	FObjectPropertyBase* EP = SP ? FindFProperty<FObjectPropertyBase>(SP->Struct, TEXT("StatelessEmitter")) : nullptr;
+	if (!EP)
+	{
+		return Out;
+	}
+	FScriptArrayHelper Handles(HP, HP->ContainerPtrToValuePtr<void>(System));
+	for (int32 i = 0; i < Handles.Num(); ++i)
+	{
+		UObject* Emitter = EP->GetObjectPropertyValue(EP->ContainerPtrToValuePtr<void>(Handles.GetRawPtr(i)));
+		if (!Emitter)
+		{
+			continue;
+		}
+		Out.Add(Emitter);
+		for (const TCHAR* List : {TEXT("Modules"), TEXT("RendererProperties")})
+		{
+			FArrayProperty* AP = FindFProperty<FArrayProperty>(Emitter->GetClass(), List);
+			FObjectPropertyBase* IP = AP ? CastField<FObjectPropertyBase>(AP->Inner) : nullptr;
+			if (!IP)
+			{
+				continue;
+			}
+			FScriptArrayHelper A(AP, AP->ContainerPtrToValuePtr<void>(Emitter));
+			for (int32 j = 0; j < A.Num(); ++j)
+			{
+				if (UObject* O = IP->GetObjectPropertyValue(A.GetRawPtr(j)))
+				{
+					Out.Add(O);
+				}
+			}
+		}
+	}
+	return Out;
+}
+
+TArray<FString> UBeratImporter::PropertyNames(UObject* Object)
+{
+	TArray<FString> Out;
+	for (TFieldIterator<FProperty> It(Object ? Object->GetClass() : nullptr); Object && It; ++It)
+	{
+		Out.Add(It->GetName() + TEXT(": ") + It->GetCPPType());
+	}
+	return Out;
+}
+
+FString UBeratImporter::GetPropertyText(UObject* Object, const FString& Name)
+{
+	FProperty* P = Object ? FindFProperty<FProperty>(Object->GetClass(), *Name) : nullptr;
+	FString Text;
+	if (P)
+	{
+		P->ExportTextItem_Direct(Text, P->ContainerPtrToValuePtr<void>(Object), nullptr, Object, PPF_None);
+	}
+	return Text;
+}
+
+bool UBeratImporter::SetPropertyText(UObject* Object, const FString& Name, const FString& Text)
+{
+	FProperty* P = Object ? FindFProperty<FProperty>(Object->GetClass(), *Name) : nullptr;
+	if (!P)
+	{
+		return false;
+	}
+	Object->Modify();
+	Object->PreEditChange(P);
+	const TCHAR* End = P->ImportText_Direct(*Text, P->ContainerPtrToValuePtr<void>(Object), Object, PPF_None);
+	FPropertyChangedEvent E(P, EPropertyChangeType::ValueSet);
+	Object->PostEditChangeProperty(E);
+	return End != nullptr;
+}
+
+void UBeratImporter::NotifyChanged(const TArray<UObject*>& Objects)
+{
+	for (UObject* O : Objects)
+	{
+		if (O)
+		{
+			O->PostEditChange();
+			O->MarkPackageDirty();
+		}
+	}
+}

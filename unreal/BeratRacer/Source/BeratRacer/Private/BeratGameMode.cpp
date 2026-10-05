@@ -141,6 +141,7 @@ void ABeratPlayerController::TestReport(const TCHAR* Phase)
 				i, WS.bInContact, *GetNameSafe(WS.PhysMaterial.Get()), WS.NormalizedSuspensionLength, WS.DriveTorque, WS.BrakeTorque,
 				WS.SlipMagnitude, WS.bIsSkidding);
 		}
+		UE_LOG(LogTemp, Display, TEXT("[berat-test]   wheel puffs %d"), Car->WheelFxSpawned);
 		UE_LOG(LogTemp, Display, TEXT("[berat-test]   handbrake %.2f, brake %.2f, steering %.2f, parked %d"),
 			W ? W->GetHandbrakeInput() : -1.f, W ? W->GetBrakeInput() : -1.f, W ? W->GetSteeringInput() : -1.f, W ? W->IsParked() : -1);
 	}
@@ -289,9 +290,9 @@ void ABeratPlayerController::Tick(float Dt)
 	// part throttle instead of the autopilot (grip and drag per surface).
 	FString StartArg, OffroadArg;
 	const bool bOffroad = FParse::Value(FCommandLine::Get(), TEXT("BeratOffroad="), OffroadArg, false);
+	// (the spot may lie outside the cells streamed around the spawn: the car waits there, physics off, until the ground loads)
 	if (Car && TestStep == 0 && TestClock > 1.f && !bMoved && bOffroad)
 	{
-		bMoved = true;
 		TArray<FString> V;
 		OffroadArg.ParseIntoArray(V, TEXT(","));
 		const double X = V.Num() > 0 ? FCString::Atod(*V[0]) * 100.0 : 0.0, Y = V.Num() > 1 ? -FCString::Atod(*V[1]) * 100.0 : 0.0;
@@ -300,9 +301,21 @@ void ABeratPlayerController::Tick(float Dt)
 		FCollisionQueryParams Q(NAME_None, false, Car);
 		if (GetWorld()->LineTraceSingleByChannel(Hit, FVector(X, Y, 1e6), FVector(X, Y, -1e5), ECC_Visibility, Q))
 		{
-			Car->GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+			bMoved = true;
 			Car->SetActorLocationAndRotation(Hit.ImpactPoint + FVector(0, 0, 80.f), FRotator(0, -Heading, 0), false, nullptr, ETeleportType::TeleportPhysics);
+			Car->GetMesh()->SetSimulatePhysics(true);
+			Car->GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+			TestClock = 1.f;
 			UE_LOG(LogTemp, Display, TEXT("[berat-test] off-road start at (%.1f, %.1f, %.2f) heading %.0f"), X / 100.0, -Y / 100.0, Hit.ImpactPoint.Z / 100.0, Heading);
+		}
+		else if (Car->GetMesh()->IsSimulatingPhysics())
+		{
+			Car->GetMesh()->SetSimulatePhysics(false);
+			Car->SetActorLocation(FVector(X, Y, Car->GetActorLocation().Z + 2000.f), false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		else
+		{
+			TestClock = 1.f + Dt;     // hold the test clock until the start is placed
 		}
 	}
 	if (Car && TestStep == 0 && TestClock > 1.f && !bMoved && FParse::Value(FCommandLine::Get(), TEXT("BeratStart="), StartArg, false))
