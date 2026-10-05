@@ -436,6 +436,33 @@ def garden_walls(sector: Path, rng):
             tri = [[0, 1, 2], [0, 2, 3]] if sgn > 0 else [[0, 2, 1], [0, 3, 2]]
             mesh.add(finish, quad, np.asarray(tri), uv0=np.asarray([[0, -0.3], [th, -0.3], [th, height], [0, height]]),
                      uv1=uv1(4, rnd), colour=np.tile(colour, (4, 1)))
+        # gate pillars at both ends: 42 cm square, 25 cm over the wall, capped
+        for q in (0, -1):
+            c_ = pts[q] + nrm[q] * (th / 2)
+            dq = pts[1] - pts[0] if q == 0 else pts[-1] - pts[-2]
+            dq = dq / max(np.hypot(*dq), 1e-6)
+            nq = np.asarray([-dq[1], dq[0]])
+            w = 0.21
+            cs = [c_ + (-dq - nq) * w, c_ + (dq - nq) * w, c_ + (dq + nq) * w, c_ + (-dq + nq) * w]
+            z0, z1 = base[q], top[q] + 0.25
+            pp, pt_, pu = [], [], []
+            for r_ in range(4):
+                a0, a1 = cs[r_], cs[(r_ + 1) % 4]
+                bse = len(pp)
+                pp += [[*a0, z0], [*a1, z0], [*a1, z1], [*a0, z1]]
+                pu += [[0, z0 - z[q]], [0.42, z0 - z[q]], [0.42, z1 - z[q]], [0, z1 - z[q]]]
+                pt_ += [[bse, bse + 1, bse + 2], [bse, bse + 2, bse + 3]]
+            ccw = (cs[1][0] - cs[0][0]) * (cs[2][1] - cs[0][1]) - (cs[1][1] - cs[0][1]) * (cs[2][0] - cs[0][0]) > 0
+            tri = np.asarray(pt_) if ccw else np.asarray(pt_)[:, ::-1]
+            mesh.add(finish, np.asarray(pp), tri, uv0=np.asarray(pu, float), uv1=uv1(16, rnd), colour=np.tile(colour, (16, 1)))
+            cap = [[*(c_ + (dd - nq_) * (w + 0.04)), z1 + 0.08] for dd, nq_ in ((-dq, nq), (dq, nq), (dq, -nq), (-dq, -nq))]
+            capl = [[x, y, z1] for x, y, _ in cap]
+            cp = np.asarray(cap + capl)
+            ct = [[0, 1, 2], [0, 2, 3]] + [[k + 4, (k + 1) % 4 + 4, (k + 1) % 4] for k in range(4)] +                  [[k + 4, (k + 1) % 4, k] for k in range(4)]
+            ct = np.asarray(ct)
+            if not ccw:
+                ct = ct[:, ::-1]
+            mesh.add("coping", cp, ct, uv0=cp[:, :2], uv1=uv1(8, rnd), colour=np.tile(np.asarray([0.72, 0.7, 0.66]), (8, 1)))
         # coping: a slab over the top, 5 cm proud on both faces
         co, ci = pts - nrm * 0.05, pts + nrm * (th + 0.05)
         grey = np.asarray([0.72, 0.7, 0.66])
