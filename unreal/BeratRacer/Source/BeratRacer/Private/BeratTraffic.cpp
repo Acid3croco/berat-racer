@@ -11,6 +11,9 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 
+static TAutoConsoleVariable<int32> CVarTrafficDynamic(TEXT("berat.TrafficDynamic"), 1,
+	TEXT("Traffic near the player as physics bodies (1) or always kinematic (0)."));
+
 namespace
 {
 	// Intelligent Driver Model (Treiber), in cm and s.
@@ -289,10 +292,16 @@ void ABeratTraffic::Place(FBeratTrafficCar& C)
 	const FVector Dir = (Pf - Pr).GetSafeNormal();
 	const FVector Mid = (Pf + Pr) * 0.5f;
 	const float Near = FVector::Dist(Mid, PlayerPos);
-	if (!C.bDynamic && Near < DynamicRadius)
+	if (!C.bDynamic && Near < DynamicRadius && CVarTrafficDynamic.GetValueOnGameThread() != 0)
 	{
 		C.Body->SetWorldLocationAndRotation(Mid, Dir.Rotation(), false, nullptr, ETeleportType::TeleportPhysics);
-		SetDynamic(C, true, Dir * C.Speed);
+		// a physics body only over loaded ground (a car made dynamic where the ground had not streamed in fell forever)
+		FHitResult Hit;
+		FCollisionQueryParams Q(NAME_None, false, this);
+		if (GetWorld()->LineTraceSingleByChannel(Hit, Mid + FVector(0, 0, 200.f), Mid - FVector(0, 0, 500.f), ECC_Visibility, Q))
+		{
+			SetDynamic(C, true, Dir * C.Speed);
+		}
 		return;
 	}
 	if (C.bDynamic)
@@ -309,7 +318,7 @@ void ABeratTraffic::Place(FBeratTrafficCar& C)
 			C.WreckTime = 0.f;
 			return;
 		}
-		if (Near > DynamicRadius * 1.4f)
+		if (Near > DynamicRadius * 1.4f || At.Z < Mid.Z - 300.f)      // far again, or sinking below its lane
 		{
 			SetDynamic(C, false, FVector::ZeroVector);
 			C.Body->SetWorldLocationAndRotation(Mid, Dir.Rotation(), false, nullptr, ETeleportType::TeleportPhysics);

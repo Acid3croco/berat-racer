@@ -408,18 +408,18 @@ void ABeratPlayerController::Tick(float Dt)
 		{
 			bMoved = true;
 			Car->SetActorLocationAndRotation(Hit.ImpactPoint + FVector(0, 0, 80.f), FRotator(0, -Heading, 0), false, nullptr, ETeleportType::TeleportPhysics);
-			Car->GetMesh()->SetSimulatePhysics(true);
 			Car->GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+			Car->GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 			TestClock = 1.f;
 			UE_LOG(LogTemp, Display, TEXT("[berat-test] off-road start at (%.1f, %.1f, %.2f) heading %.0f"), X / 100.0, -Y / 100.0, Hit.ImpactPoint.Z / 100.0, Heading);
 		}
-		else if (Car->GetMesh()->IsSimulatingPhysics())
-		{
-			Car->GetMesh()->SetSimulatePhysics(false);
-			Car->SetActorLocation(FVector(X, Y, Car->GetActorLocation().Z + 2000.f), false, nullptr, ETeleportType::TeleportPhysics);
-		}
 		else
 		{
+			// held above the spot, physics on (toggling a Chaos vehicle's simulation crashed the solver), until the ground
+			// streams in around it
+			Car->SetActorLocationAndRotation(FVector(X, Y, 100000.f), FRotator(0, -Heading, 0), false, nullptr, ETeleportType::TeleportPhysics);
+			Car->GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+			Car->GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 			TestClock = 1.f + Dt;     // hold the test clock until the start is placed
 		}
 	}
