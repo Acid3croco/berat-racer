@@ -14,6 +14,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
 #include "HighResScreenshot.h"
+#include "AudioMixerBlueprintLibrary.h"
 #include "Misc/FileHelper.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
@@ -461,6 +462,23 @@ void ABeratPlayerController::Tick(float Dt)
 		UDecalComponent* D = UGameplayStatics::SpawnDecalAtLocation(this, M, FVector(200.f, 400.f, 400.f), At,
 			FRotationMatrix::MakeFromXY(FVector(0, 0, -1), F).Rotator(), 60.f);
 		UE_LOG(LogTemp, Display, TEXT("[berat-test] decal test %s at %s, material [%s] -> %s"), D ? TEXT("spawned") : TEXT("FAILED"), *At.ToString(), *Which, *GetNameSafe(M));
+	}
+	// -BeratRecord: the game's audio from 6 s to 18 s to Saved/BouncedWavFiles/berat_audio.wav (engine sound check)
+	static int32 Rec = 0;
+	if (FParse::Param(FCommandLine::Get(), TEXT("BeratRecord")))
+	{
+		if (Rec == 0 && TestClock > 6.f) { UAudioMixerBlueprintLibrary::StartRecordingOutput(this, 12.f); Rec = 1; }
+		else if (Rec == 1 && TestClock > 18.f)
+		{
+			UAudioMixerBlueprintLibrary::StopRecordingOutput(this, EAudioRecordingExportType::WavFile, TEXT("berat_audio"), TEXT(""));
+			Rec = 2;
+		}
+		if (const ABeratCar* RC = Cast<ABeratCar>(GetPawn()); RC && Rec == 1)
+		{
+			static float Tick = 0.f;
+			Tick += Dt;
+			if (Tick > 1.f) { Tick = 0.f; UE_LOG(LogTemp, Display, TEXT("[berat-audio] t %.1f rpm %.0f throttle %.2f"), TestClock, RC->GetRpm(), RC->GetVehicleMovementComponent()->GetThrottleInput()); }
+		}
 	}
 	// the full map, once (shot at 45.5 s, closed at 46.5 s)
 	static int32 MapShot = 0;

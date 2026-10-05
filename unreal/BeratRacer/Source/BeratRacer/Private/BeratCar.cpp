@@ -4,6 +4,7 @@
 #include "BeratTraffic.h"
 
 #include "BeratTimeOfDay.h"
+#include "BeratEngineSound.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "Components/DecalComponent.h"
@@ -97,6 +98,9 @@ ABeratCar::ABeratCar()
 	};
 	TailL = MakeTail(TEXT("TailL"));
 	TailR = MakeTail(TEXT("TailR"));
+	Sound = CreateDefaultSubobject<UBeratEngineSound>(TEXT("Sound"));
+	Sound->SetupAttachment(GetMesh());
+	Sound->bAutoActivate = true;
 }
 
 void ABeratCar::PostInitializeComponents()
@@ -171,6 +175,10 @@ void ABeratCar::ApplyTemplate()
 void ABeratCar::BeginPlay()
 {
 	Super::BeginPlay();
+	if (Sound)
+	{
+		Sound->Start();     // a synth component plays from Start() (auto-activation alone stays silent)
+	}
 
 	ConfigureChaos();
 	PlaceLights();
@@ -367,6 +375,22 @@ void ABeratCar::Tick(float Dt)
 	UpdateLights();
 	UpdateGearbox(Dt);
 	UpdateWheelFx(Dt);
+	if (Sound)
+	{
+		// only the player's car is heard (traffic is kinematic, silent)
+		UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+		float Slip = 0.f;
+		for (int32 i = 0; W && i < W->GetNumWheels(); ++i)
+		{
+			const FWheelStatus& S = W->GetWheelState(i);
+			if (S.bInContact)
+			{
+				Slip = FMath::Max(Slip, FMath::Max(FMath::Abs(S.SkidMagnitude), FMath::Abs(S.SlipMagnitude)));
+			}
+		}
+		const float Throttle = GetVehicleMovementComponent()->GetThrottleInput();
+		Sound->SetState(GetRpm(), Throttle, FMath::Clamp((Slip - 500.f) / 800.f, 0.f, 1.f), FMath::Abs(GetSpeedKmh()));
+	}
 }
 
 void ABeratCar::UpdateGearbox(float Dt)

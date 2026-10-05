@@ -76,6 +76,7 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Berat|Lights") TObjectPtr<USpotLightComponent> HeadR;
 	UPROPERTY(VisibleAnywhere, Category = "Berat|Lights") TObjectPtr<UPointLightComponent> TailL;
 	UPROPERTY(VisibleAnywhere, Category = "Berat|Lights") TObjectPtr<UPointLightComponent> TailR;
+	UPROPERTY(VisibleAnywhere, Category = "Berat") TObjectPtr<class UBeratEngineSound> Sound;
 
 	UFUNCTION(BlueprintCallable, Category = "Berat") float GetSpeedKmh() const;
 	UFUNCTION(BlueprintCallable, Category = "Berat") int32 GetGear() const;
