@@ -31,10 +31,17 @@ the Unity world had the same seams), now a function of position only; the drawn 
 
 ### Transfer to the PC
 
-Same local network: enable the OpenSSH server on Windows (Settings, Optional features), then from the Mac
-`rsync -av --progress package/berat70scale/ user@<pc-ip>:/C:/berat/package/berat70scale/`. Gigabit Ethernet moves about
-100 MB/s (10 GB in under 2 minutes); Wi-Fi is several times slower. A Windows SMB share mounted in Finder works too.
-Re-runs only send what changed.
+Same local network. On the PC, once: Settings > System > Optional features > add *OpenSSH Server*, then in an admin
+PowerShell `Start-Service sshd; Set-Service sshd -StartupType Automatic`. From the Mac:
+
+```sh
+tools/package/send_to_pc.sh <user>@<pc-address> package/berat70scale-2m          # -> C:/berat/package/berat70scale-2m
+```
+
+It writes `SHA256SUMS` and streams the folder as one tar over ssh (Windows has `tar` and no `rsync`). On the PC:
+`powershell -ExecutionPolicy Bypass -File C:\berat\package\berat70scale-2m\verify_on_pc.ps1 C:\berat\package\berat70scale-2m`.
+Gigabit Ethernet moves about 100 MB/s (the 13 GB package in ~2-3 minutes); Wi-Fi is several times slower. A Windows SMB share
+mounted in Finder works too.
 
 ## Phase B: Unreal (Windows)
 
