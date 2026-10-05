@@ -1134,3 +1134,84 @@ def restyle_buildings(sectors=None):
             done += 1
     save()
     return done
+
+
+def simple_material(path, colour=None, vertex_colour=False, roughness=0.5, specular=0.5, metallic=0.0, role=None, metres=1.0,
+                    lit_share=None, lit_colour=(8.0, 5.5, 3.0)):
+    """Small opening materials: constant or vertex colour (optionally over a tiled texture), and for glass a night glow on
+    a share of the openings (vertex colour R < lit_share) driven by the Night parameter."""
+    g = Graph(path)
+    if role:
+        tc = g.node(unreal.MaterialExpressionTextureCoordinate, 5, u_tiling=1.0 / metres, v_tiling=1.0 / metres)
+        t = g.texture(tex(role, "color"), tc)
+        base = t
+        if vertex_colour:
+            vc = g.node(unreal.MaterialExpressionVertexColor, 4)
+            lum = g.node(unreal.MaterialExpressionDesaturation, 3)
+            g.link(t, "RGB", lum, "")
+            m = g.node(unreal.MaterialExpressionMultiply, 2)
+            g.link(lum, "", m, "A")
+            g.link(vc, "", m, "B")
+            m2 = g.node(unreal.MaterialExpressionMultiply, 1, const_b=2.0)
+            g.link(m, "", m2, "A")
+            base = m2
+        g.out(base, "RGB" if base is t else "", unreal.MaterialProperty.MP_BASE_COLOR)
+    elif vertex_colour:
+        g.out(g.node(unreal.MaterialExpressionVertexColor, 2), "", unreal.MaterialProperty.MP_BASE_COLOR)
+    else:
+        g.out(g.node(unreal.MaterialExpressionConstant3Vector, 2, constant=unreal.LinearColor(*colour, 1)), "",
+              unreal.MaterialProperty.MP_BASE_COLOR)
+    g.out(g.const(roughness), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    g.out(g.const(specular), "", unreal.MaterialProperty.MP_SPECULAR)
+    if metallic:
+        g.out(g.const(metallic), "", unreal.MaterialProperty.MP_METALLIC)
+    if lit_share is not None:
+        vc = g.node(unreal.MaterialExpressionVertexColor, 3)
+        lit = g.node(unreal.MaterialExpressionStep, 2, const_x=lit_share)
+        g.link(vc, "R", lit, "Y")                   # 1 when R <= lit_share
+        night = night_param(g)
+        e = g.node(unreal.MaterialExpressionMultiply, 1)
+        g.link(lit, "", e, "A")
+        g.link(night, "", e, "B")
+        ec = g.node(unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(*lit_colour, 1))
+        e2 = g.node(unreal.MaterialExpressionMultiply, 0)
+        g.link(e, "", e2, "A")
+        g.link(ec, "", e2, "B")
+        g.out(e2, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    return g.save()
+
+
+def opening_materials():
+    R = f"{ROOT}/Materials/Openings"
+    return {
+        "glass": simple_material(f"{R}/M_Glass", (0.015, 0.02, 0.025), roughness=0.04, specular=1.0, lit_share=0.35),
+        "shopfront": simple_material(f"{R}/M_Shopfront", (0.02, 0.025, 0.03), roughness=0.05, specular=1.0, lit_share=0.9,
+                                     lit_colour=(10.0, 9.0, 7.0)),
+        "frame": simple_material(f"{R}/M_Frame", vertex_colour=True, roughness=0.45),
+        "sill": simple_material(f"{R}/M_Sill", vertex_colour=True, role="wall_stone", metres=1.0, roughness=0.8),
+        "door": simple_material(f"{R}/M_DoorLeaf", vertex_colour=True, role="wall_wood", metres=1.5, roughness=0.6),
+        "garage": simple_material(f"{R}/M_GarageLeaf", (0.55, 0.55, 0.53), role="wall_metal", metres=1.0, vertex_colour=True,
+                                  roughness=0.5),
+        "shutter": shutter_material(),
+    }
+
+
+def restyle_openings(sectors=None):
+    """Replace each sector's openings by the framed ones (prep_objects.py), Nanite on."""
+    mats = opening_materials()
+    block = json.load(open(os.path.join(CACHE, "block.json")))
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    for si, sj in sectors or block["sectors"]:
+        key = f"{si}_{sj}"
+        for a in eas.get_all_level_actors():
+            if a.get_actor_label() == f"openings_{key}":
+                eas.destroy_actor(a)
+        for mesh in import_glb(os.path.join(CACHE, "sectors", key, "openings.glb"), f"{ROOT}/Sectors/{key}", f"SM_openings_{key}"):
+            for i, slot in enumerate(mesh.static_materials):
+                m = mats.get(str(slot.material_slot_name))
+                if m:
+                    mesh.set_material(i, m)
+            setup_mesh(mesh, {}, False, nanite=True)
+            act = place(mesh, f"openings_{key}", si, sj, False)
+            act.static_mesh_component.set_collision_profile_name("NoCollision")
+    save()

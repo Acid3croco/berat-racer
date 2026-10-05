@@ -122,25 +122,38 @@ def lamps(sector: Path) -> np.ndarray:
 
 # Shutter colours of the Toulouse countryside (sRGB 0..1): grey-blue, sage, oxblood, white, brown, pastel blue.
 SHUTTERS = [(0.42, 0.5, 0.56), (0.5, 0.58, 0.5), (0.45, 0.16, 0.13), (0.88, 0.87, 0.82), (0.36, 0.25, 0.18), (0.55, 0.66, 0.74)]
-PROUD = 0.04          # m: openings stand this far out of the wall (the wall is not cut)
+FRAME_DEPTH = 0.08    # m: window and door frames stand this far out of the wall (the wall is not cut)
 
 
 def openings(sector: Path) -> gltf.Mesh:
-    """Windows, doors, garages, shopfronts and shutters from the facade layout of buildings.geojson: one quad per opening
-    (UV 0..1 over the opening), on the wall at its place, sill and size. Vertex colour: R a random per opening (which windows
-    light up at night), G 1 on apartment-like buildings, B unused; shutters carry their colour."""
+    """Windows, doors, garages, shopfronts and shutters from the facade layout of buildings.geojson, with depth (the wall is
+    not cut): every opening gets a frame proud of the wall (FRAME_DEPTH) with the glass or door leaf set back inside it, a
+    stone sill under windows, and on shuttered buildings a pair of open shutters flat on the wall. Materials: glass, frame,
+    sill, door, garage, shopfront, shutter. Vertex colour: glass R = random per opening (which windows light up at night),
+    G = 1 on blocks of flats; frames and shutters carry their paint colour."""
     g = json.loads((sector / "buildings.geojson").read_text(encoding="utf-8"))
     mesh = gltf.Mesh()
-    quads = {}
+    parts = {}
 
-    def quad(material, a, b, z0, z1, n, colour):
-        # a, b: bottom corners (x, y) along the wall; n: outward normal; counter-clockwise seen from outside
-        a = np.asarray(a) + n * PROUD
-        b = np.asarray(b) + n * PROUD
-        pos = np.array([[a[0], a[1], z0], [b[0], b[1], z0], [b[0], b[1], z1], [a[0], a[1], z1]])
-        q = quads.setdefault(material, dict(p=[], c=[]))
-        q["p"].append(pos)
-        q["c"].append(colour)
+    def box(material, a, d, n, width, z0, z1, o0, o1, colour):
+        """A box on the wall: from a along d for width, z0..z1, from o0 to o1 out of the wall (n outward); 5 faces."""
+        a = np.asarray(a, np.float64)
+        b = a + d * width
+        p0, p1 = a + n * o0, b + n * o0
+        q0, q1 = a + n * o1, b + n * o1
+        v = lambda xy, z: [xy[0], xy[1], z]
+        faces = [
+            (v(q0, z0), v(q1, z0), v(q1, z1), v(q0, z1)),          # front
+            (v(p0, z1), v(q0, z1), v(q1, z1), v(p1, z1)),          # top
+            (v(p1, z0), v(q1, z0), v(q0, z0), v(p0, z0)),          # bottom
+            (v(p0, z0), v(q0, z0), v(q0, z1), v(p0, z1)),          # side at a
+            (v(q1, z0), v(p1, z0), v(p1, z1), v(q1, z1)),          # side at b
+        ]
+        q = parts.setdefault(material, dict(p=[], c=[], uv=[]))
+        for f in faces:
+            q["p"].append(np.asarray(f, np.float64))
+            q["c"].append(colour)
+            q["uv"].append(np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float64))
 
     for feat in g["features"]:
         p = feat["properties"]
@@ -154,6 +167,7 @@ def openings(sector: Path) -> gltf.Mesh:
         shutter = SHUTTERS[p["seed"] % len(SHUTTERS)]
         old = p["era"] in ("before_1950", "1950_1970", "unknown") and p["use"] in ("house", "barn", "townhall", "school")
         has_shutters = old and rng.random() < 0.85 or (p["use"] == "house" and rng.random() < 0.45)
+        frame = (0.92, 0.91, 0.87) if rng.random() < 0.6 else ((0.45, 0.32, 0.22) if old else (0.35, 0.35, 0.36))
         flats = 1.0 if (p.get("floors") or 1) >= 3 else 0.0
         for w in p["walls"]:
             pts = ring[[(w["first"] + j) % n_pts for j in range(w["count"] + 1)]]
@@ -172,22 +186,37 @@ def openings(sector: Path) -> gltf.Mesh:
                 c = pts[i] + d * (t - cum[i])
                 ground = g0 + (g1 - g0) * t / total
                 z0, z1 = ground + sill, ground + sill + height
-                a, b = c - d * width / 2, c + d * width / 2
+                a = c - d * width / 2
                 kind = o["type"]
-                material = {"window": "window", "door": "door", "garage": "garage", "shopfront": "shopfront",
-                            "balcony": "window"}.get(kind, "window")
-                quad(material, a, b, z0, z1, nrm, (float(rng.random()), flats, 0.0))
-                if kind == "window" and has_shutters and height < 2.4:
-                    sw = width / 2
-                    quad("shutter", a - d * sw, a, z0, z1, nrm, shutter)
-                    quad("shutter", b, b + d * sw, z0, z1, nrm, shutter)
+                fr = 0.07                                             # frame width (m)
+                if kind in ("window", "balcony"):
+                    leaf, leaf_mat = (float(rng.random()), flats, 0.0), "glass"
+                elif kind == "shopfront":
+                    leaf, leaf_mat = (float(rng.random()), 1.0, 0.0), "shopfront"
+                else:
+                    leaf, leaf_mat = frame, ("garage" if kind == "garage" else "door")
+                # frame: four bars proud of the wall; the leaf set back inside (looks recessed)
+                box("frame", a, d, nrm, fr, z0, z1, 0.0, FRAME_DEPTH, frame)
+                box("frame", a + d * (width - fr), d, nrm, fr, z0, z1, 0.0, FRAME_DEPTH, frame)
+                box("frame", a + d * fr, d, nrm, width - 2 * fr, z1 - fr, z1, 0.0, FRAME_DEPTH, frame)
+                if kind in ("window", "balcony", "shopfront"):
+                    box("frame", a + d * fr, d, nrm, width - 2 * fr, z0, z0 + fr, 0.0, FRAME_DEPTH, frame)
+                box(leaf_mat, a + d * fr, d, nrm, width - 2 * fr, z0 + (fr if kind != "door" else 0.0), z1 - fr, 0.0,
+                    FRAME_DEPTH * 0.35, leaf)
+                if kind == "window":
+                    # stone sill: sticks out under the window, a little wider
+                    box("sill", a - d * 0.05, d, nrm, width + 0.1, z0 - 0.06, z0, 0.0, 0.14, (0.75, 0.72, 0.66))
+                    if has_shutters and height < 2.4:
+                        sw = width / 2
+                        box("shutter", a - d * sw, d, nrm, sw, z0, z1, 0.0, 0.035, shutter)
+                        box("shutter", a + d * width, d, nrm, sw, z0, z1, 0.0, 0.035, shutter)
 
-    uv = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float64)
-    for material, q in quads.items():
+    for material, q in parts.items():
         pos = np.concatenate(q["p"])
         k = len(q["p"])
         tris = (np.array([[0, 1, 2], [0, 2, 3]])[None, :, :] + 4 * np.arange(k)[:, None, None]).reshape(-1, 3)
-        mesh.add(material, pos, tris, uv0=np.tile(uv, (k, 1)), colour=np.repeat(np.asarray(q["c"], np.float64), 4, axis=0))
+        mesh.add(material, pos, tris, uv0=np.concatenate(q["uv"]),
+                 colour=np.repeat(np.asarray(q["c"], np.float64), 4, axis=0))
     return mesh
 
 
@@ -342,7 +371,7 @@ def main() -> None:
             om = openings(src)
             if len(om):
                 gltf.write_glb(dst / "openings.glb", om, corner,
-                               {m: {"colour": (0.5, 0.5, 0.5)} for m in ("window", "door", "garage", "shopfront", "shutter")},
+                               {m: {"colour": (0.5, 0.5, 0.5)} for m in om.parts},
                                f"openings_{si}_{sj}")
             lg = json.load(gzip.open(src / "lanes.json.gz"))
             write_lanes_bin(dst / "lanes.bin", lg)
