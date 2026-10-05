@@ -1,4 +1,7 @@
 #include "BeratCar.h"
+#include "EngineUtils.h"
+#include "BeratLaneGraph.h"
+#include "BeratTraffic.h"
 
 #include "BeratTimeOfDay.h"
 #include "NiagaraFunctionLibrary.h"
@@ -243,6 +246,8 @@ void ABeratCar::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	{
 		if (UEnhancedInputLocalPlayerSubsystem* Sub = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
 		{
+			// one car's mapping at a time: the previous car's (destroyed on a car change) still claimed the same keys
+			Sub->ClearAllMappings();
 			Sub->AddMappingContext(Mapping, 0);
 		}
 	}
@@ -311,10 +316,37 @@ float ABeratCar::GetRpm() const
 
 void ABeratCar::ResetOnRoad()
 {
-	// Upright, 1.5 m up, same heading, at rest.
+	// Onto the nearest lane within 300 m, along it, 1 m up, at rest; upright in place when there is none.
 	USkeletalMeshComponent* M = GetMesh();
-	const FRotator R(0.f, GetActorRotation().Yaw, 0.f);
-	const FVector P = GetActorLocation() + FVector(0, 0, 150.f);
+	FRotator R(0.f, GetActorRotation().Yaw, 0.f);
+	FVector P = GetActorLocation() + FVector(0, 0, 150.f);
+	for (TActorIterator<ABeratTraffic> It(GetWorld()); It; ++It)
+	{
+		const UBeratLaneGraph* G = It->Graph;
+		if (!G)
+		{
+			continue;
+		}
+		const FVector Here = GetActorLocation();
+		double Best = FMath::Square(30000.0);
+		for (const FBeratLane& L : G->Lanes)
+		{
+			if (L.Kind != EBeratLaneKind::Lane)
+			{
+				continue;
+			}
+			for (int32 i = 0; i + 1 < L.Points.Num(); ++i)
+			{
+				const double D2 = FVector::DistSquared(L.Points[i], Here);
+				if (D2 < Best)
+				{
+					Best = D2;
+					P = L.Points[i] + FVector(0, 0, 100.f);
+					R = FRotator(0.f, (L.Points[i + 1] - L.Points[i]).Rotation().Yaw, 0.f);
+				}
+			}
+		}
+	}
 	M->SetPhysicsLinearVelocity(FVector::ZeroVector);
 	M->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 	SetActorLocationAndRotation(P, R, false, nullptr, ETeleportType::TeleportPhysics);

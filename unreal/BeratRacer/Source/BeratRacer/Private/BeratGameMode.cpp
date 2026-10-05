@@ -191,6 +191,20 @@ void ABeratPlayerController::Pilot(ABeratCar* Car, float Dt)
 		}
 		UE_LOG(LogTemp, Display, TEXT("[berat-test] autopilot on lane %lld, %.1f m from the car"), G->Lanes[PilotLane].Id, FMath::Sqrt(Best) / 100.0);
 	}
+	// the straightest continuation of a lane, no U-turns
+	auto PickNext = [G](int32 Lane) -> int32
+	{
+		const TArray<int32>& Next = G->Lanes[Lane].Next;
+		int32 Pick = Next.Num() ? Next[0] : INDEX_NONE;
+		float Straight = -1.f;
+		for (int32 N : Next)
+		{
+			const FBeratLane& NL = G->Lanes[N];
+			const float Score = NL.Kind == EBeratLaneKind::UTurn ? -2.f : -FMath::Abs(NL.Turn);
+			if (Straight < -0.5f || Score > Straight) { Straight = Score; Pick = N; }
+		}
+		return Pick;
+	};
 	// advance the reference point to the car's projection on the lane, moving to the next lane at its end
 	for (int32 Guard = 0; Guard < 8; ++Guard)
 	{
@@ -207,16 +221,8 @@ void ABeratPlayerController::Pilot(ABeratCar* Car, float Dt)
 			{
 				break;
 			}
-			int32 Pick = Next[0];
-			float Straight = -1.f;
-			for (int32 N : Next)                     // the straightest continuation, no U-turns
-			{
-				const FBeratLane& NL = G->Lanes[N];
-				const float Score = NL.Kind == EBeratLaneKind::UTurn ? -2.f : -FMath::Abs(NL.Turn);
-				if (Straight < -0.5f || Score > Straight) { Straight = Score; Pick = N; }
-			}
 			PilotS -= G->Lanes[PilotLane].Length();
-			PilotLane = Pick;
+			PilotLane = PickNext(PilotLane);
 		}
 	}
 	const float Speed = FMath::Abs(Car->GetSpeedKmh());
@@ -226,9 +232,36 @@ void ABeratPlayerController::Pilot(ABeratCar* Car, float Dt)
 	const FVector Local = Car->GetActorTransform().InverseTransformPosition(Target);
 	const float Steer = FMath::Clamp(FMath::Atan2(Local.Y, Local.X) * 2.2f, -1.f, 1.f);
 	// target speed: the lane's own (curvature and limit), capped
+	// target speed: the slowest the lanes ahead allow (curvature, limit) over 40 m, on the continuation the pilot will
+	// take, less what braking at 4 m/s2 sheds on the way: v = sqrt(v_ahead^2 + 2 a d)
+	float WantMs = PilotKmh / 3.6f;
+	{
+		int32 Ln = PilotLane;
+		float S0 = PilotS, Ahead = 0.f;
+		for (int32 Hop = 0; Hop < 4 && Ln != INDEX_NONE && Ahead < 4000.f; ++Hop)
+		{
+			const FBeratLane& LL = G->Lanes[Ln];
+			for (int32 k = 0; k < LL.Points.Num() && k < LL.Speed.Num(); ++k)
+			{
+				const float D = LL.Distance[k] - S0;
+				if (D < 0.f)
+				{
+					continue;
+				}
+				const float Dm = (Ahead + D) / 100.f;
+				if (Dm > 40.f)
+				{
+					break;
+				}
+				WantMs = FMath::Min(WantMs, FMath::Sqrt(FMath::Square(LL.Speed[k]) + 8.f * Dm));
+			}
+			Ahead += LL.Length() - S0;
+			S0 = 0.f;
+			Ln = PickNext(Ln);
+		}
+	}
+	const float Want = WantMs * 3.6f;
 	const FBeratLane& L = G->Lanes[PilotLane];
-	const int32 Pt = FMath::Clamp(Algo::LowerBound(L.Distance, PilotS + Look), 0, L.Speed.Num() - 1);
-	const float Want = FMath::Min(PilotKmh, L.Speed.IsValidIndex(Pt) ? L.Speed[Pt] * 3.6f : PilotKmh);
 	Car->AutoSteer = Steer;
 	static bool bDumped = false;
 	if (!bDumped && Speed < 1.f && Car->AutoThrottle > 0.5f && GetWorld()->GetTimeSeconds() > 12.0)
@@ -271,7 +304,7 @@ void ABeratPlayerController::Pilot(ABeratCar* Car, float Dt)
 			Target.X / 100.0, -Target.Y / 100.0, Local.X / 100.0, Local.Y / 100.0, Steer, L.Id, PilotS / 100.0, Want);
 	}
 	Car->AutoThrottle = Speed < Want ? FMath::Clamp((Want - Speed) / 10.f, 0.f, 1.f) : 0.f;
-	Car->AutoBrake = Speed > Want + 8.f ? FMath::Clamp((Speed - Want) / 20.f, 0.f, 1.f) : 0.f;
+	Car->AutoBrake = Speed > Want + 3.f ? FMath::Clamp((Speed - Want) / 12.f, 0.f, 1.f) : 0.f;
 }
 
 void ABeratPlayerController::Tick(float Dt)
