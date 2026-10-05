@@ -111,7 +111,7 @@ def check(out, log=print):
         water = load_json(d / "water.geojson")["features"]
         if any(not np.isfinite(np.asarray(f["geometry"]["coordinates"][0] if f["geometry"]["type"] == "Polygon" else f["geometry"]["coordinates"], float)).all() for f in water):
             problems.append(f"{si}_{sj}: water with NaN levels")
-        over[(si, sj)] = preview(d, out / "previews" / f"{si}_{sj}.png", tif[::-1], cls[::-1], roads, blds, water, man, (ox, oy))
+        over[(si, sj)] = preview(d, out / "previews" / f"{si}_{sj}.png", tif, cls, roads, blds, water, man, (ox, oy))
         notes[f"{si}_{sj}"] = dict(roads=len(roads), buildings=len(blds), trees=len(veg["trees"]["rows"]), water=len(water))
 
     # seams: the east column of a sector is the west column of the next, the north row the south row of the one above
