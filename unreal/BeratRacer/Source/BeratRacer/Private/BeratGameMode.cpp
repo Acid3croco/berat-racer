@@ -480,6 +480,14 @@ void ABeratPlayerController::Tick(float Dt)
 			if (Tick > 1.f) { Tick = 0.f; UE_LOG(LogTemp, Display, TEXT("[berat-audio] t %.1f rpm %.0f throttle %.2f"), TestClock, RC->GetRpm(), RC->GetVehicleMovementComponent()->GetThrottleInput()); }
 		}
 	}
+	// -BeratProfileAt=seconds: one GPU profile dump to the log (ProfileGPU) at that moment of the test drive
+	static bool bProfiled = false;
+	float ProfileAt = 0.f;
+	if (!bProfiled && FParse::Value(FCommandLine::Get(), TEXT("BeratProfileAt="), ProfileAt) && TestClock > ProfileAt)
+	{
+		bProfiled = true;
+		ConsoleCommand(TEXT("ProfileGPU"));
+	}
 	// the full map, once (shot at 45.5 s, closed at 46.5 s)
 	static int32 MapShot = 0;
 	if (MapShot == 0 && TestClock > 45.f) { if (ABeratHUD* H = Cast<ABeratHUD>(GetHUD())) { H->ToggleMap(); } MapShot = 1; }
@@ -608,44 +616,45 @@ void ABeratHUD::DrawHUD()
 	}
 	UFont* Big = GEngine->GetLargeFont();
 	UFont* Small = GEngine->GetSmallFont();
-	const float X = Canvas->ClipX - 260.f, Y = Canvas->ClipY - 150.f;
+	const float U = FMath::Max(Canvas->ClipY / 1080.f, 0.6f);          // HUD scale: 1 at 1080p, 2 at 4K
+	const float X = Canvas->ClipX - 260.f * U, Y = Canvas->ClipY - 150.f * U;
 	if (const ABeratCar* Car = Cast<ABeratCar>(GetOwningPawn()))
 	{
 		const int32 Gear = Car->GetGear();
 		const FString GearText = Gear < 0 ? TEXT("R") : Gear == 0 ? TEXT("N") : FString::FromInt(Gear);
-		DrawText(FString::Printf(TEXT("%3.0f km/h"), FMath::Abs(Car->GetSpeedKmh())), FLinearColor::White, X, Y, Big, 2.2f);
-		DrawText(FString::Printf(TEXT("gear %s   %4.0f rpm"), *GearText, Car->GetRpm()), FLinearColor(0.85f, 0.85f, 0.85f), X, Y + 50.f, Small, 1.4f);
-		DrawText(Car->DisplayName.ToString(), FLinearColor(1.f, 0.8f, 0.4f), X, Y + 75.f, Small, 1.4f);
+		DrawText(FString::Printf(TEXT("%3.0f km/h"), FMath::Abs(Car->GetSpeedKmh())), FLinearColor::White, X, Y, Big, 2.2f * U);
+		DrawText(FString::Printf(TEXT("gear %s   %4.0f rpm"), *GearText, Car->GetRpm()), FLinearColor(0.85f, 0.85f, 0.85f), X, Y + 50.f * U, Small, 1.4f * U);
+		DrawText(Car->DisplayName.ToString(), FLinearColor(1.f, 0.8f, 0.4f), X, Y + 75.f * U, Small, 1.4f * U);
 	}
 	for (TActorIterator<ABeratTimeOfDay> It(GetWorld()); It; ++It)
 	{
 		const float H = It->Hours;
-		DrawText(FString::Printf(TEXT("%02d:%02d"), int32(H), int32(FMath::Fmod(H, 1.f) * 60.f)), FLinearColor::White, X, Y + 100.f, Small, 1.4f);
+		DrawText(FString::Printf(TEXT("%02d:%02d"), int32(H), int32(FMath::Fmod(H, 1.f) * 60.f)), FLinearColor::White, X, Y + 100.f * U, Small, 1.4f * U);
 		break;
 	}
-	DrawText(FString::Printf(TEXT("%.0f fps"), FpsSmooth), FLinearColor(0.6f, 1.f, 0.6f), 20.f, 20.f, Small, 1.2f);
+	DrawText(FString::Printf(TEXT("%.0f fps"), FpsSmooth), FLinearColor(0.6f, 1.f, 0.6f), 20.f * U, 20.f * U, Small, 1.2f * U);
 	// minimap (bottom left, ~500 m across, north up) or the full map (M)
 	LoadMap();
 	if (MapTex && GetOwningPawn())
 	{
 		const FVector P = GetOwningPawn()->GetActorLocation();
-		const double U = (P.X / 100.0 - MapWest) / MapMpp / MapPixels, V = (MapNorth + P.Y / 100.0) / MapMpp / MapPixels;
+		const double MU = (P.X / 100.0 - MapWest) / MapMpp / MapPixels, MV = (MapNorth + P.Y / 100.0) / MapMpp / MapPixels;
 		if (bMapOpen)
 		{
 			const float S = Canvas->ClipY * 0.86f;
 			DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, Canvas->ClipX, Canvas->ClipY);
 			DrawMap((Canvas->ClipX - S) * 0.5f, (Canvas->ClipY - S) * 0.5f, S, 0.5, 0.5, 1.0, true);
 			DrawText(TEXT("Berat  -  9.6 x 9.6 km        M: close"), FLinearColor::White, (Canvas->ClipX - S) * 0.5f,
-				(Canvas->ClipY - S) * 0.5f - 34.f, Small, 1.6f);
+				(Canvas->ClipY - S) * 0.5f - 34.f * U, Small, 1.6f * U);
 		}
 		else
 		{
-			const float S = FMath::Min(300.f, Canvas->ClipY * 0.3f);
-			DrawMap(24.f, Canvas->ClipY - S - 48.f, S, U, V, 500.0 / MapMpp / MapPixels, true);
+			const float S = FMath::Min(300.f * U, Canvas->ClipY * 0.3f);
+			DrawMap(24.f * U, Canvas->ClipY - S - 48.f * U, S, MU, MV, 500.0 / MapMpp / MapPixels, true);
 		}
 	}
 	DrawText(TEXT("Tab / D-pad right: next car   T / Y: time +-1 h   L: lights   C: camera   R: reset   M: map"),
-		FLinearColor(1.f, 1.f, 1.f, 0.6f), 20.f, Canvas->ClipY - 30.f, Small, 1.f);
+		FLinearColor(1.f, 1.f, 1.f, 0.6f), 20.f * U, Canvas->ClipY - 30.f * U, Small, 1.f * U);
 }
 
 
@@ -842,7 +851,8 @@ void ABeratHUD::DrawMap(float X, float Y, float Size, double CentreU, double Cen
 	{
 		It->GetCarPositions(Cars);
 	}
-	const float Dot = bMapOpen ? 3.f : 4.f;
+	const float HudU = FMath::Max(Canvas->ClipY / 1080.f, 0.6f);
+	const float Dot = (bMapOpen ? 3.f : 4.f) * HudU;
 	for (const FVector& C : Cars)
 	{
 		const FVector2D S = ToScreen(C);
@@ -857,7 +867,7 @@ void ABeratHUD::DrawMap(float X, float Y, float Size, double CentreU, double Cen
 		const FVector2D C = ToScreen(Pawn->GetActorLocation());
 		const float Yaw = FMath::DegreesToRadians(Pawn->GetActorRotation().Yaw);
 		const FVector2D F(FMath::Cos(Yaw), FMath::Sin(Yaw)), R(-F.Y, F.X);
-		const float A = bMapOpen ? 9.f : 11.f;
+		const float A = (bMapOpen ? 9.f : 11.f) * HudU;
 		FCanvasTriangleItem Tri(C + F * A * 1.3f, C - F * A * 0.8f + R * A * 0.75f, C - F * A * 0.8f - R * A * 0.75f, GWhiteTexture);
 		Tri.SetColor(FLinearColor(1.f, 0.45f, 0.05f));
 		Canvas->DrawItem(Tri);
