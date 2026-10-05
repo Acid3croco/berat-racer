@@ -95,10 +95,10 @@ void ABeratTraffic::FitLamps(FBeratTrafficCar& C)
 	}
 	const FBoxSphereBounds B = M->GetBounds();
 	const FVector Lo = B.Origin - B.BoxExtent, Hi = B.Origin + B.BoxExtent;
-	const float Z = Lo.Z + (Hi.Z - Lo.Z) * 0.42f, Y = B.BoxExtent.Y * 0.68f;
+	const float Z = Lo.Z + (Hi.Z - Lo.Z) * 0.42f, Y = B.BoxExtent.Y * 0.58f;   // bounds include the mirrors
 	const FVector Size(0.03f, 0.17f, 0.07f);        // the cube is 1 m
-	C.Lamps[0]->SetRelativeLocation(FVector(Hi.X - 4.f, -Y, Z));
-	C.Lamps[1]->SetRelativeLocation(FVector(Hi.X - 4.f, Y, Z));
+	C.Lamps[0]->SetRelativeLocation(FVector(Hi.X - 12.f, -Y, Z));
+	C.Lamps[1]->SetRelativeLocation(FVector(Hi.X - 12.f, Y, Z));
 	C.Lamps[2]->SetRelativeLocation(FVector(Lo.X + 4.f, -Y, Z + 8.f));
 	C.Lamps[3]->SetRelativeLocation(FVector(Lo.X + 4.f, Y, Z + 8.f));
 	for (UStaticMeshComponent* L : C.Lamps)
