@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "package"
 import gltf  # noqa: E402  the package's own numpy glTF writer
 
 # Instance kinds: 0..4 the package's tree kinds, then:
-KINDS = ["tree_unknown", "tree_broadleaf", "tree_conifer", "tree_poplar", "tree_fruit", "shrub", "hedge", "vine"]
+KINDS = ["tree_unknown", "tree_broadleaf", "tree_conifer", "tree_poplar", "tree_fruit", "shrub", "hedge", "vine", "bin"]
 HEDGE_STEP = 1.6      # m between hedge plants
 VINE_STEP = 1.2       # m between vine stocks
 LAMP_STEP = 32.0      # m between lamps on one side
@@ -343,6 +343,7 @@ def garden_walls(sector: Path, rng):
 
     g = json.loads((sector / "roads.geojson").read_text(encoding="utf-8"))
     runs = []                       # (points (k, 2), outward normals (k, 2), house index)
+    bins = []                       # (x, y, z, height m, yaw, kind 8)
     for feat in g["features"]:
         p = feat["properties"]
         if p["tunnel"] or p["bridge"] or p["class"] in ("track", "motorway", "ramp", "path", "footway", "cycleway"):
@@ -364,6 +365,7 @@ def garden_walls(sector: Path, rng):
         c = xyz[i, :2] + f[:, None] * (xyz[i + 1, :2] - xyz[i, :2])
         t = seg[i] / np.maximum(np.hypot(seg[i, 0], seg[i, 1]), 1e-6)[:, None]
         off = hw[i] + f * (hw[i + 1] - hw[i]) + WALL_SET
+        urban = bool(p.get("urban"))
         for side in (1, -1):
             nrm = np.column_stack([-t[:, 1], t[:, 0]]) * side
             pt = c + nrm * off[:, None]
@@ -395,10 +397,21 @@ def garden_walls(sector: Path, rng):
                     if stop - start >= 4:
                         hs = home[start:stop + 1]
                         runs.append((pt[start:stop + 1], nrm[start:stop + 1], int(np.bincount(hs[hs >= 0]).argmax())))
-                    start = stop + int(rng.uniform(3, 5) / WALL_STEP)      # gate / drive
+                    gap = int(rng.uniform(3, 5) / WALL_STEP)              # gate / drive
+                    g_ = stop + gap // 2
+                    if urban and g_ < e and home[g_] >= 0 and rng.uniform() < 0.3:
+                        # a street bin by a gate, on the verge (village streets only)
+                        along = pt[min(g_ + 1, len(pt) - 1)] - pt[max(g_ - 1, 0)]
+                        along = along / max(np.hypot(*along), 1e-6)
+                        yaw = -np.degrees(np.arctan2(-nrm[g_][1], -nrm[g_][0]))
+                        for b_ in range(1):
+                            q = pt[g_] - nrm[g_] * 0.45 + along * (0.7 * b_ - 0.35)
+                            bins.append((q[0], q[1], float(cell(hgt, q[0], q[1])), rng.uniform(0.92, 0.98),
+                                         yaw + rng.uniform(-12, 12), 8))
+                    start = stop + gap
                 k = e + 1
 
-    extra = []
+    extra = list(bins)
     uv1 = lambda k, r: np.column_stack([np.full(k, r), np.zeros(k)])
     for pts, nrm, h in runs:
         p = props[h]

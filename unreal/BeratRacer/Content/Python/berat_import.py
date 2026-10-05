@@ -993,7 +993,9 @@ MEGA = "/Game/Megaplant_Library"
 # plant kind (prep_objects.KINDS) -> Megaplants species (every A..D variant of each)
 SPECIES = {0: ("English_Oak", "European_Beech", "Hornbeam", "Black_Alder", "Silver_Birch"), 1: ("English_Oak", "European_Beech", "Hornbeam"),
            2: ("Norway_Spruce",), 3: ("Black_Poplar",), 4: ("Goat_Willow",), 5: ("Common_Hazel", "Elder"),
-           6: ("Common_Hazel", "Elder", "Goat_Willow"), 7: ()}
+           6: ("Common_Hazel", "Elder", "Goat_Willow"), 7: (), 8: ()}
+# kinds drawn with a street prop instead of a plant
+PROP_KIND_MESH = {8: "/Game/Mega_Street_Props_Pack/Street_Props_Pack_V1/Mesh/SM_Trash"}
 
 
 def species_meshes(name, baked=False):
@@ -1026,7 +1028,7 @@ def prop_meshes(baked=False):
         raise RuntimeError(f"{d}/{name}")
     cache = {}
     kinds = []
-    for k in range(8):
+    for k in range(len(SPECIES)):
         km = unreal.BeratKindMeshes()
         skinned = []
         for sp in SPECIES[k]:
@@ -1035,7 +1037,10 @@ def prop_meshes(baked=False):
             skinned += cache[sp]
         km.set_editor_property("static" if baked else "skinned", skinned)
         km.set_editor_property("cull_distance", {5: 45000.0, 6: 45000.0, 7: 30000.0}.get(k, 0.0))   # shrubs, hedges, vines
-        if not skinned:
+        if k in PROP_KIND_MESH:
+            km.set_editor_property("static", [unreal.load_asset(PROP_KIND_MESH[k])])
+            km.set_editor_property("cull_distance", 6000.0)
+        elif not skinned:
             km.set_editor_property("static", [mesh("shrub_b", "shrub_03_a")] if k == 7 else [mesh("broadleaf_small", "tree_small_02")])
         kinds.append(km)
     return kinds, mesh("lamp_a", "street_lamp_01")
@@ -1386,3 +1391,21 @@ def import_walls(sectors=None):
     save()
     log["walls"] = done
     return done
+
+
+def reimport_props(sectors=None):
+    """Re-import the block's sector props (plants, hedges, bins, lamps) after prep_objects.py."""
+    kinds, lamp = prop_meshes()
+    block = json.load(open(os.path.join(CACHE, "block.json")))
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    n = 0
+    for si, sj in sectors or block["sectors"]:
+        key = f"{si}_{sj}"
+        for a in eas.get_all_level_actors():
+            if a.get_actor_label() == f"Props_{key}":
+                eas.destroy_actor(a)
+        unreal.BeratImporter.import_sector_props(None, os.path.join(CACHE, "sectors", key), si, sj, kinds, lamp,
+                                                 unreal.Vector(0, 0, 360), 250000.0)
+        n += 1
+    save()
+    return n
