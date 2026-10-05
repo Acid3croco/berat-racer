@@ -25,6 +25,11 @@ public:
 	static ALandscape* ImportLandscape(const FString& BlockDir, UMaterialInterface* Material, const FString& LayerInfoPath,
 		int32 WorldPartitionGridSize, double& OutSeconds);
 
+	// Turn Nanite on for every landscape of the editor world and build its Nanite meshes (the terrain then stays within a
+	// pixel of its full detail at every distance: no far LOD cutting through roads). Returns the seconds taken.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
+	static double BuildLandscapeNanite();
+
 	// Height of the landscape (or whatever blocks a downward trace) at a package point, in package metres; -1e9 if nothing.
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
 	static double TraceHeight(UObject* WorldContext, double X, double Y);

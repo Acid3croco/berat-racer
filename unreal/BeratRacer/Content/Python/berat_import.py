@@ -230,10 +230,73 @@ def terrain_material(layer_names):
     g.link(blend_n, "", ln, "A")
     g.link(rock_n, "RGB", ln, "B")
     g.link(steep, "", ln, "Alpha")
-    g.out(lc, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    base = macro_colour(g, lc)
+    g.out(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
     g.out(ln, "", unreal.MaterialProperty.MP_NORMAL)
     g.out(blend_r, "", unreal.MaterialProperty.MP_ROUGHNESS)
     return g.save()
+
+
+def import_colour():
+    """The block's real ground colour (prep_colour.py) as a texture; returns it and its placement."""
+    info = json.load(open(os.path.join(CACHE, "colour.json")))
+    path = f"{ROOT}/Textures/Macro/T_GroundColour"
+    if not eal.does_asset_exist(path):
+        t = unreal.AssetImportTask()
+        t.filename = os.path.join(CACHE, "colour.png")
+        t.destination_path = f"{ROOT}/Textures/Macro"
+        t.destination_name = "T_GroundColour"
+        t.automated = True
+        t.replace_existing = True
+        assets.import_asset_tasks([t])
+    tex_ = unreal.load_asset(path)
+    tex_.set_editor_property("power_of_two_mode", unreal.TexturePowerOfTwoSetting.STRETCH_TO_POWER_OF_TWO)
+    tex_.set_editor_property("address_x", unreal.TextureAddress.TA_CLAMP)
+    tex_.set_editor_property("address_y", unreal.TextureAddress.TA_CLAMP)
+    tex_.set_editor_property("lod_group", unreal.TextureGroup.TEXTUREGROUP_TERRAIN_WEIGHTMAP)
+    eal.save_loaded_asset(tex_)
+    return tex_, info
+
+
+def macro_colour(g, detail):
+    """Real ground colour over the tiled detail: near, the detail keeps its texture and takes the real colour (colour x
+    detail luminance); far (50 to 300 m), the real colour alone (no tiling seen from afar)."""
+    tex_, info = import_colour()
+    nx, ny = info["pixels"]
+    # UV of a world point: pixel centres on the 4 m grid from (x0, ytop), x east, y north (Unreal Y = -north)
+    wp = g.node(unreal.MaterialExpressionWorldPosition, 7)
+    xy = g.node(unreal.MaterialExpressionComponentMask, 6, r=True, g=True, b=False, a=False)
+    g.link(wp, "", xy, "")
+    scale = g.node(unreal.MaterialExpressionConstant2Vector, 6, r=0.0025 / nx, g=0.0025 / ny)
+    off = g.node(unreal.MaterialExpressionConstant2Vector, 6, r=(0.5 - info["x0"] / 4.0) / nx, g=(0.5 + info["ytop"] / 4.0) / ny)
+    mul = g.node(unreal.MaterialExpressionMultiply, 5)
+    g.link(xy, "", mul, "A")
+    g.link(scale, "", mul, "B")
+    uv = g.node(unreal.MaterialExpressionAdd, 5)
+    g.link(mul, "", uv, "A")
+    g.link(off, "", uv, "B")
+    m = g.node(unreal.MaterialExpressionTextureSample, 4, texture=tex_)
+    m.set_editor_property("sampler_source", unreal.SamplerSourceMode.SSM_CLAMP_WORLD_GROUP_SETTINGS)
+    g.link(uv, "", m, "UVs")
+    # near: real colour x detail luminance (x2.2 keeps the overall brightness of the real colour)
+    lum = g.node(unreal.MaterialExpressionDesaturation, 3)
+    g.link(detail, "", lum, "")
+    lm = g.node(unreal.MaterialExpressionMultiply, 3, const_b=2.2)
+    g.link(lum, "", lm, "A")
+    near = g.node(unreal.MaterialExpressionMultiply, 2)
+    g.link(m, "RGB", near, "A")
+    g.link(lm, "", near, "B")
+    near_mix = g.node(unreal.MaterialExpressionLinearInterpolate, 2, const_alpha=0.75)
+    g.link(detail, "", near_mix, "A")
+    g.link(near, "", near_mix, "B")
+    depth = g.node(unreal.MaterialExpressionPixelDepth, 3)
+    far = g.node(unreal.MaterialExpressionSmoothStep, 2, const_min=5000.0, const_max=30000.0)
+    g.link(depth, "", far, "Value")
+    out = g.node(unreal.MaterialExpressionLinearInterpolate, 1)
+    g.link(near_mix, "", out, "A")
+    g.link(m, "RGB", out, "B")
+    g.link(far, "", out, "Alpha")
+    return out
 
 
 def surface_material(path, role, uv_metres=1.0, tint=(1, 1, 1), roughness_scale=1.0, vertex_colour=False, two_sided=False,
@@ -459,6 +522,11 @@ def new_map():
 def import_landscape(material):
     secs = unreal.BeratImporter.import_landscape(CACHE, material, f"{ROOT}/Landscape", 2, )
     land, seconds = secs if isinstance(secs, tuple) else (secs, -1)
+    # full detail further out (road edges stand 5 cm over the terrain; coarse far LODs cut through them). Not Nanite
+    # landscape: its build took 1151 s and 75 GB for the 3 x 3 block, with cracks between proxies.
+    land.set_editor_property("lod0_screen_size", 1.0)
+    land.set_editor_property("lod0_distribution_setting", 4.0)
+    land.set_editor_property("lod_distribution_setting", 4.0)
     log["landscape_seconds"] = round(seconds, 1)
     return land
 
@@ -490,19 +558,23 @@ def import_glb(path, dest, name):
 
 
 def setup_mesh(mesh, materials, collision, nanite=True):
+    """Materials by slot name; Nanite with a full-detail fallback (collision is built from the fallback: an automatic,
+    simplified one put the road's collision 5 cm under the drawn road, or lost it); complex-as-simple collision."""
     for i, slot in enumerate(mesh.static_materials):
         name = str(slot.material_slot_name).lower()
         for key, mat in materials.items():
             if name.startswith(key):
                 mesh.set_material(i, mat)
                 break
-    ns = mesh.get_editor_property("nanite_settings")
-    ns.set_editor_property("enabled", nanite)
-    mesh.set_editor_property("nanite_settings", ns)
     body = mesh.get_editor_property("body_setup")
     if body:
         body.set_editor_property("collision_trace_flag",
                                  unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE if collision else unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+    ns = mesh.get_editor_property("nanite_settings")
+    ns.enabled = nanite
+    ns.fallback_target = unreal.NaniteFallbackTarget.PERCENT_TRIANGLES
+    ns.fallback_percent_triangles = 1.0
+    unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem).set_nanite_settings(mesh, ns, apply_changes=True)
     eal.save_loaded_asset(mesh)
 
 
@@ -528,7 +600,8 @@ def import_sector_meshes(materials):
             if not os.path.exists(path):
                 continue
             for mesh in import_glb(path, f"{ROOT}/Sectors/{key}", f"SM_{kind}_{key}"):
-                setup_mesh(mesh, materials, collision)
+                # openings and water: small quads Nanite simplifies badly (half quads), cheap without it
+                setup_mesh(mesh, materials, collision, nanite=kind in ("roads", "buildings"))
                 actor = place(mesh, f"{kind}_{key}", si, sj, collision)
                 n[kind] += 1
     log["meshes"] = n
@@ -612,6 +685,12 @@ def lamp_mesh():
     return unreal.load_asset("/Engine/BasicShapes/Cylinder")
 
 
+def pin_all():
+    """Load (and keep loaded) every World Partition actor of the map: a fresh editor session starts with them unloaded."""
+    wp = unreal.WorldPartitionBlueprintLibrary
+    wp.pin_actors([d.guid for d in wp.get_actor_descs()])
+
+
 def save():
     """Every dirty package, World Partition's external actor packages included (save_all_dirty_levels skips them)."""
     unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True)
@@ -641,6 +720,7 @@ def run(skip_textures=False):
     with step("map"):
         new_map()
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    pin_all()
     if any(isinstance(a, unreal.Landscape) for a in eas.get_all_level_actors()):
         unreal.log("[berat] landscape already in the map: kept")
     else:

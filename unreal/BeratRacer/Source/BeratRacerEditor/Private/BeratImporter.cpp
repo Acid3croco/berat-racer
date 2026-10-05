@@ -16,6 +16,8 @@
 #include "LandscapeInfo.h"
 #include "LandscapeLayerInfoObject.h"
 #include "LandscapeSubsystem.h"
+#include "LandscapeEditTypes.h"
+#include "EngineUtils.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
@@ -157,6 +159,31 @@ ALandscape* UBeratImporter::ImportLandscape(const FString& BlockDir, UMaterialIn
 	OutSeconds = FPlatformTime::Seconds() - T0;
 	UE_LOG(LogBerat, Display, TEXT("landscape %dx%d imported in %.1f s"), W, H, OutSeconds);
 	return Land;
+}
+
+double UBeratImporter::BuildLandscapeNanite()
+{
+	const double T0 = FPlatformTime::Seconds();
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	for (TActorIterator<ALandscape> It(World); It; ++It)
+	{
+		if (!It->IsNaniteEnabled())
+		{
+			It->Modify();
+			FProperty* P = ALandscapeProxy::StaticClass()->FindPropertyByName(TEXT("bEnableNanite"));
+			It->PreEditChange(P);
+			CastField<FBoolProperty>(P)->SetPropertyValue_InContainer(*It, true);
+			FPropertyChangedEvent E(P);
+			It->PostEditChangeProperty(E);
+		}
+	}
+	if (ULandscapeSubsystem* S = World->GetSubsystem<ULandscapeSubsystem>())
+	{
+		S->BuildNanite(UE::Landscape::EBuildFlags::WriteFinalLog | UE::Landscape::EBuildFlags::ForceRebuild);
+	}
+	const double Dt = FPlatformTime::Seconds() - T0;
+	UE_LOG(LogBerat, Display, TEXT("landscape Nanite built in %.1f s"), Dt);
+	return Dt;
 }
 
 double UBeratImporter::TraceHeight(UObject* WorldContext, double X, double Y)
