@@ -1122,6 +1122,8 @@ def restyle_buildings(sectors=None):
     """Replace each sector's buildings mesh by buildings_styled.glb (prep_buildings.py) with the finish materials."""
     import_textures()
     mats = building_materials()
+    mats["gutter"] = simple_material(f"{ROOT}/Materials/M_Gutter", vertex_colour=True, roughness=0.4, specular=0.5,
+                                     metallic=0.5)
     block = json.load(open(os.path.join(CACHE, "block.json")))
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     done = 0

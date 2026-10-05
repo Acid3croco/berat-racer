@@ -52,6 +52,10 @@ def read_glb(path: Path):
 OVERHANG = 0.35    # m: pitched roofs reach past the walls (the package's roofs stop at the wall line)
 
 
+GUTTERED = ("house", "shop", "restaurant", "library", "church", "barn")
+GUTTER_COLOURS = [(0.55, 0.57, 0.58), (0.62, 0.6, 0.55), (0.85, 0.85, 0.82)]     # zinc, weathered zinc, white PVC
+
+
 def overhang(v: np.ndarray, poly, p: dict) -> np.ndarray:
     """Roof vertices on the building's outline moved OVERHANG outward (along the outline's outward normal, bisected at
     corners) and down the roof slope (pitch from the data)."""
@@ -82,6 +86,84 @@ def overhang(v: np.ndarray, poly, p: dict) -> np.ndarray:
         cosang = max(float((dirn * nrm[near[0]]).sum()), 0.5)
         out[k, :2] = q + dirn * OVERHANG / cosang
         out[k, 2] = v[k, 2] - OVERHANG * slope
+    return out
+
+
+def box_along(a, b, out, z_top, depth, width, offset):
+    """A box hanging under the segment a-b (xy), `offset` outward (unit `out`), `width` deep outward, `depth` tall below
+    z_top (pair of z for a and b). Returns (positions, triangles) wound counter-clockwise from outside."""
+    a0, b0 = a + out * offset, b + out * offset
+    a1, b1 = a0 + out * width, b0 + out * width
+    za, zb = z_top
+    v = [[*a0, za - depth], [*b0, zb - depth], [*b1, zb - depth], [*a1, za - depth],
+         [*a0, za], [*b0, zb], [*b1, zb], [*a1, za]]
+    quads = [(0, 3, 2, 1), (3, 7, 6, 2), (1, 2, 6, 5), (0, 4, 7, 3), (4, 5, 6, 7), (0, 1, 5, 4)]
+    tri = []
+    for q in quads:
+        tri += [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]
+    return np.asarray(v, float), np.asarray(tri)
+
+
+def gutters(v0: np.ndarray, v1: np.ndarray, tri: np.ndarray, poly, p: dict):
+    """Gutters under the eaves and downpipes at their ends, for one building's roof triangles: v0 the roof vertices before
+    the overhang, v1 after. Eave edges: boundary edges of the roof whose ends both moved (on the outline) and lie level
+    at the eave. Returns [(positions, triangles)]."""
+    edges = {}
+    for t in tri:
+        for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            k = (min(a, b), max(a, b))
+            edges[k] = edges.get(k, 0) + 1
+    moved = np.linalg.norm(v1[:, :2] - v0[:, :2], axis=1) > 0.1
+    zmin = v1[moved, 2].min() if moved.any() else 0
+    eave = [(a, b) for (a, b), c in edges.items() if c == 1 and moved[a] and moved[b]
+            and abs(v1[a, 2] - v1[b, 2]) < 0.05 and v1[a, 2] < zmin + 0.3
+            and np.linalg.norm(v1[a, :2] - v1[b, :2]) > 0.8]
+    if not eave:
+        return []
+    cen = np.asarray(poly.centroid.coords[0])
+    ground = float(p.get("ground") or 0)
+    out = []
+    ends = {}
+    for a, b in eave:
+        A, B = v1[a, :2], v1[b, :2]
+        d = B - A
+        L = np.linalg.norm(d)
+        nrm = np.asarray([-d[1], d[0]]) / L
+        if np.dot((A + B) / 2 - cen, nrm) < 0:
+            nrm = -nrm
+        out.append(box_along(A, B, nrm, (v1[a, 2] - 0.02, v1[b, 2] - 0.02), 0.11, 0.12, -0.04))
+        for e, other in ((a, b), (b, a)):
+            ends.setdefault(e, []).append((nrm, v1[other, :2]))
+    pipe_at = [(e, lst[0]) for e, lst in ends.items() if len(lst) == 1]   # the ends of open eave runs
+    if not pipe_at and ends:
+        # eaves all round (hipped roof): pipes at the two eave corners farthest apart
+        ks = list(ends)
+        P = v1[ks, :2]
+        dist = np.linalg.norm(P[:, None] - P[None], axis=2)
+        i, j = np.unravel_index(dist.argmax(), dist.shape)
+        pipe_at = [(ks[i], ends[ks[i]][0]), (ks[j], ends[ks[j]][0])]
+    for e, (nrm, other) in pipe_at:
+        P = v1[e, :2]
+        along = (other - P) / max(np.linalg.norm(other - P), 1e-6)
+        # back to the wall face (the overhang), 25 cm in from the end, 6 cm off the wall
+        base = P - nrm * (OVERHANG - 0.06) + along * 0.25
+        z_top = v1[e, 2] - 0.1
+        if z_top - ground < 1.5:
+            continue
+        w = 0.045
+        cs = [base + (-along - nrm) * w, base + (along - nrm) * w, base + (along + nrm) * w, base + (-along + nrm) * w]
+        pos, tr = [], []
+        for r in range(4):
+            c0, c1 = cs[r], cs[(r + 1) % 4]
+            k = len(pos)
+            pos += [[*c0, ground - 0.05], [*c1, ground - 0.05], [*c1, z_top], [*c0, z_top]]
+            tr += [[k, k + 1, k + 2], [k, k + 2, k + 3]]
+        pos, tr = np.asarray(pos, float), np.asarray(tr)
+        e1, e2 = cs[1] - cs[0], cs[2] - cs[0]
+        ccw = e1[0] * e2[1] - e1[1] * e2[0] > 0
+        out.append((pos, tr if ccw else tr[:, ::-1]))
+        # the elbow from the gutter to the pipe: a short box from the gutter line back to the pipe
+        out.append(box_along(base - along * 0.035, base + along * 0.035, nrm, (z_top + 0.03, z_top + 0.03), 0.07, OVERHANG - 0.06, 0.0))
     return out
 
 
@@ -158,7 +240,13 @@ def style_sector(src: Path, dst: Path, corner) -> Counter:
             used, inv = np.unique(t, return_inverse=True)
             vp = pos[used]
             if material == "roof" and props[b].get("roof") in ("gabled", "hipped"):
+                v_before = vp
                 vp = overhang(vp, polys[b], props[b])
+                if props[b].get("use") in GUTTERED:
+                    for gp, gt in gutters(v_before, vp, inv.reshape(-1, 3), polys[b], props[b]):
+                        mesh.add("gutter", gp, gt, uv0=gp[:, :2], uv1=np.zeros((len(gp), 2)),
+                                 colour=np.tile(GUTTER_COLOURS[int(rnd * 3) % 3], (len(gp), 1)))
+                        counts["gutter_parts"] += 1
             uv1 = np.column_stack([np.full(len(used), rnd), np.zeros(len(used))])
             mesh.add(name, vp, inv.reshape(-1, 3), uv0=uv[used], uv1=uv1, colour=col[used])
             counts[name] += len(t)
