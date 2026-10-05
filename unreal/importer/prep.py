@@ -140,7 +140,7 @@ def main() -> None:
     if not filled.any():
         raise SystemExit("the window covers no package sector")
     # Roads as bare ground: the package classifies many village streets as "garden" (the land use around them); landscape
-    # grass would grow through the road meshes. Drivable surfaces of roads.glb rasterised on the grid, dilated 1 vertex.
+    # grass would grow through the road meshes. Drivable surfaces of roads.glb rasterised on the grid, dilated 2 vertices (the weight blur is 1).
     road = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(road)
     for (i, j) in sorted(have):
@@ -156,7 +156,7 @@ def main() -> None:
             for t in tri[up]:
                 q = pos[t]
                 draw.polygon([((x - x0) / cell, (ytop - y) / cell) for x, y, _ in q], fill=255)
-    road = np.asarray(road.filter(ImageFilter.MaxFilter(3))) > 0
+    road = np.asarray(road.filter(ImageFilter.MaxFilter(5))) > 0      # 2 vertices: the 1-vertex blur leaked meadow (grass) onto the edge
     classes[road] = 0
 
     if not filled.all():                         # beyond the package's border: repeat the last filled row / column
