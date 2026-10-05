@@ -412,7 +412,7 @@ def garden_walls(sector: Path, rng):
         finish = _wall_finish(p)
         colour = np.asarray(p.get("wall_colour") or (200, 190, 175), np.float64) / 255.0
         railing = style >= 0.65
-        height = rng.uniform(0.5, 0.8) if railing else rng.uniform(0.9, 1.6)
+        height = rng.uniform(0.5, 0.8) if railing else rng.uniform(0.8, 1.3)
         th, ch = 0.2, 0.06                                          # wall thickness, coping height
         out_l, in_l = pts, pts + nrm * th                           # road face, garden face
         base = z - 0.3                                              # into the ground (slopes)
@@ -446,36 +446,12 @@ def garden_walls(sector: Path, rng):
         tri = [[q, k + q + 1, k + q] for q in range(k - 1)] + [[q, q + 1, k + q + 1] for q in range(k - 1)]
         mesh.add("coping", cp, np.asarray(tri), uv0=cp[:, :2], uv1=uv1(2 * k, rnd), colour=np.tile(grey, (2 * k, 1)))
         if railing:
-            # posts every 2 m, bars every 12 cm, a top rail; dark green, black, grey or white paint
+            # one strip along the wall's middle; the material cuts bars (12 cm), posts (2 m) and the top rail out of it
+            # (UV0 = metres along, 0..1 up): one quad per metre instead of a box per bar
             paint = np.asarray([(0.08, 0.12, 0.09), (0.05, 0.05, 0.05), (0.3, 0.32, 0.33), (0.85, 0.85, 0.82)][int(rnd * 4) % 4])
-            rail_h = rng.uniform(0.8, 1.1)
-            mid = pts + nrm * (th / 2)
             t0 = top + ch
-            bp, bt = [], []
-            dd = np.diff(mid, axis=0)
-            for q in range(len(mid) - 1):
-                L = np.hypot(*dd[q])
-                if L < 1e-3:
-                    continue
-                dq = dd[q] / L
-                nq = np.asarray([-dq[1], dq[0]])
-                for u in np.arange(0, L, 0.12):
-                    xy = mid[q] + dq * u
-                    zt = t0[q] + (t0[q + 1] - t0[q]) * u / L
-                    w = 0.06 if (s_al[q] + u) % 2.0 < 0.12 else 0.02
-                    cs = [xy + (-nq - dq) * w / 2, xy + (nq - dq) * w / 2, xy + (nq + dq) * w / 2, xy + (-nq + dq) * w / 2]
-                    for r_ in range(4):
-                        a0, a1 = cs[r_], cs[(r_ + 1) % 4]
-                        bse = len(bp)
-                        bp += [[*a0, zt], [*a1, zt], [*a1, zt + rail_h], [*a0, zt + rail_h]]
-                        bt += [[bse, bse + 1, bse + 2], [bse, bse + 2, bse + 3]]
-            if bp:
-                mesh.add("rail", np.asarray(bp), np.asarray(bt), uv0=np.zeros((len(bp), 2)), uv1=uv1(len(bp), rnd),
-                         colour=np.tile(paint, (len(bp), 1)))
-            strip("rail", mid - nrm * 0.02, t0 + rail_h, t0 + rail_h + 0.04, True, s_al, np.zeros_like(t0),
-                  np.full_like(t0, 0.04), paint)
-            strip("rail", mid + nrm * 0.02, t0 + rail_h, t0 + rail_h + 0.04, False, s_al, np.zeros_like(t0),
-                  np.full_like(t0, 0.04), paint)
+            strip("rail", pts + nrm * (th / 2), t0, t0 + rng.uniform(0.8, 1.1), False, s_al, np.zeros_like(t0),
+                  np.ones_like(t0), paint)
     return mesh, np.asarray(extra, np.float64).reshape(-1, 6)
 
 

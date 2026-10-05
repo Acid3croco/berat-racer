@@ -1281,13 +1281,55 @@ def apply_surfaces():
 
 # ----------------------------------------------------------------------------------------------------------- garden walls
 
+def railing_material():
+    """Railing cut out of one strip (UV0 = metres along, 0..1 up): bars every 12 cm, posts every 2 m, top and bottom rails;
+    masked, two-sided, painted (vertex colour)."""
+    g = Graph(f"{ROOT}/Materials/M_Railing", blend_mode=unreal.BlendMode.BLEND_MASKED, two_sided=True)
+    tc = g.node(unreal.MaterialExpressionTextureCoordinate, 6)
+    u = g.node(unreal.MaterialExpressionComponentMask, 5, r=True, g=False, b=False, a=False)
+    v = g.node(unreal.MaterialExpressionComponentMask, 5, r=False, g=True, b=False, a=False)
+    g.link(tc, "", u, "")
+    g.link(tc, "", v, "")
+
+    def below(x, edge, col=3):                       # 1 where x <= edge
+        s_ = g.node(unreal.MaterialExpressionStep, col, const_x=edge)
+        g.link(x, "", s_, "Y")
+        return s_
+
+    def frac_of(scale):
+        m = g.node(unreal.MaterialExpressionMultiply, 4, const_b=scale)
+        g.link(u, "", m, "A")
+        f = g.node(unreal.MaterialExpressionFrac, 4)
+        g.link(m, "", f, "")
+        return f
+
+    bars = below(frac_of(1.0 / 0.12), 0.17)
+    posts = below(frac_of(0.5), 0.03)
+    bottom = below(v, 0.05)
+    top_s = g.node(unreal.MaterialExpressionStep, 3, const_y=0.95)  # 1 where 0.95 <= v
+    g.link(v, "", top_s, "X")
+    m = bars
+    for other in (posts, bottom, top_s):
+        mx = g.node(unreal.MaterialExpressionMax, 2)
+        g.link(m, "", mx, "A")
+        g.link(other, "", mx, "B")
+        m = mx
+    g.out(m, "", unreal.MaterialProperty.MP_OPACITY_MASK)
+    g.out(g.node(unreal.MaterialExpressionVertexColor, 2), "", unreal.MaterialProperty.MP_BASE_COLOR)
+    g.out(g.const(0.45), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    g.out(g.const(0.6), "", unreal.MaterialProperty.MP_METALLIC)
+    mat = g.save()
+    mat.set_editor_property("opacity_mask_clip_value", 0.5)
+    eal.save_loaded_asset(mat)
+    return mat
+
+
 def import_walls(sectors=None):
     """Garden walls (prep_objects.garden_walls): the building finishes by slot name, coping in the concrete finish,
     railings in vertex-coloured paint. Nanite with the full-detail fallback; collision (cars hit them)."""
     mats = {name: unreal.load_asset(f"{ROOT}/Materials/Buildings/M_{name}") for name in FINISHES}
     mats["coping"] = mats["wall_concrete"]
-    mats["rail"] = simple_material(f"{ROOT}/Materials/M_Railing", vertex_colour=True, roughness=0.45, specular=0.5,
-                                   metallic=0.6)
+    mats["rail"] = railing_material()
     block = json.load(open(os.path.join(CACHE, "block.json")))
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     done = 0
