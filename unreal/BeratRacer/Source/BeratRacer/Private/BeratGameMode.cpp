@@ -124,6 +124,12 @@ void ABeratPlayerController::TestReport(const TCHAR* Phase)
 	const float P99 = S[FMath::Min(S.Num() - 1, int32(S.Num() * 0.99f))];
 	const ABeratCar* Car = Cast<ABeratCar>(GetPawn());
 	const FVector P = Car ? Car->GetActorLocation() : FVector::ZeroVector;
+	if (RideFrames > 1)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[berat-test]   ride: vertical acceleration rms %.2f m/s2, %d jolts (> 0.5 m/s in a frame) in %d frames"),
+			FMath::Sqrt(RideSq / RideFrames) / 100.f, RideJolts, RideFrames);
+		RideSq = 0.f; RideJolts = 0; RideFrames = 0;
+	}
 	UE_LOG(LogTemp, Display, TEXT("[berat-test] %s: %d frames, avg %.2f ms (%.1f fps), p99 %.2f ms (%.1f fps), worst %.2f ms; speed %.1f km/h, gear %d, at x %.1f y %.1f z %.2f m"),
 		Phase, S.Num(), Avg, 1000.f / Avg, P99, 1000.f / P99, S.Last(), Car ? Car->GetSpeedKmh() : 0.f, Car ? Car->GetGear() : 0,
 		P.X / 100.0, -P.Y / 100.0, P.Z / 100.0);
@@ -324,6 +330,18 @@ void ABeratPlayerController::Tick(float Dt)
 	if (TestClock > 3.f)
 	{
 		FrameMs.Add(Dt * 1000.f);
+	}
+	if (const ABeratCar* RC = Cast<ABeratCar>(GetPawn()); RC && RC->GetMesh()->IsSimulatingPhysics() && TestClock > 8.f && Dt > 0.f)
+	{
+		const float Vz = RC->GetMesh()->GetPhysicsLinearVelocity().Z;
+		if (RideFrames > 0)
+		{
+			const float Az = (Vz - RideVz) / Dt;
+			RideSq += Az * Az;
+			RideJolts += FMath::Abs(Vz - RideVz) > 50.f;
+		}
+		RideVz = Vz;
+		++RideFrames;
 	}
 	ABeratCar* Car = Cast<ABeratCar>(GetPawn());
 	if (FParse::Param(FCommandLine::Get(), TEXT("BeratHandling")))

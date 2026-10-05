@@ -67,6 +67,8 @@ private:
 	float HClock = 0.f, HMaxSlip = 0.f, HSum[6] = {};
 	int32 HCount = 0;
 	FVector HStartPos = FVector::ZeroVector;
+	// ride: vertical velocity last frame, jolts (|dvz| > 50 cm/s in a frame), sum of squared vertical accelerations
+	float RideVz = 0.f, RideSq = 0.f; int32 RideJolts = 0, RideFrames = 0;
 	void TestReport(const TCHAR* Phase);
 	void NextCar();
 	void ToggleMap();
