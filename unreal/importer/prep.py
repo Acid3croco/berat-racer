@@ -22,7 +22,8 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
+import struct
 
 
 def read_png(path: Path) -> np.ndarray:
@@ -33,6 +34,26 @@ def read_png(path: Path) -> np.ndarray:
 def layer_name(cls: str) -> str:
     """Unreal layer name of a package class. "none" would be Unreal's NAME_None (FName is case-insensitive): it is "bare"."""
     return "bare" if cls == "none" else cls.replace(" ", "_")
+
+
+def read_glb_tris(path: Path):
+    """[(material, positions (package axes, absolute), triangles)] of a package glb."""
+    d = path.read_bytes()
+    n = struct.unpack("<I", d[12:16])[0]
+    doc = json.loads(d[20:20 + n])
+    blob = d[20 + n + 8:]
+    tx, ty, tz = doc["nodes"][0].get("translation", [0.0, 0.0, 0.0])
+    out = []
+    for p in doc.get("meshes", [{}])[0].get("primitives", []):
+        a = doc["accessors"][p["attributes"]["POSITION"]]
+        v = doc["bufferViews"][a["bufferView"]]
+        g = np.frombuffer(blob, "<f4", a["count"] * 3, v["byteOffset"] + a.get("byteOffset", 0)).reshape(-1, 3).astype(np.float64)
+        pos = np.column_stack([g[:, 0] + tx, -(g[:, 2] + tz), g[:, 1] + ty])
+        ia = doc["accessors"][p["indices"]]
+        iv = doc["bufferViews"][ia["bufferView"]]
+        tri = np.frombuffer(blob, "<u4", ia["count"], iv["byteOffset"] + ia.get("byteOffset", 0)).reshape(-1, 3)
+        out.append((doc["materials"][p["material"]]["name"], pos, tri))
+    return out
 
 
 def box_blur(a: np.ndarray, r: int) -> np.ndarray:
@@ -118,6 +139,26 @@ def main() -> None:
         filled[win] = True
     if not filled.any():
         raise SystemExit("the window covers no package sector")
+    # Roads as bare ground: the package classifies many village streets as "garden" (the land use around them); landscape
+    # grass would grow through the road meshes. Drivable surfaces of roads.glb rasterised on the grid, dilated 1 vertex.
+    road = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(road)
+    for (i, j) in sorted(have):
+        xs, yn = size * i - 16000, size * j - 16000 + size
+        if xs > x0 + (w - 1) * cell or xs + size < x0 or yn - size > ytop or yn < ytop - (h - 1) * cell:
+            continue
+        for material, pos, tri in read_glb_tris(args.package / "sectors" / f"{i}_{j}" / "roads.glb"):
+            if material not in ("asphalt", "dirt"):
+                continue
+            a_, b_, c_ = pos[tri[:, 0]], pos[tri[:, 1]], pos[tri[:, 2]]
+            nz = np.cross(b_ - a_, c_ - a_)
+            up = nz[:, 2] / np.maximum(np.linalg.norm(nz, axis=1), 1e-12) > 0.5
+            for t in tri[up]:
+                q = pos[t]
+                draw.polygon([((x - x0) / cell, (ytop - y) / cell) for x, y, _ in q], fill=255)
+    road = np.asarray(road.filter(ImageFilter.MaxFilter(3))) > 0
+    classes[road] = 0
+
     if not filled.all():                         # beyond the package's border: repeat the last filled row / column
         cols = np.where(filled.any(axis=0))[0]
         rows = np.where(filled.any(axis=1))[0]

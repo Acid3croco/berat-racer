@@ -96,8 +96,12 @@ class Graph:
     def __init__(self, path, **props):
         folder, name = path.rsplit("/", 1)
         if eal.does_asset_exist(path):
-            eal.delete_asset(path)
-        self.m = assets.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
+            # reuse the asset (deleting one still referenced, e.g. by a landscape, fails and the re-create then waits on an
+            # "Overwrite Existing Object" dialog)
+            self.m = unreal.load_asset(path)
+            mel.delete_all_material_expressions(self.m)
+        else:
+            self.m = assets.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
         for k, v in props.items():
             self.m.set_editor_property(k, v)
         self.y = {}
@@ -231,8 +235,7 @@ def terrain_material(layer_names):
     g.link(rock_n, "RGB", ln, "B")
     g.link(steep, "", ln, "Alpha")
     base = macro_colour(g, lc)
-    # add_grass_output(g, layer_names): off. The Poly Haven grass came out metres tall, grey and on the roads too (106 fps);
-    # landscape grass waits for the Megascans grass assets.
+    add_grass_output(g, layer_names)
     g.out(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
     g.out(ln, "", unreal.MaterialProperty.MP_NORMAL)
     g.out(blend_r, "", unreal.MaterialProperty.MP_ROUGHNESS)
@@ -810,35 +813,39 @@ GRASS_LAYERS = {"meadow": 1.0, "fallow": 0.8, "garden": 0.9, "orchard": 0.9, "pi
 
 
 def grass_type():
-    """Native landscape grass: Poly Haven grass clumps scattered by the GPU near the camera on the grassy classes."""
+    """Native landscape grass from the Project Nature grass library (Fab): short meadow tufts, medium clumps, a few tall
+    ones, at their own size, scattered by the GPU near the camera on the grassy classes."""
     path = f"{ROOT}/Landscape/LGT_Meadow"
     gt = unreal.load_asset(path) if eal.does_asset_exist(path) else assets.create_asset(
         "LGT_Meadow", f"{ROOT}/Landscape", unreal.LandscapeGrassType, unreal.LandscapeGrassTypeFactory())
+    # mesh -> instances per 10 x 10 m
+    pick = {"grass_01_01_mesh": 300, "grass_01_04_mesh": 300, "grass_01_07_mesh": 250, "grass_02_01_mesh": 120,
+            "grass_02_04_mesh": 120}
+    meshes = {}
+    for p in eal.list_assets("/Game/PN_GrassLibrary/FoliageTypes", recursive=True):
+        m = unreal.load_asset(p).get_editor_property("mesh")
+        if m and m.get_name() in pick:
+            meshes[m.get_name()] = m
     varieties = []
-    # densities per 10 x 10 m (about 9 per m2 in all) and a 30-60 m fade: a first try at ~50 per m2 out to 90 m, Nanite on, hung the GPU
-    sme = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
-    for d, names, density in (("grass_a", ("grass_medium_01_large_a_LOD0", "grass_medium_01_mid_a_LOD0"), 300.0),
-                              ("grass_b", ("grass_medium_02_c", "grass_medium_02_e"), 150.0)):
-        for n in names:
-            for p in eal.list_assets(f"{ROOT}/Models/{d}", recursive=True):
-                m = unreal.load_asset(p)
-                if isinstance(m, unreal.StaticMesh) and m.get_name() == n:
-                    ns = m.get_editor_property("nanite_settings")
-                    if ns.enabled:
-                        ns.enabled = False
-                        sme.set_nanite_settings(m, ns, apply_changes=True)
-                        eal.save_loaded_asset(m)
-                    v = unreal.GrassVariety()
-                    v.set_editor_property("grass_mesh", m)
-                    v.set_editor_property("grass_density", unreal.PerPlatformFloat(default=density))
-                    v.set_editor_property("start_cull_distance", unreal.PerPlatformInt(default=3000))
-                    v.set_editor_property("end_cull_distance", unreal.PerPlatformInt(default=6000))
-                    v.set_editor_property("random_rotation", True)
-                    v.set_editor_property("align_to_surface", True)
-                    v.set_editor_property("scaling", unreal.GrassScaling.UNIFORM)
-                    v.set_editor_property("scale_x", unreal.FloatInterval(1.6, 2.8))
-                    v.set_editor_property("cast_dynamic_shadow", False)
-                    varieties.append(v)
+    for name, density in pick.items():
+        m = meshes.get(name)
+        if not m:
+            continue
+        v = unreal.GrassVariety()
+        v.set_editor_property("grass_mesh", m)
+        v.set_editor_property("grass_density", unreal.PerPlatformFloat(default=float(density)))
+        v.set_editor_property("start_cull_distance", unreal.PerPlatformInt(default=2500))
+        v.set_editor_property("end_cull_distance", unreal.PerPlatformInt(default=4500))
+        v.set_editor_property("random_rotation", True)
+        v.set_editor_property("align_to_surface", True)
+        # landscape grass inherits the landscape's Z scale (137.7 cm per step here, not 100): undo it on Z
+        zs = 100.0 / 137.6974
+        v.set_editor_property("scaling", unreal.GrassScaling.FREE)
+        v.set_editor_property("scale_x", unreal.FloatInterval(0.9, 1.2))
+        v.set_editor_property("scale_y", unreal.FloatInterval(0.9, 1.2))
+        v.set_editor_property("scale_z", unreal.FloatInterval(0.85 * zs, 1.15 * zs))
+        v.set_editor_property("cast_dynamic_shadow", False)
+        varieties.append(v)
     gt.set_editor_property("grass_varieties", varieties)
     eal.save_loaded_asset(gt)
     return gt, len(varieties)
