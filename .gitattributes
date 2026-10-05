@@ -1,0 +1,11 @@
+# Unreal binary assets go through Git LFS (unreal/), never plain git
+*.uasset filter=lfs diff=lfs merge=lfs -text
+*.umap filter=lfs diff=lfs merge=lfs -text
+*.ubulk filter=lfs diff=lfs merge=lfs -text
+*.uexp filter=lfs diff=lfs merge=lfs -text
+unreal/**/*.png filter=lfs diff=lfs merge=lfs -text
+unreal/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+unreal/**/*.exr filter=lfs diff=lfs merge=lfs -text
+unreal/**/*.fbx filter=lfs diff=lfs merge=lfs -text
+unreal/**/*.glb filter=lfs diff=lfs merge=lfs -text
+unreal/**/*.wav filter=lfs diff=lfs merge=lfs -text

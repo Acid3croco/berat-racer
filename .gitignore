@@ -21,3 +21,11 @@ world_hg/
 world_*/
 tools/data/
 /package/
+# Unreal (unreal/BeratRacer)
+unreal/**/Binaries/
+unreal/**/Intermediate/
+unreal/**/Saved/
+unreal/**/DerivedDataCache/
+unreal/**/.vs/
+unreal/**/*.sln
+unreal/**/.vsconfig
