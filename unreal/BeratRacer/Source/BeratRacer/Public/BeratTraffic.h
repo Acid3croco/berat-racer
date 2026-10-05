@@ -25,6 +25,8 @@ struct FBeratTrafficCar
 	float Stopped = 0.f;         // seconds held at a stop line
 	bool bActive = false;
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
+	// head lamps (0, 1) and tail lamps (2, 3): small emissive blocks on the body, shown at night
+	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Lamps;
 };
 
 // Traffic around the player on the package's lane graph. Car following is the Intelligent Driver Model; junctions follow the
@@ -57,6 +59,12 @@ protected:
 
 private:
 	UPROPERTY(Transient) TArray<FBeratTrafficCar> Cars;
+	// real headlight beams for the night cars nearest the player (the rest glow through their lamps only)
+	UPROPERTY(Transient) TArray<TObjectPtr<USpotLightComponent>> Beams;
+	float LampClock = 0.f;
+	bool bLampsOn = false;
+	void FitLamps(FBeratTrafficCar& C);
+	void UpdateLamps(float Dt);
 
 	// Occupancy: lane index -> cars on it (indices into Cars), rebuilt every tick.
 	TMap<int32, TArray<int32>> OnLane;

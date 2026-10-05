@@ -243,3 +243,14 @@ def track_material():
     g.out(g.const(0.55), "", unreal.MaterialProperty.MP_ROUGHNESS)
     g.out(m4, "", unreal.MaterialProperty.MP_OPACITY)
     return g.save()
+
+
+def lamp_materials():
+    """Traffic car lamps: unlit emissive white (head) and red (tail)."""
+    out = []
+    for name, colour in (("M_LampWhite", (14.0, 12.5, 10.0)), ("M_LampRed", (7.0, 0.25, 0.1))):
+        g = Graph(f"{FX}/{name}", shading_model=unreal.MaterialShadingModel.MSM_UNLIT)
+        g.out(g.node(unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(*colour, 1)), "",
+              unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+        out.append(g.save())
+    return out

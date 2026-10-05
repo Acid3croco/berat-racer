@@ -3,6 +3,9 @@
 #include "BeratLaneGraph.h"
 #include "BeratTimeOfDay.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SpotLightComponent.h"
+#include "EngineUtils.h"
+#include "Materials/MaterialInterface.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -47,6 +50,117 @@ void ABeratTraffic::BeginPlay()
 		B->SetVisibility(false);
 		B->RegisterComponent();
 		Cars[i].Body = B;
+		UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		UMaterialInterface* White = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Berat/FX/M_LampWhite.M_LampWhite"));
+		UMaterialInterface* Red = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Berat/FX/M_LampRed.M_LampRed"));
+		for (int32 k = 0; k < 4; ++k)
+		{
+			UStaticMeshComponent* L = NewObject<UStaticMeshComponent>(this);
+			L->SetStaticMesh(Cube);
+			L->SetMaterial(0, k < 2 ? White : Red);
+			L->SetMobility(EComponentMobility::Movable);
+			L->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			L->SetCastShadow(false);
+			L->SetupAttachment(B);
+			L->SetVisibility(false);
+			L->RegisterComponent();
+			Cars[i].Lamps.Add(L);
+		}
+	}
+	for (int32 k = 0; k < 12; ++k)
+	{
+		USpotLightComponent* S = NewObject<USpotLightComponent>(this);
+		S->SetMobility(EComponentMobility::Movable);
+		S->SetIntensityUnits(ELightUnits::Candelas);
+		S->SetIntensity(5000.f);
+		S->SetAttenuationRadius(4000.f);
+		S->SetOuterConeAngle(32.f);
+		S->SetInnerConeAngle(18.f);
+		S->SetLightColor(FLinearColor(1.f, 0.93f, 0.82f));
+		S->SetCastShadows(false);
+		S->SetupAttachment(RootComponent);
+		S->SetVisibility(false);
+		S->RegisterComponent();
+		Beams.Add(S);
+	}
+}
+
+void ABeratTraffic::FitLamps(FBeratTrafficCar& C)
+{
+	// lamps at the body's front and rear corners, from the model's bounds (pivot at the road, X forward)
+	const UStaticMesh* M = C.Body->GetStaticMesh();
+	if (!M || C.Lamps.Num() < 4)
+	{
+		return;
+	}
+	const FBoxSphereBounds B = M->GetBounds();
+	const FVector Lo = B.Origin - B.BoxExtent, Hi = B.Origin + B.BoxExtent;
+	const float Z = Lo.Z + (Hi.Z - Lo.Z) * 0.42f, Y = B.BoxExtent.Y * 0.68f;
+	const FVector Size(0.03f, 0.17f, 0.07f);        // the cube is 1 m
+	C.Lamps[0]->SetRelativeLocation(FVector(Hi.X - 4.f, -Y, Z));
+	C.Lamps[1]->SetRelativeLocation(FVector(Hi.X - 4.f, Y, Z));
+	C.Lamps[2]->SetRelativeLocation(FVector(Lo.X + 4.f, -Y, Z + 8.f));
+	C.Lamps[3]->SetRelativeLocation(FVector(Lo.X + 4.f, Y, Z + 8.f));
+	for (UStaticMeshComponent* L : C.Lamps)
+	{
+		L->SetRelativeScale3D(Size);
+	}
+}
+
+void ABeratTraffic::UpdateLamps(float Dt)
+{
+	LampClock += Dt;
+	if (LampClock < 0.2f)
+	{
+		return;
+	}
+	LampClock = 0.f;
+	const bool bOn = ABeratTimeOfDay::GetNightFactor(this) > 0.25f;
+	FVector Eye = FVector::ZeroVector;
+	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+	{
+		FRotator R;
+		PC->GetPlayerViewPoint(Eye, R);
+	}
+	// lamps of every active car; beams on the nearest ones within 150 m
+	TArray<TPair<float, int32>> Near;
+	for (int32 i = 0; i < Cars.Num(); ++i)
+	{
+		FBeratTrafficCar& C = Cars[i];
+		const bool bShow = bOn && C.bActive;
+		for (UStaticMeshComponent* L : C.Lamps)
+		{
+			if (L->IsVisible() != bShow)
+			{
+				L->SetVisibility(bShow);
+			}
+		}
+		if (bShow)
+		{
+			const float D = FVector::Dist(C.Body->GetComponentLocation(), Eye);
+			if (D < 15000.f)
+			{
+				Near.Add({D, i});
+			}
+		}
+	}
+	Near.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
+	for (int32 k = 0; k < Beams.Num(); ++k)
+	{
+		USpotLightComponent* S = Beams[k];
+		if (k < Near.Num())
+		{
+			const FBeratTrafficCar& C = Cars[Near[k].Value];
+			const FVector Front = (C.Lamps[0]->GetComponentLocation() + C.Lamps[1]->GetComponentLocation()) * 0.5f;
+			FRotator R = C.Body->GetComponentRotation();
+			R.Pitch -= 6.f;
+			S->SetWorldLocationAndRotation(Front + C.Body->GetForwardVector() * 10.f, R);
+			S->SetVisibility(true);
+		}
+		else if (S->IsVisible())
+		{
+			S->SetVisibility(false);
+		}
 	}
 }
 
@@ -135,6 +249,7 @@ void ABeratTraffic::Tick(float Dt)
 		}
 	}
 
+	UpdateLamps(Dt);
 	SpawnClock += Dt;
 	if (SpawnClock > 0.25f)
 	{
@@ -355,6 +470,7 @@ bool ABeratTraffic::TrySpawn(int32 Car)
 	}
 	C.Model = FMath::RandRange(0, Models.Num() - 1);
 	C.Body->SetStaticMesh(Models[C.Model]);
+	FitLamps(C);
 	C.Length = FMath::Max(C.Body->Bounds.BoxExtent.X * 2.f, 380.f);
 	if (const UStaticMesh* M = Models[C.Model])
 	{
