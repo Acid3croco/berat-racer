@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "BeratSectorProps.h"
 #include "BeratImporter.generated.h"
 
 class UMaterialInterface;
@@ -31,6 +32,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
 	static double BuildLandscapeNanite();
 
+	// A static Nanite copy of a skeletal mesh (its reference pose), saved at PackagePath: Megaplants trees are skinned Nanite
+	// meshes, and 330k skinned instances ran at 3 fps; static instances do not pay for the skeleton.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
+	static UStaticMesh* BakeSkeletalToStatic(USkeletalMesh* Mesh, const FString& PackagePath);
+
 	// Bones of a skeletal mesh: "name x y z" (reference pose, component space, cm), to find wheel bones from a script.
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
 	static TArray<FString> GetBoneNames(USkeletalMesh* Mesh);
@@ -52,6 +58,6 @@ public:
 	// its own bounds. LampMesh is the lamp post (origin at its foot, arm along +X, head at LampHead).
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
 	static ABeratSectorProps* ImportSectorProps(UObject* WorldContext, const FString& SectorDir, int32 Si, int32 Sj,
-		const TArray<UStaticMesh*>& KindMeshes, const TMap<int32, UStaticMesh*>& KindVariants, UStaticMesh* LampMesh, FVector LampHead,
+		const TArray<FBeratKindMeshes>& Kinds, UStaticMesh* LampMesh, FVector LampHead,
 		float PlantCullDistance, int32& OutPlants, int32& OutLamps);
 };

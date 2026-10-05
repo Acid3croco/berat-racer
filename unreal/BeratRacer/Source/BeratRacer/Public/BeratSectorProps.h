@@ -5,6 +5,21 @@
 #include "BeratSectorProps.generated.h"
 
 class UHierarchicalInstancedStaticMeshComponent;
+class UInstancedSkinnedMeshComponent;
+class USkeletalMesh;
+
+// The meshes one plant kind is drawn with: static (instanced static meshes) and / or skinned (Megaplants: Nanite skinned
+// trees, instanced skinned meshes). Each plant takes one at random, stable per sector.
+USTRUCT(BlueprintType)
+struct FBeratKindMeshes
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") TArray<TObjectPtr<UStaticMesh>> Static;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") TArray<TObjectPtr<USkeletalMesh>> Skinned;
+	// cm; 0: the importer's default. Shrubs and hedges vanish long before trees.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") float CullDistance = 0.f;
+};
 class UPointLightComponent;
 
 // What one package sector holds besides the terrain, roads and buildings: plants (per kind, instanced) and street lamps.
@@ -23,6 +38,7 @@ public:
 
 	// Add an instanced component for one mesh (the importer calls this per plant kind and for the lamp posts).
 	UHierarchicalInstancedStaticMeshComponent* AddInstances(UStaticMesh* Mesh, FName Name, float CullDistance, bool bCollision);
+	UInstancedSkinnedMeshComponent* AddSkinnedInstances(USkeletalMesh* Mesh, FName Name, float CullDistance);
 
 protected:
 	virtual void BeginPlay() override;

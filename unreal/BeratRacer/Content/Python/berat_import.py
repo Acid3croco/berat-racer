@@ -944,7 +944,7 @@ def import_world_objects(sectors=None, batch=20, min_free_gb=24.0):
     man = json.load(open(os.path.join(PACKAGE, "manifest.json")))
     cache_root = r"C:\Users\jack\berat-cache\world_objects"
     materials = make_materials(["bare" if c == "none" else c.replace(" ", "_") for c in man["classes"]])
-    kinds, variants, lamp = prop_meshes()
+    kinds, lamp = prop_meshes()
     les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
     done = 0
     for si, sj in sectors or sorted(tuple(s) for s in man["sectors"]):
@@ -972,7 +972,7 @@ def import_world_objects(sectors=None, batch=20, min_free_gb=24.0):
                 if not collision:
                     actor.static_mesh_component.set_collision_profile_name("NoCollision")
         if f"Props_{key}" not in labels:
-            unreal.BeratImporter.import_sector_props(None, cache, si, sj, kinds, variants, lamp, unreal.Vector(0, 0, 360), 250000.0)
+            unreal.BeratImporter.import_sector_props(None, cache, si, sj, kinds, lamp, unreal.Vector(0, 0, 360), 250000.0)
         done += 1
         if done % batch == 0:
             save()
@@ -982,8 +982,34 @@ def import_world_objects(sectors=None, batch=20, min_free_gb=24.0):
     return {"sectors": done, "seconds": round(time.time() - t0, 1)}
 
 
-def prop_meshes():
-    """Plant kind -> mesh (prep_objects.KINDS order), variants, lamp post. Poly Haven stand-ins until the Megaplants."""
+MEGA = "/Game/Megaplant_Library"
+# plant kind (prep_objects.KINDS) -> Megaplants species (every A..D variant of each)
+SPECIES = {0: ("English_Oak", "European_Beech", "Hornbeam", "Black_Alder", "Silver_Birch"), 1: ("English_Oak", "European_Beech", "Hornbeam"),
+           2: ("Norway_Spruce",), 3: ("Black_Poplar",), 4: ("Goat_Willow",), 5: ("Common_Hazel", "Elder"),
+           6: ("Common_Hazel", "Elder", "Goat_Willow"), 7: ()}
+
+
+def species_meshes(name, baked=False):
+    """The species' Megaplants trees: the skinned Nanite originals (Nanite Foliage on: assemblies of leafy twigs, wind), or
+    the static bakes (BeratImporter.bake_skeletal_to_static)."""
+    out = []
+    if baked:
+        for p in eal.list_assets(f"{ROOT}/Trees", recursive=False):
+            o = unreal.load_asset(p)
+            if isinstance(o, unreal.StaticMesh) and o.get_name().startswith(f"SM_Tree_{name}_"):
+                out.append(o)
+        return out
+    for p in eal.list_assets(f"{MEGA}/Tree_{name}", recursive=True):
+        if "/Instances/" in p:
+            continue
+        o = unreal.load_asset(p)
+        if isinstance(o, unreal.SkeletalMesh):
+            out.append(o)
+    return out
+
+
+def prop_meshes(baked=False):
+    """Plant kind -> FBeratKindMeshes (Megaplants skinned trees; Poly Haven where Fab has nothing), lamp post."""
     def mesh(d, name):
         for p in eal.list_assets(f"{ROOT}/Models/{d}", recursive=True):
             if p.split(".")[-1] == name:
@@ -991,8 +1017,18 @@ def prop_meshes():
                 if isinstance(o, unreal.StaticMesh):
                     return o
         raise RuntimeError(f"{d}/{name}")
-    broad = mesh("broadleaf_small", "tree_small_02")
-    pine, fir = mesh("conifer_a", "pine_tree_01_a_LOD0"), mesh("conifer_b", "fir_tree_01_a_LOD0")
-    shrub, shrub_b = mesh("shrub_a", "shrub_02_a"), mesh("shrub_a", "shrub_02_c")
-    hedge, vine = mesh("shrub_a", "shrub_02_b"), mesh("shrub_b", "shrub_03_a")
-    return [broad, broad, pine, fir, broad, shrub, hedge, vine], {2: fir, 5: shrub_b}, mesh("lamp_a", "street_lamp_01")
+    cache = {}
+    kinds = []
+    for k in range(8):
+        km = unreal.BeratKindMeshes()
+        skinned = []
+        for sp in SPECIES[k]:
+            if sp not in cache:
+                cache[sp] = species_meshes(sp, baked)
+            skinned += cache[sp]
+        km.set_editor_property("static" if baked else "skinned", skinned)
+        km.set_editor_property("cull_distance", {5: 45000.0, 6: 45000.0, 7: 30000.0}.get(k, 0.0))   # shrubs, hedges, vines
+        if not skinned:
+            km.set_editor_property("static", [mesh("shrub_b", "shrub_03_a")] if k == 7 else [mesh("broadleaf_small", "tree_small_02")])
+        kinds.append(km)
+    return kinds, mesh("lamp_a", "street_lamp_01")

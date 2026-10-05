@@ -2,6 +2,8 @@
 
 #include "BeratTimeOfDay.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/InstancedSkinnedMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Components/PointLightComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -24,6 +26,25 @@ UHierarchicalInstancedStaticMeshComponent* ABeratSectorProps::AddInstances(UStat
 	C->SetCollisionEnabled(bCollision ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
 	C->SetCastShadow(true);
 	C->bAffectDistanceFieldLighting = true;
+	AddInstanceComponent(C);
+	C->RegisterComponent();
+	return C;
+}
+
+UInstancedSkinnedMeshComponent* ABeratSectorProps::AddSkinnedInstances(USkeletalMesh* Mesh, FName Name, float CullDistance)
+{
+	UInstancedSkinnedMeshComponent* C = NewObject<UInstancedSkinnedMeshComponent>(this, Name);
+	// a forest does not need a tick nor per-frame render data from the game thread (profile: 6 ms of ticks, 11 ms of
+	// end-of-frame updates for 331k instances)
+	C->PrimaryComponentTick.bCanEverTick = false;
+	C->PrimaryComponentTick.bStartWithTickEnabled = false;
+	C->SetComponentTickEnabled(false);
+	C->SetSkinnedAssetAndUpdate(Mesh);
+	C->SetMobility(EComponentMobility::Static);
+	C->SetupAttachment(RootComponent);
+	C->SetCullDistances(0, CullDistance);
+	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	C->SetCastShadow(true);
 	AddInstanceComponent(C);
 	C->RegisterComponent();
 	return C;

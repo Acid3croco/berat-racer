@@ -9,7 +9,7 @@ public class BeratRacerEditor : ModuleRules
 			"Core", "CoreUObject", "Engine", "BeratRacer"
 		});
 		PrivateDependencyModuleNames.AddRange(new string[] {
-			"UnrealEd", "Landscape", "LandscapeEditor", "Foliage", "Json", "JsonUtilities", "AssetTools"
+			"UnrealEd", "Landscape", "LandscapeEditor", "Foliage", "MeshUtilities", "RawMesh", "MeshDescription", "StaticMeshDescription", "Json", "JsonUtilities", "AssetTools"
 		});
 	}
 }

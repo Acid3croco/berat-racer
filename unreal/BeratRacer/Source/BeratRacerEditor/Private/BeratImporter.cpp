@@ -4,10 +4,14 @@
 #include "BeratLaneGraph.h"
 #include "BeratSectorProps.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/InstancedSkinnedMeshComponent.h"
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
+#include "MeshUtilities.h"
+#include "Engine/NaniteAssemblyData.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
 #include "Landscape.h"
@@ -187,6 +191,86 @@ double UBeratImporter::BuildLandscapeNanite()
 	const double Dt = FPlatformTime::Seconds() - T0;
 	UE_LOG(LogBerat, Display, TEXT("landscape Nanite built in %.1f s"), Dt);
 	return Dt;
+}
+
+UStaticMesh* UBeratImporter::BakeSkeletalToStatic(USkeletalMesh* Mesh, const FString& PackagePath)
+{
+	if (!Mesh)
+	{
+		return nullptr;
+	}
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	USkeletalMeshComponent* C = NewObject<USkeletalMeshComponent>(GetTransientPackage());
+	C->SetSkeletalMeshAsset(Mesh);
+	C->RegisterComponentWithWorld(World);
+	C->RefreshBoneTransforms();
+	IMeshUtilities& MU = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
+	TArray<UMeshComponent*> Comps = {C};
+	UStaticMesh* SM = MU.ConvertMeshesToStaticMesh(Comps, FTransform::Identity, PackagePath);
+	C->UnregisterComponent();
+	C->DestroyComponent();
+	if (SM)
+	{
+		FMeshNaniteSettings N = SM->GetNaniteSettings();
+		N.bEnabled = true;
+		N.FallbackTarget = ENaniteFallbackTarget::RelativeError;
+		// The skeletal mesh's Nanite Assembly (Megaplants: the leafy twigs and branches instanced on the bones) carried over
+		// as a static assembly: same parts, node transforms made local through the skeleton's reference pose.
+		const FNaniteAssemblyData& Src = Mesh->GetNaniteSettings().NaniteAssemblyData;
+		if (Src.IsValid())
+		{
+			const FReferenceSkeleton& R = Mesh->GetRefSkeleton();
+			TArray<FTransform> Comp;
+			Comp.SetNum(R.GetNum());
+			for (int32 i = 0; i < R.GetNum(); ++i)
+			{
+				const int32 P = R.GetParentIndex(i);
+				Comp[i] = P == INDEX_NONE ? R.GetRefBonePose()[i] : R.GetRefBonePose()[i] * Comp[P];
+			}
+			FNaniteAssemblyData Dst;
+			Dst.Parts = Src.Parts;
+			// a static assembly needs static parts: skeletal parts (Megaplants twigs and branches) baked once, next to the tree
+			for (FNaniteAssemblyPart& Part : Dst.Parts)
+			{
+				USkeletalMesh* SkPart = Cast<USkeletalMesh>(Part.MeshObjectPath.TryLoad());
+				if (!SkPart)
+				{
+					continue;
+				}
+				const FString PartPath = FPaths::GetPath(PackagePath) / TEXT("Parts") / (TEXT("SM_") + SkPart->GetName());
+				UStaticMesh* Baked = LoadObject<UStaticMesh>(nullptr, *(PartPath + TEXT(".") + FPaths::GetBaseFilename(PartPath)));
+				if (!Baked)
+				{
+					Baked = BakeSkeletalToStatic(SkPart, PartPath);
+				}
+				if (Baked)
+				{
+					Part.MeshObjectPath = FSoftObjectPath(Baked);
+				}
+			}
+			Dst.Nodes.Reserve(Src.Nodes.Num());
+			for (const FNaniteAssemblyNode& In : Src.Nodes)
+			{
+				FNaniteAssemblyNode Out;
+				Out.PartIndex = In.PartIndex;
+				Out.TransformSpace = ENaniteAssemblyNodeTransformSpace::Local;
+				Out.Transform = In.Transform;
+				if (In.TransformSpace == ENaniteAssemblyNodeTransformSpace::BoneRelative && In.BoneInfluences.Num() > 0
+					&& Comp.IsValidIndex(In.BoneInfluences[0].BoneIndex))
+				{
+					Out.Transform = In.Transform * FTransform3f(Comp[In.BoneInfluences[0].BoneIndex]);
+				}
+				Dst.Nodes.Add(Out);
+			}
+			N.NaniteAssemblyData = MoveTemp(Dst);
+			UE_LOG(LogBerat, Display, TEXT("%s: assembly of %d parts, %d nodes carried over"), *Mesh->GetName(), Src.Parts.Num(), Src.Nodes.Num());
+		}
+		SM->SetNaniteSettings(N);
+		SM->Build(false);
+		SM->MarkPackageDirty();
+		SaveAsset(SM);
+	}
+	return SM;
 }
 
 TArray<FString> UBeratImporter::GetBoneNames(USkeletalMesh* Mesh)
@@ -372,7 +456,7 @@ UBeratLaneGraph* UBeratImporter::ImportLaneGraph(const FString& LanesJson, const
 }
 
 ABeratSectorProps* UBeratImporter::ImportSectorProps(UObject* WorldContext, const FString& SectorDir, int32 Si, int32 Sj,
-	const TArray<UStaticMesh*>& KindMeshes, const TMap<int32, UStaticMesh*>& KindVariants, UStaticMesh* LampMesh, FVector LampHead,
+	const TArray<FBeratKindMeshes>& Kinds, UStaticMesh* LampMesh, FVector LampHead,
 	float PlantCullDistance, int32& OutPlants, int32& OutLamps)
 {
 	OutPlants = OutLamps = 0;
@@ -395,32 +479,65 @@ ABeratSectorProps* UBeratImporter::ImportSectorProps(UObject* WorldContext, cons
 		const int32 N = *reinterpret_cast<const int32*>(Raw.GetData());
 		struct FRec { float X, Y, Z, H, Yaw; int32 Kind; };
 		const FRec* Rec = reinterpret_cast<const FRec*>(Raw.GetData() + 4);
-		TMap<UStaticMesh*, UHierarchicalInstancedStaticMeshComponent*> Comps;
-		TMap<UStaticMesh*, TArray<FTransform>> Xf;
+		TMap<UObject*, TArray<FTransform>> Xf;
+		TMap<UObject*, float> Cull;
 		FRandomStream Rng(Si * 1000 + Sj);
 		for (int32 i = 0; i < N; ++i)
 		{
 			const FRec& R = Rec[i];
-			if (!KindMeshes.IsValidIndex(R.Kind) || !KindMeshes[R.Kind])
+			if (!Kinds.IsValidIndex(R.Kind))
 			{
 				continue;
 			}
-			UStaticMesh* M = KindMeshes[R.Kind];
-			// one variant in two, when the kind has one
-			if (UStaticMesh* const* V = KindVariants.Find(R.Kind); V && *V && Rng.FRand() < 0.5f)
+			const FBeratKindMeshes& K = Kinds[R.Kind];
+			const int32 Total = K.Static.Num() + K.Skinned.Num();
+			if (Total == 0)
 			{
-				M = *V;
+				continue;
 			}
-			const float MeshH = FMath::Max(M->GetBounds().BoxExtent.Z * 2.f, 1.f);
-			const float S = R.H / MeshH;
-			const FTransform T(FRotator(0, R.Yaw, 0), FVector(R.X, R.Y, R.Z - 10.f), FVector(S * Rng.FRandRange(0.92f, 1.08f), S * Rng.FRandRange(0.92f, 1.08f), S));
+			const int32 Pick = Rng.RandRange(0, Total - 1);
+			UObject* M = Pick < K.Static.Num() ? static_cast<UObject*>(K.Static[Pick].Get()) : static_cast<UObject*>(K.Skinned[Pick - K.Static.Num()].Get());
+			if (!M)
+			{
+				continue;
+			}
+			// height of the model: from its base (the origin) to the top of its bounds
+			float MeshH = 100.f;
+			if (const UStaticMesh* SM = Cast<UStaticMesh>(M))
+			{
+				const FBoxSphereBounds B = SM->GetBounds();
+				MeshH = B.Origin.Z + B.BoxExtent.Z;
+			}
+			else if (const USkeletalMesh* SK = Cast<USkeletalMesh>(M))
+			{
+				const FBoxSphereBounds B = SK->GetBounds();
+				MeshH = B.Origin.Z + B.BoxExtent.Z;
+			}
+			const float S = R.H / FMath::Max(MeshH, 1.f);
+			const float Wid = S * Rng.FRandRange(0.9f, 1.1f);
+			const FTransform T(FRotator(0, R.Yaw, 0), FVector(R.X, R.Y, R.Z - 10.f), FVector(Wid, Wid, S));
 			Xf.FindOrAdd(M).Add(T * ToLocal);
+			if (K.CullDistance > 0.f)
+			{
+				Cull.FindOrAdd(M) = K.CullDistance;
+			}
 		}
 		for (auto& [Mesh, Ts] : Xf)
 		{
-			UHierarchicalInstancedStaticMeshComponent* C = A->AddInstances(Mesh, *FString::Printf(TEXT("HISM_%s"), *Mesh->GetName()),
-				PlantCullDistance, false);
-			C->AddInstances(Ts, false);
+			if (UStaticMesh* SM = Cast<UStaticMesh>(Mesh))
+			{
+				UHierarchicalInstancedStaticMeshComponent* C = A->AddInstances(SM, *FString::Printf(TEXT("HISM_%s"), *SM->GetName()),
+					Cull.Contains(Mesh) ? Cull[Mesh] : PlantCullDistance, false);
+				C->AddInstances(Ts, false);
+			}
+			else if (USkeletalMesh* SK = Cast<USkeletalMesh>(Mesh))
+			{
+				UInstancedSkinnedMeshComponent* C = A->AddSkinnedInstances(SK, *FString::Printf(TEXT("ISKM_%s"), *SK->GetName()),
+					Cull.Contains(Mesh) ? Cull[Mesh] : PlantCullDistance);
+				TArray<int32> Anim;
+				Anim.Init(0, Ts.Num());
+				C->AddInstances(Ts, Anim, false);
+			}
 			OutPlants += Ts.Num();
 		}
 	}

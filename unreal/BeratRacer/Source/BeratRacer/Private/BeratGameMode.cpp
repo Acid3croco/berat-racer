@@ -338,10 +338,10 @@ void ABeratPlayerController::Tick(float Dt)
 					B ? B->TriMeshGeometries.Num() : -1, C->IsPhysicsStateCreated());
 			}
 			break;
-		case 1: TestReport(TEXT("parked")); break;
+		case 1: TestReport(TEXT("parked")); ConsoleCommand(TEXT("CsvProfile Start")); break;
 		case 2: TestShot(TEXT("game_drive")); break;
 		case 3: TestReport(TEXT("driving 1")); break;
-		case 4: TestReport(TEXT("driving 2")); TestShot(TEXT("game_drive2")); break;
+		case 4: TestReport(TEXT("driving 2")); TestShot(TEXT("game_drive2")); ConsoleCommand(TEXT("CsvProfile Stop")); break;
 		case 5: FGenericPlatformMisc::RequestExit(false); break;
 		}
 		++TestStep;
