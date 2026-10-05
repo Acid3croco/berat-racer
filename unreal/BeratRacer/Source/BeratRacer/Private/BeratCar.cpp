@@ -5,6 +5,7 @@
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/CollisionProfile.h"
 #include "Components/SpotLightComponent.h"
 #include "EnhancedInputComponent.h"
@@ -80,7 +81,7 @@ ABeratCar::ABeratCar()
 		L->SetupAttachment(GetMesh());
 		L->SetIntensityUnits(ELightUnits::Candelas);
 		L->SetLightColor(FLinearColor(1.f, 0.05f, 0.02f));
-		L->SetAttenuationRadius(350.f);
+		L->SetAttenuationRadius(250.f);
 		L->SetCastShadows(false);
 		L->SetVisibility(false);
 		return L;
@@ -173,7 +174,9 @@ void ABeratCar::BeginPlay()
 void ABeratCar::PlaceLights()
 {
 	// The body's local bounds (the skeletal mesh's reference pose), so any vehicle blueprint gets lamps at its corners.
-	const FBoxSphereBounds B = GetMesh()->CalcBounds(FTransform::Identity);
+	// the asset's own bounds (the component's are the physics bodies' until the first update)
+	const USkeletalMesh* SK = GetMesh()->GetSkeletalMeshAsset();
+	const FBoxSphereBounds B = SK ? SK->GetBounds() : GetMesh()->CalcBounds(FTransform::Identity);
 	const FVector C = B.Origin, E = B.BoxExtent;
 	auto At = [&](const FVector& F, float Side) { return C + FVector(F.X * E.X, Side * F.Y * E.Y, F.Z * E.Z); };
 	HeadL->SetRelativeLocationAndRotation(At(HeadlightAt, -1.f), FRotator(-3.f, 0, 0));
@@ -442,7 +445,7 @@ void ABeratCar::UpdateLights()
 		TailL->SetVisibility(bTail);
 		TailR->SetVisibility(bTail);
 	}
-	const float Tail = bBraking ? 60.f : 12.f;
+	const float Tail = bBraking ? 25.f : 4.f;
 	TailL->SetIntensity(Tail);
 	TailR->SetIntensity(Tail);
 }

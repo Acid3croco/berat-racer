@@ -53,7 +53,7 @@ public:
 	// (wheels, engine, gearbox, differential, steering, mass) this car takes when it starts.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") TSoftClassPtr<AWheeledVehiclePawn> Template;
 	// Headlight intensity (candela, per lamp) and reach.
-	UPROPERTY(EditAnywhere, Category = "Berat|Lights") float HeadlightCandela = 30000.f;
+	UPROPERTY(EditAnywhere, Category = "Berat|Lights") float HeadlightCandela = 9000.f;
 	UPROPERTY(EditAnywhere, Category = "Berat|Lights") float HeadlightReach = 9000.f;
 	// Lamp placement as fractions of the body's bounds (x forward, y right, z up), 0 the centre, 1 the edge.
 	UPROPERTY(EditAnywhere, Category = "Berat|Lights") FVector HeadlightAt = FVector(0.97, 0.66, -0.1);

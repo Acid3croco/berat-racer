@@ -34,6 +34,11 @@ void ABeratTimeOfDay::SkipHours(float Delta)
 void ABeratTimeOfDay::BeginPlay()
 {
 	Super::BeginPlay();
+	float H = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("BeratHour="), H))
+	{
+		Hours = FMath::Fmod(H, 24.f);   // -BeratHour=22.5: start the clock there
+	}
 	Apply(true);
 }
 

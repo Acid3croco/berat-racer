@@ -28,6 +28,11 @@ ABeratGameMode::ABeratGameMode()
 
 UClass* ABeratGameMode::GetDefaultPawnClassForController_Implementation(AController* InController)
 {
+	int32 Pick = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("BeratCar="), Pick) && Cars.IsValidIndex(Pick))
+	{
+		Current = Pick;   // -BeratCar=N: start with the N-th car of the garage
+	}
 	if (Cars.IsValidIndex(Current) && Cars[Current])
 	{
 		return Cars[Current];
