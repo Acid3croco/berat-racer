@@ -123,6 +123,59 @@ def style_sector(src: Path, dst: Path, corner) -> Counter:
             uv1 = np.column_stack([np.full(len(used), rnd), np.zeros(len(used))])
             mesh.add(name, pos[used], inv.reshape(-1, 3), uv0=uv[used], uv1=uv1, colour=col[used])
             counts[name] += len(t)
+    # chimneys: on the ridge of pitched-roof houses (most) and old barns, in the building's wall finish, a concrete cap
+    roof_pts = {}
+    for material, pos, uv, col, tri in read_glb(src / "buildings.glb"):
+        if material != "roof":
+            continue
+        cen = pos[tri].mean(axis=1)
+        idx = tree.query_nearest(shapely.points(cen[:, 0], cen[:, 1]), return_distance=False, all_matches=False)[1]
+        for b in np.unique(idx):
+            roof_pts.setdefault(b, []).append(pos[tri[idx == b]].reshape(-1, 3))
+    for b, chunks in roof_pts.items():
+        p = props[b]
+        if p.get("roof") not in ("gabled", "hipped") or p.get("use") not in ("house", "barn"):
+            continue
+        (wall, _), rnd = looks[b]
+        if p.get("use") == "barn" and p.get("era") != "before_1950":
+            continue
+        if rnd > 0.85:
+            continue
+        v = np.concatenate(chunks)
+        top = v[:, 2].max()
+        ridge = v[v[:, 2] > top - 0.05]
+        if len(ridge) < 2:
+            continue
+        dist = np.linalg.norm(ridge[:, None, :2] - ridge[None, :, :2], axis=2)
+        i, j = np.unravel_index(dist.argmax(), dist.shape)
+        e0, e1 = ridge[i, :2], ridge[j, :2]
+        along = e1 - e0
+        L = np.linalg.norm(along)
+        d = along / L if L > 0.5 else np.array([1.0, 0.0])
+        nrm = np.array([-d[1], d[0]])
+        c = e0 + along * (0.2 + 0.6 * ((rnd * 7.13) % 1.0)) + nrm * (0.6 * ((rnd * 3.7) % 1.0) - 0.3)
+        w, dep, z0, z1 = 0.62, 0.48, top - 1.4, top + 0.9
+        corners = [c + d * sx * w / 2 + nrm * sy * dep / 2 for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        pos, tris, uvs = [], [], []
+        for k in range(4):                                              # four sides
+            a0, a1 = corners[k], corners[(k + 1) % 4]
+            base = len(pos)
+            pos += [[*a0, z0], [*a1, z0], [*a1, z1], [*a0, z1]]
+            seg = np.linalg.norm(a1 - a0)
+            uvs += [[0, z1 - z0], [seg, z1 - z0], [seg, 0], [0, 0]]
+            tris += [[base, base + 1, base + 2], [base, base + 2, base + 3]]   # counter-clockwise from outside
+        mesh.add(wall, np.asarray(pos), np.asarray(tris), uv0=np.asarray(uvs, float),
+                 uv1=np.column_stack([np.full(len(pos), rnd), np.zeros(len(pos))]), colour=np.full((len(pos), 3), 0.8))
+        cap = [[*q, z1 + 0.06] for q in [c + d * sx * (w / 2 + 0.06) + nrm * sy * (dep / 2 + 0.06)
+                                         for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]]
+        capl = [[*q, z1] for q in [c + d * sx * (w / 2 + 0.06) + nrm * sy * (dep / 2 + 0.06)
+                                   for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]]
+        cp = np.asarray(cap + capl)
+        ct = [[0, 1, 2], [0, 2, 3]]
+        for k in range(4):
+            ct += [[k + 4, (k + 1) % 4 + 4, (k + 1) % 4], [k + 4, (k + 1) % 4, k]]
+        mesh.add("wall_concrete", cp, np.asarray(ct), uv0=cp[:, :2], colour=np.full((8, 3), 0.7))
+        counts["chimneys"] += 1
     mats = {m: {"colour": (0.7, 0.7, 0.7)} for m in mesh.parts}
     gltf.write_glb(dst / "buildings_styled.glb", mesh, corner, mats, f"buildings_{dst.name}")
     return counts
