@@ -561,25 +561,33 @@ def shutter_material():
 
 
 def water_material():
-    """Translucent-free water: dark base, very smooth, normals from two panning tiled normals (uses the meadow normal map as
-    a ripple source is wrong; the engine's own water normal is used when present)."""
+    """Opaque stream / pond water: a murky green-brown body, a little rough, and ripples from two panning scales of the
+    engine's water normal (the sky's reflection broken up; a near-mirror read as flat cyan ribbons)."""
     g = Graph(f"{ROOT}/Materials/M_Water")
-    c = g.node(unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(0.02, 0.045, 0.04, 1))
+    c = g.node(unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(0.035, 0.045, 0.028, 1))
     g.out(c, "", unreal.MaterialProperty.MP_BASE_COLOR)
-    g.out(g.const(0.03), "", unreal.MaterialProperty.MP_ROUGHNESS)
-    g.out(g.const(0.5), "", unreal.MaterialProperty.MP_SPECULAR)
-    ripple = unreal.load_asset("/Engine/EngineMaterials/T_Default_Material_Grid_N") or None
+    g.out(g.const(0.12), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    g.out(g.const(0.35), "", unreal.MaterialProperty.MP_SPECULAR)
     wn = unreal.load_asset("/Engine/Functions/Engine_MaterialFunctions02/ExampleContent/Textures/water_n")
     if wn:
-        uv1 = world_uv(g, 6.0)
-        pan = g.node(unreal.MaterialExpressionPanner, 3, speed_x=0.01, speed_y=0.006)
-        g.link(uv1, "", pan, "Coordinate")
-        n = g.texture(wn, pan, normal=True)
+        uv1 = world_uv(g, 3.0)
+        pan1 = g.node(unreal.MaterialExpressionPanner, 3, speed_x=0.03, speed_y=0.012)
+        g.link(uv1, "", pan1, "Coordinate")
+        n1 = g.texture(wn, pan1, normal=True)
+        uv2 = world_uv(g, 0.9, rotate=1.3)
+        pan2 = g.node(unreal.MaterialExpressionPanner, 3, speed_x=-0.05, speed_y=0.04)
+        g.link(uv2, "", pan2, "Coordinate")
+        n2 = g.texture(wn, pan2, normal=True)
+        add = g.node(unreal.MaterialExpressionAdd, 2)
+        g.link(n1, "RGB", add, "A")
+        g.link(n2, "RGB", add, "B")
+        norm = g.node(unreal.MaterialExpressionNormalize, 2)
+        g.link(add, "", norm, "")
         up = g.node(unreal.MaterialExpressionConstant3Vector, 2, constant=unreal.LinearColor(0, 0, 1, 1))
-        flat = g.node(unreal.MaterialExpressionLinearInterpolate, 1, const_alpha=0.35)   # 35 % of the ripples
-        g.link(up, "", flat, "A")
-        g.link(n, "RGB", flat, "B")
-        g.out(flat, "", unreal.MaterialProperty.MP_NORMAL)
+        mix = g.node(unreal.MaterialExpressionLinearInterpolate, 1, const_alpha=0.75)
+        g.link(up, "", mix, "A")
+        g.link(norm, "", mix, "B")
+        g.out(mix, "", unreal.MaterialProperty.MP_NORMAL)
     return g.save()
 
 
