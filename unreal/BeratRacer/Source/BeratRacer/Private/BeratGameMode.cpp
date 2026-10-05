@@ -284,9 +284,28 @@ void ABeratPlayerController::Tick(float Dt)
 		FrameMs.Add(Dt * 1000.f);
 	}
 	ABeratCar* Car = Cast<ABeratCar>(GetPawn());
-	// -BeratStart=x,y (package metres): put the car on the nearest lane there, along it, once
-	FString StartArg;
-	if (Car && TestStep == 0 && TestClock > 1.f && !bMoved && FParse::Value(FCommandLine::Get(), TEXT("BeratStart="), StartArg))
+	// -BeratStart=x,y (package metres): put the car on the nearest lane there, along it, once.
+	// -BeratOffroad=x,y,heading (degrees from east, counter-clockwise): exactly there on the ground, then straight ahead on
+	// part throttle instead of the autopilot (grip and drag per surface).
+	FString StartArg, OffroadArg;
+	const bool bOffroad = FParse::Value(FCommandLine::Get(), TEXT("BeratOffroad="), OffroadArg, false);
+	if (Car && TestStep == 0 && TestClock > 1.f && !bMoved && bOffroad)
+	{
+		bMoved = true;
+		TArray<FString> V;
+		OffroadArg.ParseIntoArray(V, TEXT(","));
+		const double X = V.Num() > 0 ? FCString::Atod(*V[0]) * 100.0 : 0.0, Y = V.Num() > 1 ? -FCString::Atod(*V[1]) * 100.0 : 0.0;
+		const float Heading = V.Num() > 2 ? FCString::Atof(*V[2]) : 0.f;
+		FHitResult Hit;
+		FCollisionQueryParams Q(NAME_None, false, Car);
+		if (GetWorld()->LineTraceSingleByChannel(Hit, FVector(X, Y, 1e6), FVector(X, Y, -1e5), ECC_Visibility, Q))
+		{
+			Car->GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+			Car->SetActorLocationAndRotation(Hit.ImpactPoint + FVector(0, 0, 80.f), FRotator(0, -Heading, 0), false, nullptr, ETeleportType::TeleportPhysics);
+			UE_LOG(LogTemp, Display, TEXT("[berat-test] off-road start at (%.1f, %.1f, %.2f) heading %.0f"), X / 100.0, -Y / 100.0, Hit.ImpactPoint.Z / 100.0, Heading);
+		}
+	}
+	if (Car && TestStep == 0 && TestClock > 1.f && !bMoved && FParse::Value(FCommandLine::Get(), TEXT("BeratStart="), StartArg, false))
 	{
 		bMoved = true;
 		FString Xs, Ys;
@@ -314,7 +333,14 @@ void ABeratPlayerController::Tick(float Dt)
 	}
 	if (TestStep >= 2 && Car)
 	{
-		Pilot(Car, Dt);
+		if (bOffroad)
+		{
+			Car->AutoThrottle = 0.6f; Car->AutoSteer = 0.f; Car->AutoBrake = 0.f;
+		}
+		else
+		{
+			Pilot(Car, Dt);
+		}
 	}
 	// 0-3 s settle; 3-8 s parked (frame time standing); 8-48 s autopilot on the lane graph; reports and shots on the way.
 	const float Marks[] = {3.f, 8.f, 20.f, 30.f, 48.f, 49.f};

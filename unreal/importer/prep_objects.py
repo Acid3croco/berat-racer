@@ -274,7 +274,8 @@ def read_glb_mesh(path: Path):
 def road_collision(sector: Path) -> gltf.Mesh:
     """The drivable surfaces of roads.glb: carriageways, junctions, car parks and bridge decks, without the skirts and deck
     sides (vertical) nor the paint (2 cm over the surface). The skirts hide gaps where the terrain dips under a road edge; as
-    collision they made a 5-10 cm wall at every road edge that stopped a wheel dead. Normal z > 0.5: up to 60 degrees."""
+    collision they made a 5-10 cm wall at every road edge that stopped a wheel dead. Normal z > 0.5: up to 60 degrees.
+    One part per road material (asphalt, dirt, deck): the importer gives each its physical material (grip per surface)."""
     mesh = gltf.Mesh()
     for material, pos, tri in read_glb_mesh(sector / "roads.glb"):
         if material == "paint":
@@ -285,7 +286,7 @@ def road_collision(sector: Path) -> gltf.Mesh:
         keep = tri[nz > 0.5]
         if len(keep):
             used, inv = np.unique(keep, return_inverse=True)
-            mesh.add("collision", pos[used], inv.reshape(-1, 3))
+            mesh.add(material, pos[used], inv.reshape(-1, 3))
     return mesh
 
 
@@ -366,7 +367,7 @@ def main() -> None:
                 gltf.write_glb(dst / "water.glb", wm, corner, {"water": {"colour": (0.1, 0.2, 0.25), "roughness": 0.05}},
                                f"water_{si}_{sj}")
             rc = road_collision(src)
-            gltf.write_glb(dst / "roads_collision.glb", rc, corner, {"collision": {"colour": (1.0, 0.0, 1.0)}},
+            gltf.write_glb(dst / "roads_collision.glb", rc, corner, {m: {"colour": (1.0, 0.0, 1.0)} for m in rc.parts},
                            f"roads_collision_{si}_{sj}")
             om = openings(src)
             if len(om):

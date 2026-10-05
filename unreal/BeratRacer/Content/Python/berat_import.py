@@ -1222,3 +1222,58 @@ def restyle_openings(sectors=None):
             act = place(mesh, f"openings_{key}", si, sj, False)
             act.static_mesh_component.set_collision_profile_name("NoCollision")
     save()
+
+
+# --------------------------------------------------------------------------------------------------------------- surfaces
+
+# Grip per surface, the native Chaos way: each wheel reads the Friction of the physical material under it
+# (ChaosWheeledVehicleMovementComponent ApplyWheelFrictionForces). The cars were tuned on the default material (0.7).
+# Surface types (names in DefaultEngine.ini PhysicsSettings) are what wheel dust and sounds key on.
+SURFACES = {           # name: (surface type index, friction)
+    "Asphalt": (1, 0.8),
+    "Concrete": (2, 0.75),
+    "Gravel": (3, 0.6),
+    "Dirt": (4, 0.55),
+    "Grass": (5, 0.5),
+    "Field": (6, 0.45),
+    "Mud": (7, 0.38),
+    "Forest": (8, 0.5),
+    "Rock": (9, 0.7),
+}
+LAYER_SURFACE = {"bare": "Dirt", "meadow": "Grass", "cereal": "Field", "row_crop": "Mud", "vineyard": "Dirt",
+                 "orchard": "Grass", "fallow": "Grass", "garden": "Grass", "yard": "Gravel", "forest": "Forest",
+                 "cemetery": "Gravel", "pitch": "Grass", "scrub": "Dirt", "rock": "Rock"}
+ROAD_SURFACE = {"M_Asphalt": "Asphalt", "M_DirtRoad": "Gravel", "M_Deck": "Concrete"}
+
+
+def physical_materials():
+    out = {}
+    for name, (index, friction) in SURFACES.items():
+        path = f"{ROOT}/Physics/PM_{name}"
+        pm = unreal.load_asset(path) if eal.does_asset_exist(path) else assets.create_asset(
+            f"PM_{name}", f"{ROOT}/Physics", unreal.PhysicalMaterial, unreal.PhysicalMaterialFactoryNew())
+        pm.set_editor_property("friction", friction)
+        pm.set_editor_property("surface_type", getattr(unreal.PhysicalSurface, f"SURFACE_TYPE{index}"))
+        eal.save_loaded_asset(pm)
+        out[name] = pm
+    return out
+
+
+def apply_surfaces():
+    """Physical materials on the landscape layers (the collision keeps each cell's dominant layer) and on the road
+    materials (the road collision mesh has one slot per road material)."""
+    pms = physical_materials()
+    n = 0
+    for layer, surface in LAYER_SURFACE.items():
+        path = f"{ROOT}/Landscape/LI_{layer}"
+        if eal.does_asset_exist(path):
+            li = unreal.load_asset(path)
+            li.set_editor_property("phys_material", pms[surface])
+            eal.save_loaded_asset(li)
+            n += 1
+    for mat, surface in ROAD_SURFACE.items():
+        m = unreal.load_asset(f"{ROOT}/Materials/{mat}")
+        m.set_editor_property("phys_material", pms[surface])
+        eal.save_loaded_asset(m)
+    log["surfaces"] = {"layers": n, "roads": len(ROAD_SURFACE)}
+    return n
