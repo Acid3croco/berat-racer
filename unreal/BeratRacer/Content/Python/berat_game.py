@@ -41,9 +41,16 @@ ENGINE = {"BP_Car_Sport": (750.0, 1500.0), "BP_Car_Offroad": (300.0, 1500.0)}   
 # shift into 5th fell back to a 1st-gear ratio).
 GEARS = {"BP_Car_Offroad": [3.0, 2.0, 1.4, 1.05, 0.85]}
 
-TRAFFIC = ["/Game/VehicleVarietyPack/Meshes/SM_Hatchback", "/Game/VehicleVarietyPack/Meshes/SM_SUV",
-           "/Game/VehicleVarietyPack/Meshes/SM_Pickup", "/Game/VehicleVarietyPack/Meshes/SM_SportsCar",
-           "/Game/VehicleVarietyPack/Meshes/SM_Truck_Box", "/Game/Vehicles/SportsCar/SM_SportsCar"]
+# traffic bodies (vehicle02 left out: an American police car): City Sample Vehicles' full-detail cars and vans (their "_LOD" meshes, Nanite turned on, a box collision
+# added) and the Vehicle Variety Pack's everyday cars
+CS = "/Game/CitySampleVehicles"
+TRAFFIC = [f"{CS}/vehicle01_Van/Mesh/SM_vehVan_vehicle01_LOD",
+           f"{CS}/vehicle03_Car/Mesh/SM_vehCar_vehicle03_LOD", f"{CS}/vehicle04_Truck/Mesh/SM_vehTruck_vehicle04_LOD",
+           f"{CS}/vehicle05_Car/Mesh/SM_vehCar_vehicle05_LOD", f"{CS}/vehicle06_Car/Mesh/SM_vehCar_vehicle06_LOD",
+           f"{CS}/vehicle09_Van/Mesh/SM_vehVan_vehicle09_LOD", f"{CS}/vehicle12_Car/Mesh/SM_vehCar_vehicle12_LOD",
+           f"{CS}/vehicle13_Car/Mesh/SM_vehCar_vehicle13_LOD",
+           "/Game/VehicleVarietyPack/Meshes/SM_Hatchback", "/Game/VehicleVarietyPack/Meshes/SM_Pickup",
+           "/Game/VehicleVarietyPack/Meshes/SM_SUV"]
 
 MOVEMENT = ("wheel_setups", "engine_setup", "transmission_setup", "differential_setup", "steering_setup", "mass",
             "chassis_width", "chassis_height", "drag_coefficient", "downforce_coefficient", "enable_center_of_mass_override",

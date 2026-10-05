@@ -694,8 +694,8 @@ void ABeratPlayerController::Handling(ABeratCar* Car, float Dt)
 		M->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 		Car->SetActorLocationAndRotation(Pad + FVector(-80000.f, 0, 60.f), FRotator::ZeroRotator, false, nullptr, ETeleportType::TeleportPhysics);
 		Car->AutoThrottle = 0.f; Car->AutoBrake = 0.f; Car->AutoSteer = 0.f;
-		UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s: mass %.0f kg, CoM override %d %s, inertia scale %s, drag %.2f, downforce %.2f"),
-			Name, W->Mass, W->bEnableCenterOfMassOverride, *W->CenterOfMassOverride.ToString(), *W->InertiaTensorScale.ToString(),
+		UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s: CoM %s (actor space), mass %.0f kg, CoM override %d %s, inertia scale %s, drag %.2f, downforce %.2f"),
+			Name, *Car->GetActorTransform().InverseTransformPosition(M->GetCenterOfMass()).ToString(), W->Mass, W->bEnableCenterOfMassOverride, *W->CenterOfMassOverride.ToString(), *W->InertiaTensorScale.ToString(),
 			W->DragCoefficient, W->DownforceCoefficient);
 		for (int32 i = 0; i < W->Wheels.Num(); ++i)
 		{

@@ -543,6 +543,10 @@ void ABeratCar::ConfigureChaos()
 	{
 		return;
 	}
+	if (Assists.CentreOfMassDrop != 0.f)
+	{
+		GetMesh()->SetCenterOfMass(FVector(0.f, 0.f, -Assists.CentreOfMassDrop));
+	}
 	// Aerodynamics: Chaos applies drag and downforce from these with the speed squared.
 	// set through Chaos's runtime setters: the vehicle is already simulating (rebuilding its physics state threw it into the sky)
 	W->SetDownforceCoefficient(Assists.DownforceCoefficient);

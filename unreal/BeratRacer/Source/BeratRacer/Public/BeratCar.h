@@ -40,6 +40,9 @@ struct FBeratDriveAssists
 	// Full-brake deceleration (g) the brake torques are set for, from the car's mass and wheel radii, 65 % front (the
 	// blueprints' own torques stopped at 1.3-1.8 g). 0 keeps them.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float BrakeG = 1.05f;
+	// Centre of mass lowered by this much (cm) from the physics asset's (the bodies' boxes put it near the roof line, so
+	// a knock rolled the car).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float CentreOfMassDrop = 30.f;
 	// Handbrake: the rear tyres' grip while it is held (share of their own) and its light braking (g); the rear slides and
 	// the car rotates without stopping (a locking handbrake brought it to rest from 70 km/h).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float HandbrakeGrip = 0.6f;
