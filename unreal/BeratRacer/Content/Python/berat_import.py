@@ -1360,6 +1360,7 @@ def opening_materials():
         "garage": simple_material(f"{R}/M_GarageLeaf", (0.55, 0.55, 0.53), role="wall_metal", metres=1.0, vertex_colour=True,
                                   roughness=0.5),
         "shutter": shutter_material(),
+        "surround": simple_material(f"{R}/M_Surround", vertex_colour=True, roughness=0.85, specular=0.3),
     }
 
 

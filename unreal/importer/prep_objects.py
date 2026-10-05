@@ -121,7 +121,10 @@ def lamps(sector: Path) -> np.ndarray:
 
 
 # Shutter colours of the Toulouse countryside (sRGB 0..1): grey-blue, sage, oxblood, white, brown, pastel blue.
-SHUTTERS = [(0.42, 0.5, 0.56), (0.5, 0.58, 0.5), (0.45, 0.16, 0.13), (0.88, 0.87, 0.82), (0.36, 0.25, 0.18), (0.55, 0.66, 0.74)]
+# Light blue / periwinkle dominates the old core (style guide: #7FA0D8, #8FA6D0, #7DA3C8).
+SHUTTERS = [(0.42, 0.5, 0.56), (0.5, 0.58, 0.5), (0.45, 0.16, 0.13), (0.88, 0.87, 0.82), (0.36, 0.25, 0.18), (0.55, 0.66, 0.74),
+            (0.5, 0.63, 0.85), (0.56, 0.65, 0.82), (0.49, 0.64, 0.78)]
+BRICK_SURROUND = (0.78, 0.41, 0.24)      # #C8683C: brick around windows and doors on rendered facades
 FRAME_DEPTH = 0.08    # m: window and door frames stand this far out of the wall (the wall is not cut)
 
 
@@ -168,6 +171,9 @@ def openings(sector: Path) -> gltf.Mesh:
         old = p["era"] in ("before_1950", "1950_1970", "unknown") and p["use"] in ("house", "barn", "townhall", "school")
         has_shutters = old and rng.random() < 0.85 or (p["use"] == "house" and rng.random() < 0.45)
         frame = (0.92, 0.91, 0.87) if rng.random() < 0.6 else ((0.45, 0.32, 0.22) if old else (0.35, 0.35, 0.36))
+        # Bérat's signature detail: brick surrounds on rendered old facades (not on brick walls)
+        brick_wall = "brique" in (p.get("wall_material") or "").lower()
+        surrounds = old and not brick_wall and rng.random() < 0.55
         flats = 1.0 if (p.get("floors") or 1) >= 3 else 0.0
         for w in p["walls"]:
             pts = ring[[(w["first"] + j) % n_pts for j in range(w["count"] + 1)]]
@@ -203,6 +209,11 @@ def openings(sector: Path) -> gltf.Mesh:
                     box("frame", a + d * fr, d, nrm, width - 2 * fr, z0, z0 + fr, 0.0, FRAME_DEPTH, frame)
                 box(leaf_mat, a + d * fr, d, nrm, width - 2 * fr, z0 + (fr if kind != "door" else 0.0), z1 - fr, 0.0,
                     FRAME_DEPTH * 0.35, leaf)
+                if surrounds and kind in ("window", "door"):
+                    sw_ = 0.16
+                    box("surround", a - d * sw_, d, nrm, sw_, z0 - 0.02, z1, 0.0, 0.015, BRICK_SURROUND)
+                    box("surround", a + d * width, d, nrm, sw_, z0 - 0.02, z1, 0.0, 0.015, BRICK_SURROUND)
+                    box("surround", a - d * sw_, d, nrm, width + 2 * sw_, z1, z1 + 0.26, 0.0, 0.015, BRICK_SURROUND)
                 if kind == "window":
                     # stone sill: sticks out under the window, a little wider
                     box("sill", a - d * 0.05, d, nrm, width + 0.1, z0 - 0.06, z0, 0.0, 0.14, (0.75, 0.72, 0.66))
