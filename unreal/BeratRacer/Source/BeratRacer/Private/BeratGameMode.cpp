@@ -120,6 +120,10 @@ void ABeratPlayerController::TestReport(const TCHAR* Phase)
 		Phase, S.Num(), Avg, 1000.f / Avg, P99, 1000.f / P99, S.Last(), Car ? Car->GetSpeedKmh() : 0.f, Car ? Car->GetGear() : 0,
 		P.X / 100.0, -P.Y / 100.0, P.Z / 100.0);
 	FrameMs.Reset();
+	for (TActorIterator<ABeratTraffic> It(GetWorld()); It; ++It)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[berat-test]   traffic: %d cars active"), It->NumActive());
+	}
 	if (Car)
 	{
 		UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(Car->GetVehicleMovementComponent());

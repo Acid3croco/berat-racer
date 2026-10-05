@@ -50,6 +50,8 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	int32 NumActive() const { int32 N = 0; for (const FBeratTrafficCar& C : Cars) { N += C.bActive ? 1 : 0; } return N; }
+
 protected:
 	virtual void BeginPlay() override;
 
