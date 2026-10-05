@@ -496,8 +496,16 @@ def garden_walls(sector: Path, rng):
 
 
 def water(sector: Path) -> gltf.Mesh:
+    import tifffile
     g = json.loads((sector / "water.geojson").read_text(encoding="utf-8"))
     mesh = gltf.Mesh()
+    si, sj = (int(v) for v in sector.name.split("_"))
+    hgt = tifffile.imread(sector / "height.tif").astype(np.float64)
+    hx0, hytop, hn = 3200 * si - 16000, 3200 * (sj + 1) - 16000, hgt.shape[0]
+
+    def ground(x, y):
+        return hgt[np.clip(np.rint(hytop - np.asarray(y)).astype(int), 0, hn - 1),
+                   np.clip(np.rint(np.asarray(x) - hx0).astype(int), 0, hn - 1)]
     for feat in g["features"]:
         geom, p = feat["geometry"], feat["properties"]
         if geom["type"] == "Polygon":
@@ -530,7 +538,13 @@ def water(sector: Path) -> gltf.Mesh:
             n = len(p3)
             pos = np.empty((2 * n, 3))
             pos[0::2, :2], pos[1::2, :2] = right, left
-            pos[:, 2] = np.repeat(p3[:, 2] + 0.02, 2)
+            # the package's stream levels often stand above the terrain beside the channel (31 % of the 3 x 3's stream
+            # points by more than 0.3 m: the ribbon floated over the field): kept within the channel here, at most 5 cm
+            # over the lower bank, at least 5 cm over the bed (the package is not edited; reported upstream)
+            lo = np.minimum(ground(left[:, 0], left[:, 1]), ground(right[:, 0], right[:, 1]))
+            bed = ground(p3[:, 0], p3[:, 1])
+            z = np.maximum(np.minimum(p3[:, 2], lo + 0.05), bed + 0.05)
+            pos[:, 2] = np.repeat(z + 0.02, 2)
             tris = []
             for i in range(n - 1):
                 a, b, c2, d = 2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 3
