@@ -752,3 +752,53 @@ def run(skip_textures=False):
         json.dump(log, f, indent=1)
     unreal.log(f"[berat] done in {time.time() - t0:.0f} s, log in {out}")
     return log
+
+
+def foliage_material():
+    """Masked, two-sided foliage (Nanite draws masked, not translucent): colour and opacity from one texture parameter."""
+    path = f"{ROOT}/Materials/M_Foliage"
+    g = Graph(path, blend_mode=unreal.BlendMode.BLEND_MASKED, two_sided=True,
+              shading_model=unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
+    t = g.node(unreal.MaterialExpressionTextureSampleParameter2D, 2, parameter_name="BaseColorTexture",
+               texture=unreal.load_asset("/Engine/EngineResources/DefaultTexture"))
+    tint = g.node(unreal.MaterialExpressionVectorParameter, 2, parameter_name="Tint",
+                  default_value=unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
+    mul = g.node(unreal.MaterialExpressionMultiply, 1)
+    g.link(t, "RGB", mul, "A")
+    g.link(tint, "", mul, "B")
+    sss = g.node(unreal.MaterialExpressionMultiply, 1, const_b=0.5)
+    g.link(mul, "", sss, "A")
+    g.out(mul, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    g.out(t, "A", unreal.MaterialProperty.MP_OPACITY_MASK)
+    g.out(sss, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
+    g.out(g.const(0.75), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    m = g.save()
+    m.set_editor_property("opacity_mask_clip_value", 0.4)
+    eal.save_loaded_asset(m)
+    return m
+
+
+def fix_model_foliage(model_root=f"{ROOT}/Models"):
+    """Every imported model material that glTF made translucent or masked becomes an instance of M_Foliage with the same
+    colour texture, so the leaves draw under Nanite."""
+    parent = foliage_material()
+    fixed = 0
+    for p in eal.list_assets(model_root, recursive=True):
+        mic = unreal.load_asset(p)
+        if not isinstance(mic, unreal.MaterialInstanceConstant):
+            continue
+        par = mic.get_editor_property("parent")
+        if not par or not any(k in par.get_name() for k in ("Blend", "Mask", "Translucent")):
+            continue
+        tex_ = None
+        for tp in mic.get_editor_property("texture_parameter_values"):
+            name = str(tp.get_editor_property("parameter_info").get_editor_property("name")).lower()
+            if "basecolor" in name or "diffuse" in name or "albedo" in name:
+                tex_ = tp.get_editor_property("parameter_value")
+        mic.set_editor_property("parent", parent)
+        if tex_:
+            unreal.MaterialEditingLibrary.set_material_instance_texture_parameter_value(mic, "BaseColorTexture", tex_)
+        unreal.MaterialEditingLibrary.update_material_instance(mic)
+        eal.save_loaded_asset(mic)
+        fixed += 1
+    return fixed
