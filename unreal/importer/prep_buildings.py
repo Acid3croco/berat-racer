@@ -395,18 +395,20 @@ def style_sector(src: Path, dst: Path, corner) -> Counter:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("package", type=Path)
-    ap.add_argument("--si", type=int, nargs=2, required=True)
-    ap.add_argument("--sj", type=int, nargs=2, required=True)
+    ap.add_argument("--si", type=int, nargs=2)
+    ap.add_argument("--sj", type=int, nargs=2)
+    ap.add_argument("--all", action="store_true", help="every sector of the package")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
     size = json.loads((a.package / "manifest.json").read_text())["sector_size"]
     t0 = time.time()
     total = Counter()
-    for sj in range(a.sj[0], a.sj[1] + 1):
-        for si in range(a.si[0], a.si[1] + 1):
-            dst = a.out / "sectors" / f"{si}_{sj}"
-            dst.mkdir(parents=True, exist_ok=True)
-            total += style_sector(a.package / "sectors" / f"{si}_{sj}", dst, (size * si - 16000, size * sj - 16000))
+    man = json.loads((a.package / "manifest.json").read_text())
+    todo = sorted(tuple(s) for s in man["sectors"]) if a.all else         [(si, sj) for sj in range(a.sj[0], a.sj[1] + 1) for si in range(a.si[0], a.si[1] + 1)]
+    for si, sj in todo:
+        dst = a.out / "sectors" / f"{si}_{sj}"
+        dst.mkdir(parents=True, exist_ok=True)
+        total += style_sector(a.package / "sectors" / f"{si}_{sj}", dst, (size * si - 16000, size * sj - 16000))
     print(f"{time.time() - t0:.1f} s; triangles by finish:", dict(total.most_common()))
 
 

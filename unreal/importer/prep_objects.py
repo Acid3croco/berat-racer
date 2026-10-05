@@ -673,8 +673,8 @@ def main() -> None:
             dst = args.out / "sectors" / f"{si}_{sj}"
             dst.mkdir(parents=True, exist_ok=True)
             pl = plants(src, rng)
-            gw, gwh = garden_walls(src, np.random.default_rng(si * 1000 + sj))
-            cb = civic_benches(src, np.random.default_rng(si * 7 + sj))
+            gw, gwh = garden_walls(src, np.random.default_rng((si + 100) * 1000 + sj + 100))
+            cb = civic_benches(src, np.random.default_rng((si + 100) * 7 + sj + 100))
             if len(cb):
                 gwh = np.concatenate([gwh, cb]) if len(gwh) else cb
             if len(gwh):
