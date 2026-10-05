@@ -77,6 +77,8 @@ public:
 	bool NearestCar(const FVector& From, FVector& OutPos, FVector& OutDir, float& OutSpeed) const;
 	int32 NumWrecked() const;
 	int32 NumDynamic() const;
+	// HUD: where the visible traffic is
+	void GetCarPositions(TArray<FVector>& Out) const;
 private:
 	void Release(FBeratTrafficCar& C);
 	FVector PlayerPos = FVector::ZeroVector;

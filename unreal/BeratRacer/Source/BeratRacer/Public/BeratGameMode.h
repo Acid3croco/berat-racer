@@ -69,6 +69,7 @@ private:
 	FVector HStartPos = FVector::ZeroVector;
 	void TestReport(const TCHAR* Phase);
 	void NextCar();
+	void ToggleMap();
 	void TimeForward();
 	void TimeBack();
 	ABeratTimeOfDay* Clock() const;
@@ -82,7 +83,14 @@ class BERATRACER_API ABeratHUD : public AHUD
 
 public:
 	virtual void DrawHUD() override;
+	void ToggleMap() { bMapOpen = !bMapOpen; }
 
 private:
 	float FpsSmooth = 60.f;
+	// map: the block's stylized top-down image (prep_map.py), its west / north edges (package m), metres per pixel
+	UPROPERTY(Transient) TObjectPtr<class UTexture2D> MapTex;
+	double MapWest = 0.0, MapNorth = 0.0, MapMpp = 1.0, MapPixels = 1.0;
+	bool bMapLoaded = false, bMapOpen = false;
+	void LoadMap();
+	void DrawMap(float X, float Y, float Size, double CentreU, double CentreV, double SpanUV, bool bFrame);
 };

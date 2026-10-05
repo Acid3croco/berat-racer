@@ -14,6 +14,11 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
 #include "HighResScreenshot.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonReader.h"
+#include "CanvasItem.h"
+#include "Engine/Texture2D.h"
 #include "Components/DecalComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/OverlapResult.h"
@@ -439,6 +444,11 @@ void ABeratPlayerController::Tick(float Dt)
 			FRotationMatrix::MakeFromXY(FVector(0, 0, -1), F).Rotator(), 60.f);
 		UE_LOG(LogTemp, Display, TEXT("[berat-test] decal test %s at %s, material [%s] -> %s"), D ? TEXT("spawned") : TEXT("FAILED"), *At.ToString(), *Which, *GetNameSafe(M));
 	}
+	// the full map, once (shot at 45.5 s, closed at 46.5 s)
+	static int32 MapShot = 0;
+	if (MapShot == 0 && TestClock > 45.f) { if (ABeratHUD* H = Cast<ABeratHUD>(GetHUD())) { H->ToggleMap(); } MapShot = 1; }
+	else if (MapShot == 1 && TestClock > 45.5f) { TestShot(TEXT("map")); MapShot = 2; }
+	else if (MapShot == 2 && TestClock > 46.5f) { if (ABeratHUD* H = Cast<ABeratHUD>(GetHUD())) { H->ToggleMap(); } MapShot = 3; }
 	if (TestStep >= 2 && Car)
 	{
 		if (bOffroad)
@@ -497,12 +507,22 @@ void ABeratPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 	// Plain key bindings for the few menu-like actions; driving input lives on the car (Enhanced Input).
+	InputComponent->BindKey(EKeys::M, IE_Pressed, this, &ABeratPlayerController::ToggleMap);
+	InputComponent->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this, &ABeratPlayerController::ToggleMap);
 	InputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ABeratPlayerController::NextCar);
 	InputComponent->BindKey(EKeys::Gamepad_DPad_Right, IE_Pressed, this, &ABeratPlayerController::NextCar);
 	InputComponent->BindKey(EKeys::T, IE_Pressed, this, &ABeratPlayerController::TimeForward);
 	InputComponent->BindKey(EKeys::Gamepad_DPad_Left, IE_Pressed, this, &ABeratPlayerController::TimeForward);
 	InputComponent->BindKey(EKeys::Y, IE_Pressed, this, &ABeratPlayerController::TimeBack);
 	InputComponent->BindKey(EKeys::Gamepad_DPad_Down, IE_Pressed, this, &ABeratPlayerController::TimeBack);
+}
+
+void ABeratPlayerController::ToggleMap()
+{
+	if (ABeratHUD* H = Cast<ABeratHUD>(GetHUD()))
+	{
+		H->ToggleMap();
+	}
 }
 
 void ABeratPlayerController::NextCar()
@@ -568,7 +588,27 @@ void ABeratHUD::DrawHUD()
 		break;
 	}
 	DrawText(FString::Printf(TEXT("%.0f fps"), FpsSmooth), FLinearColor(0.6f, 1.f, 0.6f), 20.f, 20.f, Small, 1.2f);
-	DrawText(TEXT("Tab / D-pad right: next car   T / Y: time +-1 h   L: lights   C: camera   R: reset"),
+	// minimap (bottom left, ~500 m across, north up) or the full map (M)
+	LoadMap();
+	if (MapTex && GetOwningPawn())
+	{
+		const FVector P = GetOwningPawn()->GetActorLocation();
+		const double U = (P.X / 100.0 - MapWest) / MapMpp / MapPixels, V = (MapNorth + P.Y / 100.0) / MapMpp / MapPixels;
+		if (bMapOpen)
+		{
+			const float S = Canvas->ClipY * 0.86f;
+			DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, Canvas->ClipX, Canvas->ClipY);
+			DrawMap((Canvas->ClipX - S) * 0.5f, (Canvas->ClipY - S) * 0.5f, S, 0.5, 0.5, 1.0, true);
+			DrawText(TEXT("Berat  -  9.6 x 9.6 km        M: close"), FLinearColor::White, (Canvas->ClipX - S) * 0.5f,
+				(Canvas->ClipY - S) * 0.5f - 34.f, Small, 1.6f);
+		}
+		else
+		{
+			const float S = FMath::Min(300.f, Canvas->ClipY * 0.3f);
+			DrawMap(24.f, Canvas->ClipY - S - 48.f, S, U, V, 500.0 / MapMpp / MapPixels, true);
+		}
+	}
+	DrawText(TEXT("Tab / D-pad right: next car   T / Y: time +-1 h   L: lights   C: camera   R: reset   M: map"),
 		FLinearColor(1.f, 1.f, 1.f, 0.6f), 20.f, Canvas->ClipY - 30.f, Small, 1.f);
 }
 
@@ -716,5 +756,82 @@ void ABeratPlayerController::Handling(ABeratCar* Car, float Dt)
 	default:
 		FGenericPlatformMisc::RequestExit(false);
 		break;
+	}
+}
+
+
+void ABeratHUD::LoadMap()
+{
+	if (bMapLoaded)
+	{
+		return;
+	}
+	bMapLoaded = true;
+	MapTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/Berat/UI/T_Map.T_Map"));
+	FString Json;
+	if (FFileHelper::LoadFileToString(Json, *(FPaths::ProjectContentDir() / TEXT("Berat/UI/map.json"))))
+	{
+		TSharedPtr<FJsonObject> O;
+		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), O) && O)
+		{
+			MapWest = O->GetNumberField(TEXT("west"));
+			MapNorth = O->GetNumberField(TEXT("north"));
+			MapMpp = O->GetNumberField(TEXT("metres_per_pixel"));
+			MapPixels = O->GetNumberField(TEXT("pixels"));
+		}
+	}
+	if (MapMpp <= 0.0 || MapPixels <= 1.0)
+	{
+		MapTex = nullptr;
+	}
+}
+
+void ABeratHUD::DrawMap(float X, float Y, float Size, double CentreU, double CentreV, double SpanUV, bool bFrame)
+{
+	// map texture window [centre - span/2, centre + span/2] in UV, drawn into a square; markers on top
+	const double H = SpanUV * 0.5;
+	FCanvasTileItem Tile(FVector2D(X, Y), MapTex->GetResource(), FVector2D(Size, Size),
+		FVector2D(CentreU - H, CentreV - H), FVector2D(CentreU + H, CentreV + H), FLinearColor(1.f, 1.f, 1.f, 0.92f));
+	Tile.BlendMode = SE_BLEND_Translucent;
+	Canvas->DrawItem(Tile);
+	auto ToScreen = [&](const FVector& W) -> FVector2D
+	{
+		const double U = (W.X / 100.0 - MapWest) / MapMpp / MapPixels, V = (MapNorth + W.Y / 100.0) / MapMpp / MapPixels;
+		return FVector2D(X + (U - (CentreU - H)) / SpanUV * Size, Y + (V - (CentreV - H)) / SpanUV * Size);
+	};
+	auto Inside = [&](const FVector2D& S) { return S.X > X + 3.f && S.Y > Y + 3.f && S.X < X + Size - 3.f && S.Y < Y + Size - 3.f; };
+	// traffic
+	TArray<FVector> Cars;
+	for (TActorIterator<ABeratTraffic> It(GetWorld()); It; ++It)
+	{
+		It->GetCarPositions(Cars);
+	}
+	const float Dot = bMapOpen ? 3.f : 4.f;
+	for (const FVector& C : Cars)
+	{
+		const FVector2D S = ToScreen(C);
+		if (Inside(S))
+		{
+			DrawRect(FLinearColor(0.15f, 0.35f, 0.9f), S.X - Dot * 0.5f, S.Y - Dot * 0.5f, Dot, Dot);
+		}
+	}
+	// the player: an arrow along the heading (Unreal yaw: 0 east, +90 south, as the map's screen axes)
+	if (const APawn* Pawn = GetOwningPawn())
+	{
+		const FVector2D C = ToScreen(Pawn->GetActorLocation());
+		const float Yaw = FMath::DegreesToRadians(Pawn->GetActorRotation().Yaw);
+		const FVector2D F(FMath::Cos(Yaw), FMath::Sin(Yaw)), R(-F.Y, F.X);
+		const float A = bMapOpen ? 9.f : 11.f;
+		FCanvasTriangleItem Tri(C + F * A * 1.3f, C - F * A * 0.8f + R * A * 0.75f, C - F * A * 0.8f - R * A * 0.75f, GWhiteTexture);
+		Tri.SetColor(FLinearColor(1.f, 0.45f, 0.05f));
+		Canvas->DrawItem(Tri);
+	}
+	if (bFrame)
+	{
+		const FLinearColor Edge(0.f, 0.f, 0.f, 0.7f);
+		DrawRect(Edge, X - 2.f, Y - 2.f, Size + 4.f, 2.f);
+		DrawRect(Edge, X - 2.f, Y + Size, Size + 4.f, 2.f);
+		DrawRect(Edge, X - 2.f, Y, 2.f, Size);
+		DrawRect(Edge, X + Size, Y, 2.f, Size);
 	}
 }

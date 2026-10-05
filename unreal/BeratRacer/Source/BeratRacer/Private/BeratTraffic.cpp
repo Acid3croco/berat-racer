@@ -618,3 +618,14 @@ int32 ABeratTraffic::NumDynamic() const
 	}
 	return N;
 }
+
+void ABeratTraffic::GetCarPositions(TArray<FVector>& Out) const
+{
+	for (const FBeratTrafficCar& C : Cars)
+	{
+		if (C.bActive || C.bWrecked)
+		{
+			Out.Add(C.Body->GetComponentLocation());
+		}
+	}
+}

@@ -7,7 +7,7 @@ public class BeratRacer : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput",
-			"ChaosVehicles", "ChaosVehiclesCore", "PhysicsCore", "Json", "JsonUtilities", "SunPosition", "AnimGraphRuntime", "Niagara"
+			"ChaosVehicles", "ChaosVehiclesCore", "PhysicsCore", "Json", "JsonUtilities", "SunPosition", "AnimGraphRuntime", "Niagara", "RenderCore"
 		});
 	}
 }
