@@ -7,6 +7,7 @@
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
 #include "Landscape.h"
@@ -128,8 +129,10 @@ ALandscape* UBeratImporter::ImportLandscape(const FString& BlockDir, UMaterialIn
 	HeightPerLayer.Add(FGuid(), MoveTemp(Heights));
 	MaterialPerLayer.Add(FGuid(), MoveTemp(Layers));
 
+	// one landscape per block or region, named after its folder (b3x3, r2_3...)
+	const FString Label = TEXT("Landscape_") + FPaths::GetCleanFilename(FPaths::GetPath(BlockDir / TEXT("block.json")));
 	FActorSpawnParameters P;
-	P.Name = TEXT("BeratLandscape");
+	P.Name = FName(*Label);
 	P.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
 	const FVector Location(Loc[0]->AsNumber(), Loc[1]->AsNumber(), Loc[2]->AsNumber());
 	ALandscape* Land = World->SpawnActor<ALandscape>(Location, FRotator::ZeroRotator, P);
@@ -137,7 +140,7 @@ ALandscape* UBeratImporter::ImportLandscape(const FString& BlockDir, UMaterialIn
 	Land->LandscapeMaterial = Material;
 	Land->Import(FGuid::NewGuid(), 0, 0, W - 1, H - 1, Sections, Quads, HeightPerLayer, nullptr, MaterialPerLayer,
 		ELandscapeImportAlphamapType::Additive, TArrayView<const FLandscapeLayer>());
-	Land->SetActorLabel(TEXT("BeratLandscape"));
+	Land->SetActorLabel(Label);
 
 	// Visibility (holes): painted after the import through the landscape edit interface.
 	TArray<uint8> Holes;
@@ -186,6 +189,26 @@ double UBeratImporter::BuildLandscapeNanite()
 	return Dt;
 }
 
+TArray<FString> UBeratImporter::GetBoneNames(USkeletalMesh* Mesh)
+{
+	TArray<FString> Out;
+	if (!Mesh)
+	{
+		return Out;
+	}
+	const FReferenceSkeleton& R = Mesh->GetRefSkeleton();
+	TArray<FTransform> Comp;
+	Comp.SetNum(R.GetNum());
+	for (int32 i = 0; i < R.GetNum(); ++i)
+	{
+		const int32 P = R.GetParentIndex(i);
+		Comp[i] = P == INDEX_NONE ? R.GetRefBonePose()[i] : R.GetRefBonePose()[i] * Comp[P];
+		const FVector L = Comp[i].GetLocation();
+		Out.Add(FString::Printf(TEXT("%s %.1f %.1f %.1f"), *R.GetBoneName(i).ToString(), L.X, L.Y, L.Z));
+	}
+	return Out;
+}
+
 double UBeratImporter::TraceHeight(UObject* WorldContext, double X, double Y)
 {
 	UWorld* World = WorldContext ? WorldContext->GetWorld() : GEditor->GetEditorWorldContext().World();
@@ -198,6 +221,65 @@ double UBeratImporter::TraceHeight(UObject* WorldContext, double X, double Y)
 		return Hit.ImpactPoint.Z / 100.0;
 	}
 	return -1e9;
+}
+
+UBeratLaneGraph* UBeratImporter::ImportLaneGraphBin(const TArray<FString>& Files, const FString& AssetPath)
+{
+	const double T0 = FPlatformTime::Seconds();
+	struct FRaw { TArray<int64> Next, Yields; int64 Left = -1, Right = -1; };
+	TArray<FBeratLane> Lanes;
+	TArray<FRaw> Raw;
+	for (const FString& F : Files)
+	{
+		TArray<uint8> Bytes;
+		if (!FFileHelper::LoadFileToArray(Bytes, *F) || Bytes.Num() < 4)
+		{
+			continue;
+		}
+		int64 Pos = 0;
+		auto Read = [&](void* Dst, int32 N) { FMemory::Memcpy(Dst, Bytes.GetData() + Pos, N); Pos += N; };
+		int32 Count = 0; Read(&Count, 4);
+		for (int32 k = 0; k < Count && Pos < Bytes.Num(); ++k)
+		{
+			FBeratLane L; FRaw R;
+			int64 Id; uint8 Kind, Ctl, Imp, Dirt; int32 Jn; float Turn, Limit; uint16 N;
+			Read(&Id, 8); Read(&Kind, 1); Read(&Ctl, 1); Read(&Imp, 1); Read(&Dirt, 1); Read(&Jn, 4); Read(&Turn, 4); Read(&Limit, 4);
+			Read(&N, 2);
+			L.Id = Id; L.Kind = EBeratLaneKind(FMath::Min<uint8>(Kind, 3)); L.Control = EBeratControl(FMath::Min<uint8>(Ctl, 4));
+			L.Importance = FMath::Clamp<uint8>(Imp, 1, 6); L.bDirt = Dirt != 0; L.Junction = Jn; L.Turn = Turn; L.LimitKmh = Limit;
+			L.Points.SetNumUninitialized(N); L.Speed.SetNumUninitialized(N);
+			for (int32 i = 0; i < N; ++i)
+			{
+				float V[4]; Read(V, 16);
+				L.Points[i] = FVector(V[0], V[1], V[2]); L.Speed[i] = V[3];
+			}
+			uint8 NN; Read(&NN, 1); R.Next.SetNumUninitialized(NN); if (NN) Read(R.Next.GetData(), 8 * NN);
+			Read(&R.Left, 8); Read(&R.Right, 8);
+			uint8 NY; Read(&NY, 1); R.Yields.SetNumUninitialized(NY); if (NY) Read(R.Yields.GetData(), 8 * NY);
+			Lanes.Add(MoveTemp(L)); Raw.Add(MoveTemp(R));
+		}
+	}
+	TMap<int64, int32> Index;
+	Index.Reserve(Lanes.Num());
+	for (int32 i = 0; i < Lanes.Num(); ++i)
+	{
+		Index.Add(Lanes[i].Id, i);
+	}
+	auto Ref = [&](int64 Id) { const int32* I = Index.Find(Id); return I ? *I : INDEX_NONE; };
+	for (int32 i = 0; i < Lanes.Num(); ++i)
+	{
+		for (int64 N : Raw[i].Next) { const int32 R = Ref(N); if (R != INDEX_NONE) Lanes[i].Next.Add(R); }
+		for (int64 Y : Raw[i].Yields) { const int32 R = Ref(Y); if (R != INDEX_NONE) Lanes[i].Yields.Add(R); }
+		Lanes[i].Left = Ref(Raw[i].Left);
+		Lanes[i].Right = Ref(Raw[i].Right);
+	}
+	UBeratLaneGraph* G = CreateAsset<UBeratLaneGraph>(AssetPath);
+	G->Lanes = MoveTemp(Lanes);
+	G->Finalize();
+	SaveAsset(G);
+	UE_LOG(LogBerat, Display, TEXT("lane graph (binary): %d lanes from %d files, %d cells, %.1f s"), G->Lanes.Num(), Files.Num(),
+		G->Cells.Num(), FPlatformTime::Seconds() - T0);
+	return G;
 }
 
 UBeratLaneGraph* UBeratImporter::ImportLaneGraph(const FString& LanesJson, const FString& AssetPath)

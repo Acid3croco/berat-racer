@@ -191,6 +191,37 @@ def openings(sector: Path) -> gltf.Mesh:
     return mesh
 
 
+CONTROLS = ["priority", "give_way", "stop", "signals", "right"]
+
+
+def write_lanes_bin(path: Path, lg: dict) -> int:
+    """The lane graph of a sector, binary (little-endian), for the C++ importer (JSON does not scale to 921k lanes):
+    int32 count; per lane: int64 id; uint8 kind, control, importance, dirt; int32 junction; float32 turn, limit;
+    uint16 n; n x float32 (x, y, z, speed) in Unreal cm and m/s; uint8 k; k x int64 next; int64 left, right;
+    uint8 m; m x int64 yields."""
+    controls = lg["controls"]
+    out = [struct.pack("<i", len(lg["elements"]))]
+    for e in lg["elements"]:
+        ctl = controls[e["control"]] if 0 <= e.get("control", -1) < len(controls) else "priority"
+        road = e.get("road") or {}
+        out.append(struct.pack("<qBBBBiff", e["id"], e["kind"], CONTROLS.index(ctl) if ctl in CONTROLS else 0,
+                               int(road.get("importance", 5) or 5), 1 if road.get("dirt") else 0,
+                               int(e.get("junction", -1)), float(e.get("turn", 0.0)), float(e.get("limit", 50) or 50)))
+        pts = np.asarray(e["points"], np.float64).reshape(-1, 3)
+        spd = np.asarray(e.get("speed", []), np.float64)
+        if len(spd) != len(pts):
+            spd = np.full(len(pts), float(e.get("limit", 50) or 50) / 3.6)
+        rec = np.column_stack([pts[:, 0] * 100, -pts[:, 1] * 100, pts[:, 2] * 100, spd]).astype("<f4")
+        out.append(struct.pack("<H", len(pts)) + rec.tobytes())
+        nxt = e.get("next", [])
+        out.append(struct.pack("<B", len(nxt)) + struct.pack(f"<{len(nxt)}q", *nxt))
+        out.append(struct.pack("<qq", e.get("left", -1), e.get("right", -1)))
+        y = e.get("yields", [])
+        out.append(struct.pack("<B", len(y)) + struct.pack(f"<{len(y)}q", *y))
+    path.write_bytes(b"".join(out))
+    return len(lg["elements"])
+
+
 def read_glb_mesh(path: Path):
     """[(material, positions in package axes (absolute), triangles)] of a package glb."""
     d = path.read_bytes()
@@ -276,8 +307,9 @@ def water(sector: Path) -> gltf.Mesh:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("package", type=Path)
-    ap.add_argument("--si", type=int, nargs=2, required=True)
-    ap.add_argument("--sj", type=int, nargs=2, required=True)
+    ap.add_argument("--si", type=int, nargs=2)
+    ap.add_argument("--sj", type=int, nargs=2)
+    ap.add_argument("--all", action="store_true", help="every sector of the package (no merged lanes.json: lanes.bin per sector)")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     t0 = time.time()
@@ -286,8 +318,12 @@ def main() -> None:
     rng = np.random.default_rng(11)
     lanes, controls = [], None
     summary = {}
-    for sj in range(args.sj[0], args.sj[1] + 1):
-        for si in range(args.si[0], args.si[1] + 1):
+    if args.all:
+        todo = sorted(tuple(s) for s in man["sectors"])
+    else:
+        todo = [(si, sj) for sj in range(args.sj[0], args.sj[1] + 1) for si in range(args.si[0], args.si[1] + 1)]
+    for si, sj in todo:
+        if True:
             src = args.package / "sectors" / f"{si}_{sj}"
             dst = args.out / "sectors" / f"{si}_{sj}"
             dst.mkdir(parents=True, exist_ok=True)
@@ -309,13 +345,16 @@ def main() -> None:
                                {m: {"colour": (0.5, 0.5, 0.5)} for m in ("window", "door", "garage", "shopfront", "shutter")},
                                f"openings_{si}_{sj}")
             lg = json.load(gzip.open(src / "lanes.json.gz"))
+            write_lanes_bin(dst / "lanes.bin", lg)
             controls = controls or lg["controls"]
-            for e in lg["elements"]:
-                e["points"] = [ue(*q) for q in e["points"]]
-                lanes.append(e)
+            if not args.all:
+                for e in lg["elements"]:
+                    e["points"] = [ue(*q) for q in e["points"]]
+                    lanes.append(e)
             summary[f"{si}_{sj}"] = {"plants": len(pl), "lamps": len(lp), "water_tris": len(wm), "opening_tris": len(om),
                                      "by_kind": np.bincount(pl[:, 5].astype(int), minlength=len(KINDS)).tolist()}
-    (args.out / "lanes.json").write_text(json.dumps({"controls": controls, "kinds": KINDS, "elements": lanes}))
+    if not args.all:
+        (args.out / "lanes.json").write_text(json.dumps({"controls": controls, "kinds": KINDS, "elements": lanes}))
     (args.out / "objects.json").write_text(json.dumps({"kinds": KINDS, "sectors": summary,
                                                        "seconds": round(time.time() - t0, 1)}, indent=1))
     tot = np.sum([s["by_kind"] for s in summary.values()], axis=0)

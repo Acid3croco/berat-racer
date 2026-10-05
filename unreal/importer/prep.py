@@ -51,11 +51,14 @@ def box_blur(a: np.ndarray, r: int) -> np.ndarray:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("package", type=Path)
-    ap.add_argument("--si", type=int, nargs=2, required=True, help="first and last sector index east")
-    ap.add_argument("--sj", type=int, nargs=2, required=True, help="first and last sector index north")
+    ap.add_argument("--si", type=int, nargs=2, help="first and last sector index east (block mode)")
+    ap.add_argument("--sj", type=int, nargs=2, help="first and last sector index north (block mode)")
+    ap.add_argument("--window", type=float, nargs=4, metavar=("X0", "YTOP", "NCX", "NCY"),
+                    help="window mode: north-west corner (package metres) and size in components; regions made this way "
+                         "tile the world exactly whatever the sector grid")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--quads", type=int, default=127, help="quads per landscape section (7, 15, 31, 63, 127, 255)")
-    ap.add_argument("--sections", type=int, default=1, help="sections per component (1 or 2)")
+    ap.add_argument("--quads", type=int, default=255, help="quads per landscape section (7, 15, 31, 63, 127, 255)")
+    ap.add_argument("--sections", type=int, default=2, help="sections per component (1 or 2)")
     ap.add_argument("--blur", type=int, default=1, help="weightmap blur radius in vertices (soft class edges)")
     ap.add_argument("--checkpoints", type=int, default=24)
     args = ap.parse_args()
@@ -65,25 +68,29 @@ def main() -> None:
     size, cell, n = man["sector_size"], man["cell"], man["samples"]
     per = n - 1                                   # vertices per sector without the shared edge
     have = {tuple(s) for s in man["sectors"]}
-    si0, si1 = args.si
-    sj0, sj1 = args.sj
-    block = [(i, j) for j in range(sj0, sj1 + 1) for i in range(si0, si1 + 1)]
-    missing = [s for s in block if s not in have]
-    if missing:
-        raise SystemExit(f"sectors not in the package: {missing}")
-
     comp = args.quads * args.sections
-    real = (si1 - si0 + 1) * per + 1, (sj1 - sj0 + 1) * per + 1          # vertices east, north
-    ncomp = math.ceil((real[0] - 1) / comp), math.ceil((real[1] - 1) / comp)
-    w, h = ncomp[0] * comp + 1, ncomp[1] * comp + 1
 
     # Grid placement: column c is x = x0 + c * cell; row r is y = ytop - r * cell (row 0 north).
-    x0 = size * si0 - 16000
-    ytop = size * (sj1 + 1) - 16000
-    # The padding runs east (more columns) and south (more rows), so the block's north-west corner stays put.
-    # Sectors that can feed the padded window:
-    jmin = sj0 - math.ceil((h - real[1]) / per)
-    imax = si1 + math.ceil((w - real[0]) / per)
+    if args.window:
+        x0, ytop = args.window[0], args.window[1]
+        ncomp = int(args.window[2]), int(args.window[3])
+        w, h = ncomp[0] * comp + 1, ncomp[1] * comp + 1
+        block = sorted(s for s in have
+                       if size * s[0] - 16000 < x0 + (w - 1) * cell and size * s[0] - 16000 + size > x0
+                       and size * s[1] - 16000 < ytop and size * s[1] - 16000 + size > ytop - (h - 1) * cell)
+    else:
+        si0, si1 = args.si
+        sj0, sj1 = args.sj
+        block = [(i, j) for j in range(sj0, sj1 + 1) for i in range(si0, si1 + 1)]
+        missing = [s for s in block if s not in have]
+        if missing:
+            raise SystemExit(f"sectors not in the package: {missing}")
+        span = (si1 - si0 + 1) * per + 1, (sj1 - sj0 + 1) * per + 1
+        ncomp = math.ceil((span[0] - 1) / comp), math.ceil((span[1] - 1) / comp)
+        w, h = ncomp[0] * comp + 1, ncomp[1] * comp + 1
+        # the padding runs east and south: the block's north-west corner stays put
+        x0 = size * si0 - 16000
+        ytop = size * (sj1 + 1) - 16000
 
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
@@ -91,27 +98,36 @@ def main() -> None:
     classes = np.zeros((h, w), np.uint8)
     holes = np.zeros((h, w), np.uint8)
     filled = np.zeros((h, w), bool)
-    for j in range(jmin, sj1 + 1):
-        for i in range(si0, imax + 1):
-            if (i, j) not in have:
-                continue
-            c0 = (i - si0) * per
-            r0 = (sj1 - j) * per
-            if c0 >= w or r0 >= h:
-                continue
-            d = args.package / "sectors" / f"{i}_{j}"
-            cw, rh = min(n, w - c0), min(n, h - r0)
-            height[r0:r0 + rh, c0:c0 + cw] = read_png(d / "height.png")[:rh, :cw]
-            classes[r0:r0 + rh, c0:c0 + cw] = read_png(d / "classes.png")[:rh, :cw]
-            holes[r0:r0 + rh, c0:c0 + cw] = read_png(d / "holes.png")[:rh, :cw]
-            filled[r0:r0 + rh, c0:c0 + cw] = True
+    # every package sector the window overlaps: copy the overlapping part (sector rasters are n x n, row 0 north)
+    for (i, j) in sorted(have):
+        xs, yn = size * i - 16000, size * j - 16000 + size           # sector west edge, north edge (m)
+        c_lo = max(0, int(round((xs - x0) / cell)))
+        c_hi = min(w, int(round((xs + size - x0) / cell)) + 1)
+        r_lo = max(0, int(round((ytop - yn) / cell)))
+        r_hi = min(h, int(round((ytop - (yn - size)) / cell)) + 1)
+        if c_lo >= c_hi or r_lo >= r_hi:
+            continue
+        sc = int(round((x0 - xs) / cell)) + c_lo                      # sector column of window column c_lo
+        sr = int(round((yn - ytop) / cell)) + r_lo
+        d = args.package / "sectors" / f"{i}_{j}"
+        win = (slice(r_lo, r_hi), slice(c_lo, c_hi))
+        src = (slice(sr, sr + r_hi - r_lo), slice(sc, sc + c_hi - c_lo))
+        height[win] = read_png(d / "height.png")[src]
+        classes[win] = read_png(d / "classes.png")[src]
+        holes[win] = read_png(d / "holes.png")[src]
+        filled[win] = True
+    if not filled.any():
+        raise SystemExit("the window covers no package sector")
     if not filled.all():                         # beyond the package's border: repeat the last filled row / column
-        cols = np.where(filled.all(axis=0))[0]
-        rows = np.where(filled.all(axis=1))[0]
-        lc, lr = cols.max(), rows.max()
+        cols = np.where(filled.any(axis=0))[0]
+        rows = np.where(filled.any(axis=1))[0]
+        lc, lr, fc, fr = cols.max(), rows.max(), cols.min(), rows.min()
         for a in (height, classes, holes):
             a[:, lc + 1:] = a[:, lc:lc + 1]
             a[lr + 1:, :] = a[lr:lr + 1, :]
+            a[:, :fc] = a[:, fc:fc + 1]
+            a[:fr, :] = a[fr:fr + 1, :]
+    real = (int(filled.any(axis=0).sum()), int(filled.any(axis=1).sum()))
     t_read = time.time() - t0
 
     height.astype("<u2").tofile(out / "height.r16")
@@ -144,23 +160,27 @@ def main() -> None:
     checks = []
     tifs = {}
     sp = man["spawn"]
-    pts = [(sp["x"], sp["y"])] + [(x0 + rng.uniform(0, real[0] - 1) * cell, ytop - rng.uniform(0, real[1] - 1) * cell)
+    pts = [(sp["x"], sp["y"])] + [(x0 + rng.uniform(0, w - 1) * cell, ytop - rng.uniform(0, h - 1) * cell)
                                    for _ in range(args.checkpoints)]
     for x, y in pts:
         c, r = round((x - x0) / cell), round((ytop - y) / cell)
-        if not (0 <= c < real[0] and 0 <= r < real[1]):
+        if not (0 <= c < w and 0 <= r < h) or not filled[r, c]:
             continue
-        i, j = si0 + min(c // per, si1 - si0), sj1 - min(r // per, sj1 - sj0)
+        px, py = x0 + c * cell, ytop - r * cell
+        i, j = int((px + 16000) // size), int((py + 16000) // size)
+        if (i, j) not in have:
+            continue
         if (i, j) not in tifs:
             tifs[(i, j)] = tifffile.imread(args.package / "sectors" / f"{i}_{j}" / "height.tif")
-        z_tif = float(tifs[(i, j)][r - (sj1 - j) * per, c - (i - si0) * per])
+        sr, sc = int(round((size * j - 16000 + size - py) / cell)), int(round((px - (size * i - 16000)) / cell))
+        z_tif = float(tifs[(i, j)][sr, sc])
         z_png = zmin + float(height[r, c]) / 65535 * (zmax - zmin)
-        checks.append({"x": x0 + c * cell, "y": ytop - r * cell, "z_tif": round(z_tif, 4), "z_png": round(z_png, 4)})
+        checks.append({"x": px, "y": py, "z_tif": round(z_tif, 4), "z_png": round(z_png, 4)})
 
     info = {
         "package": str(args.package),
         "tag": man["tag"],
-        "sectors": block,
+        "sectors": [list(b) for b in block],
         "origin_l93": man["origin"],
         "cell": cell,
         "real_size": real,

@@ -871,3 +871,128 @@ def add_grass_output(g, layer_names):
     gi.set_editor_property("grass_type", gt)
     out.set_editor_property("grass_types", [gi])
     g.link(total, "", out, "Meadow")
+
+
+WORLD = r"C:\Users\jack\berat-cache\world"
+
+
+def free_ram_gb():
+    import ctypes
+
+    class MS(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    m = MS()
+    m.dwLength = ctypes.sizeof(MS)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+    return m.ullAvailPhys / 2**30
+
+
+def import_world(regions=None, min_free_gb=24.0):
+    """The whole package's terrain: one landscape per region of WORLD (prep_world.py), each imported, checked against
+    height.tif, saved, then the map reloaded so the editor's memory stays bounded. Skips regions already in the map."""
+    t0 = time.time()
+    man = json.load(open(os.path.join(PACKAGE, "manifest.json")))
+    all_layers = ["bare" if c == "none" else c.replace(" ", "_") for c in man["classes"]]
+    material = terrain_material(all_layers)
+    names = regions or sorted(d for d in os.listdir(WORLD) if os.path.isfile(os.path.join(WORLD, d, "block.json")))
+    les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
+    report = log.setdefault("world", {})
+    for name in names:
+        eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        if any(a.get_actor_label() == f"Landscape_{name}" for a in eas.get_all_level_actors()):
+            continue
+        if free_ram_gb() < min_free_gb:
+            unreal.log_warning(f"[berat] {free_ram_gb():.1f} GB free: stopping before {name}")
+            break
+        d = os.path.join(WORLD, name)
+        t = time.time()
+        res = unreal.BeratImporter.import_landscape(d, material, f"{ROOT}/Landscape", 2)
+        land = res[0] if isinstance(res, tuple) else res
+        land.set_editor_property("lod0_screen_size", 1.0)
+        land.set_editor_property("lod0_distribution_setting", 4.0)
+        land.set_editor_property("lod_distribution_setting", 4.0)
+        block = json.load(open(os.path.join(d, "block.json")))
+        errs = [abs(unreal.BeratImporter.trace_height(None, c["x"], c["y"]) - c["z_tif"]) * 100 for c in block["checkpoints"]]
+        save()
+        les.load_level(MAP)                       # drop the region from memory
+        report[name] = {"seconds": round(time.time() - t, 1), "check_max_cm": round(max(errs), 2) if errs else None,
+                        "free_gb": round(free_ram_gb(), 1)}
+        unreal.log(f"[berat] region {name}: {report[name]}")
+    report["total_seconds"] = round(time.time() - t0, 1)
+    return report
+
+
+def remove_block_landscape():
+    """Delete the 3 x 3 test landscape (and its streaming proxies) before the world's regions are imported."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    gone = [a for a in eas.get_all_level_actors()
+            if (isinstance(a, (unreal.Landscape, unreal.LandscapeStreamingProxy))
+                and not (a.get_actor_label().startswith("Landscape_r") or "Landscape_r" in a.get_path_name()))]
+    for a in gone:
+        eas.destroy_actor(a)
+    save()
+    return len(gone)
+
+
+def import_world_objects(sectors=None, batch=20, min_free_gb=24.0):
+    """Roads (drawn and collision), buildings, openings, water and props of every package sector not yet in the map;
+    WORLD_OBJECTS is prep_objects.py --all. Saves and reloads the map every `batch` sectors."""
+    t0 = time.time()
+    man = json.load(open(os.path.join(PACKAGE, "manifest.json")))
+    cache_root = r"C:\Users\jack\berat-cache\world_objects"
+    materials = make_materials(["bare" if c == "none" else c.replace(" ", "_") for c in man["classes"]])
+    kinds, variants, lamp = prop_meshes()
+    les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
+    done = 0
+    for si, sj in sectors or sorted(tuple(s) for s in man["sectors"]):
+        key = f"{si}_{sj}"
+        eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        labels = {a.get_actor_label() for a in eas.get_all_level_actors()}
+        if f"roads_{key}" in labels and f"Props_{key}" in labels:
+            continue
+        if free_ram_gb() < min_free_gb:
+            unreal.log_warning(f"[berat] {free_ram_gb():.1f} GB free: stopping before {key}")
+            break
+        src = os.path.join(PACKAGE, "sectors", key)
+        cache = os.path.join(cache_root, "sectors", key)
+        for kind, folder, collision in (("roads", src, False), ("roads_collision", cache, True), ("buildings", src, True),
+                                        ("openings", cache, False), ("water", cache, False)):
+            path = os.path.join(folder, f"{kind}.glb")
+            if f"{kind}_{key}" in labels or not os.path.exists(path):
+                continue
+            for mesh in import_glb(path, f"{ROOT}/Sectors/{key}", f"SM_{kind}_{key}"):
+                setup_mesh(mesh, materials, collision, nanite=kind == "buildings")
+                actor = place(mesh, f"{kind}_{key}", si, sj, collision)
+                if kind == "roads_collision":
+                    actor.set_actor_hidden_in_game(True)
+                    actor.static_mesh_component.set_visibility(False)
+                if not collision:
+                    actor.static_mesh_component.set_collision_profile_name("NoCollision")
+        if f"Props_{key}" not in labels:
+            unreal.BeratImporter.import_sector_props(None, cache, si, sj, kinds, variants, lamp, unreal.Vector(0, 0, 360), 250000.0)
+        done += 1
+        if done % batch == 0:
+            save()
+            les.load_level(MAP)
+            unreal.log(f"[berat] world objects: {done} sectors, {time.time() - t0:.0f} s, {free_ram_gb():.1f} GB free")
+    save()
+    return {"sectors": done, "seconds": round(time.time() - t0, 1)}
+
+
+def prop_meshes():
+    """Plant kind -> mesh (prep_objects.KINDS order), variants, lamp post. Poly Haven stand-ins until the Megaplants."""
+    def mesh(d, name):
+        for p in eal.list_assets(f"{ROOT}/Models/{d}", recursive=True):
+            if p.split(".")[-1] == name:
+                o = unreal.load_asset(p)
+                if isinstance(o, unreal.StaticMesh):
+                    return o
+        raise RuntimeError(f"{d}/{name}")
+    broad = mesh("broadleaf_small", "tree_small_02")
+    pine, fir = mesh("conifer_a", "pine_tree_01_a_LOD0"), mesh("conifer_b", "fir_tree_01_a_LOD0")
+    shrub, shrub_b = mesh("shrub_a", "shrub_02_a"), mesh("shrub_a", "shrub_02_c")
+    hedge, vine = mesh("shrub_a", "shrub_02_b"), mesh("shrub_b", "shrub_03_a")
+    return [broad, broad, pine, fir, broad, shrub, hedge, vine], {2: fir, 5: shrub_b}, mesh("lamp_a", "street_lamp_01")

@@ -6,6 +6,7 @@
 
 class UMaterialInterface;
 class UStaticMesh;
+class USkeletalMesh;
 class ALandscape;
 class UBeratLaneGraph;
 class ABeratSectorProps;
@@ -30,9 +31,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
 	static double BuildLandscapeNanite();
 
+	// Bones of a skeletal mesh: "name x y z" (reference pose, component space, cm), to find wheel bones from a script.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
+	static TArray<FString> GetBoneNames(USkeletalMesh* Mesh);
+
 	// Height of the landscape (or whatever blocks a downward trace) at a package point, in package metres; -1e9 if nothing.
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
 	static double TraceHeight(UObject* WorldContext, double X, double Y);
+
+	// Lane graph asset from the sectors' lanes.bin (prep_objects.py); links across files resolved by id.
+	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
+	static UBeratLaneGraph* ImportLaneGraphBin(const TArray<FString>& Files, const FString& AssetPath);
 
 	// Lane graph asset from <BlockDir>/lanes.json.
 	UFUNCTION(BlueprintCallable, Category = "Berat|Import")
