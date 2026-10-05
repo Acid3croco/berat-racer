@@ -90,7 +90,7 @@ ABeratCar::ABeratCar()
 		L->SetupAttachment(GetMesh());
 		L->SetIntensityUnits(ELightUnits::Candelas);
 		L->SetLightColor(FLinearColor(1.f, 0.05f, 0.02f));
-		L->SetAttenuationRadius(180.f);
+		L->SetAttenuationRadius(120.f);
 		L->SetCastShadows(false);
 		L->SetVisibility(false);
 		return L;
@@ -662,7 +662,7 @@ void ABeratCar::UpdateLights()
 		TailL->SetVisibility(bTail);
 		TailR->SetVisibility(bTail);
 	}
-	const float Tail = bBraking ? 6.f : 1.2f;
+	const float Tail = bBraking ? 4.f : 0.5f;
 	TailL->SetIntensity(Tail);
 	TailR->SetIntensity(Tail);
 }
