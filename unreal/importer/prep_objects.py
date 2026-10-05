@@ -290,6 +290,195 @@ def road_collision(sector: Path) -> gltf.Mesh:
     return mesh
 
 
+# Garden walls: the package has no property lines, so plots meet the street where the land beside a road is garden or yard
+# with a house near. Low rendered walls with a coping (the nearest house's finish and colour), some with a railing on
+# top, some as hedges (plants). Gaps for gates and drives; none where a building or a hedge already lines the street.
+WALL_SET = 1.0          # m from the drawn road edge (verge)
+WALL_STEP = 1.0         # m between samples along the edge
+GARDEN = (8, 9)         # classes: garden, yard
+RESIDENTIAL = ("house", "shop", "restaurant", "library", "church")
+
+
+def _wall_finish(p) -> str:
+    """The wall finish a house's garden wall takes: render mostly; brick and stone on old ones and where the data says."""
+    wm = (p.get("wall_material") or "").lower()
+    old = p.get("era") == "before_1950"
+    rnd = ((p.get("seed") or 0) * 2654435761 % 2**32) / 2**32
+    if "brique" in wm or (old and rnd < 0.35):
+        return "wall_brick"
+    if "pierre" in wm or (old and rnd < 0.6):
+        return "wall_stone"
+    return "wall_render"
+
+
+def garden_walls(sector: Path, rng):
+    """(wall mesh: materials wall_render / wall_brick / wall_stone, coping, rail; extra hedge plants (x, y, z, h, yaw, kind))."""
+    import tifffile
+    from PIL import Image
+    si, sj = (int(v) for v in sector.name.split("_"))
+    x0, ytop = 3200 * si - 16000, 3200 * (sj + 1) - 16000
+    cls = np.asarray(Image.open(sector / "classes.png"))
+    hgt = tifffile.imread(sector / "height.tif").astype(np.float64)
+    n = cls.shape[0]
+
+    def cell(a, x, y):
+        c = np.clip(np.rint(np.asarray(x) - x0).astype(int), 0, n - 1)
+        r = np.clip(np.rint(ytop - np.asarray(y)).astype(int), 0, n - 1)
+        return a[r, c]
+
+    b = json.loads((sector / "buildings.geojson").read_text(encoding="utf-8"))
+    polys, props = [], []
+    for f in b["features"]:
+        polys.append(shapely.Polygon(np.asarray(f["geometry"]["coordinates"][0], np.float64)[:, :2]))
+        props.append(f["properties"])
+    mesh = gltf.Mesh()
+    if not polys:
+        return mesh, np.zeros((0, 6))
+    btree = shapely.STRtree(polys)
+    homes = [i for i, p in enumerate(props) if p.get("use") in RESIDENTIAL]
+    htree = shapely.STRtree([polys[i] for i in homes]) if homes else None
+    v = json.load(gzip.open(sector / "vegetation.json.gz"))
+    hedge_lines = [shapely.LineString(np.asarray(h["points"], np.float64)[:, :2]) for h in v["hedges"] if len(h["points"]) > 1]
+    hedges = shapely.STRtree(hedge_lines) if hedge_lines else None
+
+    g = json.loads((sector / "roads.geojson").read_text(encoding="utf-8"))
+    runs = []                       # (points (k, 2), outward normals (k, 2), house index)
+    for feat in g["features"]:
+        p = feat["properties"]
+        if p["tunnel"] or p["bridge"] or p["class"] in ("track", "motorway", "ramp", "path", "footway", "cycleway"):
+            continue
+        a, bb = p["drawn_from"], p["drawn_to"]
+        if a is None or bb is None:
+            continue
+        xyz = np.asarray(feat["geometry"]["coordinates"], np.float64)[a:bb + 1]
+        hw = np.asarray(p["half_width"], np.float64)[a:bb + 1]
+        if len(xyz) < 2:
+            continue
+        seg = np.diff(xyz[:, :2], axis=0)
+        cum = np.concatenate([[0], np.cumsum(np.hypot(seg[:, 0], seg[:, 1]))])
+        if cum[-1] < 8:
+            continue
+        d = np.arange(3.0, cum[-1] - 3.0, WALL_STEP)              # not into the junction mouths
+        i = np.clip(np.searchsorted(cum, d, side="right") - 1, 0, len(seg) - 1)
+        f = (d - cum[i]) / np.maximum(cum[i + 1] - cum[i], 1e-6)
+        c = xyz[i, :2] + f[:, None] * (xyz[i + 1, :2] - xyz[i, :2])
+        t = seg[i] / np.maximum(np.hypot(seg[i, 0], seg[i, 1]), 1e-6)[:, None]
+        off = hw[i] + f * (hw[i + 1] - hw[i]) + WALL_SET
+        for side in (1, -1):
+            nrm = np.column_stack([-t[:, 1], t[:, 0]]) * side
+            pt = c + nrm * off[:, None]
+            probe = pt + nrm * 2.0
+            ok = np.isin(cell(cls, probe[:, 0], probe[:, 1]), GARDEN)
+            pts = shapely.points(pt[:, 0], pt[:, 1])
+            near_b = btree.query_nearest(pts, max_distance=2.5, return_distance=False, all_matches=False)[0]
+            ok[near_b] = False
+            if hedges is not None:
+                near_h = hedges.query_nearest(pts, max_distance=2.0, return_distance=False, all_matches=False)[0]
+                ok[near_h] = False
+            home = np.full(len(pt), -1)
+            if htree is not None:
+                q, hidx = htree.query_nearest(pts, max_distance=35.0, return_distance=False, all_matches=False)
+                home[q] = np.asarray(homes)[hidx]
+            ok &= home >= 0
+            # contiguous runs, cut into plots with a gate gap between them
+            k = 0
+            while k < len(ok):
+                if not ok[k]:
+                    k += 1
+                    continue
+                e = k
+                while e + 1 < len(ok) and ok[e + 1]:
+                    e += 1
+                start = k
+                while start <= e:
+                    stop = min(start + int(rng.uniform(10, 28) / WALL_STEP), e)
+                    if stop - start >= 4:
+                        hs = home[start:stop + 1]
+                        runs.append((pt[start:stop + 1], nrm[start:stop + 1], int(np.bincount(hs[hs >= 0]).argmax())))
+                    start = stop + int(rng.uniform(3, 5) / WALL_STEP)      # gate / drive
+                k = e + 1
+
+    extra = []
+    uv1 = lambda k, r: np.column_stack([np.full(k, r), np.zeros(k)])
+    for pts, nrm, h in runs:
+        p = props[h]
+        rnd = ((p.get("seed") or 0) * 2654435761 % 2**32) / 2**32
+        style = rng.uniform()
+        z = cell(hgt, pts[:, 0], pts[:, 1])
+        if style < 0.25:                                            # hedge along the plot
+            for (x, y), zz in zip(pts[::2], z[::2]):
+                extra.append((x, y, zz, rng.uniform(1.4, 2.0), rng.uniform(0, 360), 6))
+            continue
+        finish = _wall_finish(p)
+        colour = np.asarray(p.get("wall_colour") or (200, 190, 175), np.float64) / 255.0
+        railing = style >= 0.65
+        height = rng.uniform(0.5, 0.8) if railing else rng.uniform(0.9, 1.6)
+        th, ch = 0.2, 0.06                                          # wall thickness, coping height
+        out_l, in_l = pts, pts + nrm * th                           # road face, garden face
+        base = z - 0.3                                              # into the ground (slopes)
+        top = z + height
+        s_al = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(pts, axis=0).T))])
+
+        def strip(material, line, z0, z1, flip, u, v0, v1, col):
+            k = len(line)
+            pos = np.concatenate([np.column_stack([line, z0]), np.column_stack([line, z1])])
+            uv = np.concatenate([np.column_stack([u, v0]), np.column_stack([u, v1])])
+            tri = []
+            for q in range(k - 1):
+                a_, b_, c_, d_ = q, q + 1, k + q + 1, k + q
+                tri += [[a_, c_, b_], [a_, d_, c_]] if flip else [[a_, b_, c_], [a_, c_, d_]]
+            mesh.add(material, pos, np.asarray(tri), uv0=uv, uv1=uv1(2 * k, rnd), colour=np.tile(col, (2 * k, 1)))
+
+        strip(finish, out_l, base, top, True, s_al, base - z, top - z, colour)
+        strip(finish, in_l, base, top, False, s_al, base - z, top - z, colour)
+        for q, sgn in ((0, 1), (-1, -1)):
+            quad = np.asarray([[*out_l[q], base[q]], [*in_l[q], base[q]], [*in_l[q], top[q]], [*out_l[q], top[q]]])
+            tri = [[0, 1, 2], [0, 2, 3]] if sgn > 0 else [[0, 2, 1], [0, 3, 2]]
+            mesh.add(finish, quad, np.asarray(tri), uv0=np.asarray([[0, -0.3], [th, -0.3], [th, height], [0, height]]),
+                     uv1=uv1(4, rnd), colour=np.tile(colour, (4, 1)))
+        # coping: a slab over the top, 5 cm proud on both faces
+        co, ci = pts - nrm * 0.05, pts + nrm * (th + 0.05)
+        grey = np.asarray([0.72, 0.7, 0.66])
+        strip("coping", co, top, top + ch, True, s_al, np.zeros_like(top), np.full_like(top, ch), grey)
+        strip("coping", ci, top, top + ch, False, s_al, np.zeros_like(top), np.full_like(top, ch), grey)
+        k = len(pts)
+        cp = np.concatenate([np.column_stack([co, top + ch]), np.column_stack([ci, top + ch])])
+        tri = [[q, k + q + 1, k + q] for q in range(k - 1)] + [[q, q + 1, k + q + 1] for q in range(k - 1)]
+        mesh.add("coping", cp, np.asarray(tri), uv0=cp[:, :2], uv1=uv1(2 * k, rnd), colour=np.tile(grey, (2 * k, 1)))
+        if railing:
+            # posts every 2 m, bars every 12 cm, a top rail; dark green, black, grey or white paint
+            paint = np.asarray([(0.08, 0.12, 0.09), (0.05, 0.05, 0.05), (0.3, 0.32, 0.33), (0.85, 0.85, 0.82)][int(rnd * 4) % 4])
+            rail_h = rng.uniform(0.8, 1.1)
+            mid = pts + nrm * (th / 2)
+            t0 = top + ch
+            bp, bt = [], []
+            dd = np.diff(mid, axis=0)
+            for q in range(len(mid) - 1):
+                L = np.hypot(*dd[q])
+                if L < 1e-3:
+                    continue
+                dq = dd[q] / L
+                nq = np.asarray([-dq[1], dq[0]])
+                for u in np.arange(0, L, 0.12):
+                    xy = mid[q] + dq * u
+                    zt = t0[q] + (t0[q + 1] - t0[q]) * u / L
+                    w = 0.06 if (s_al[q] + u) % 2.0 < 0.12 else 0.02
+                    cs = [xy + (-nq - dq) * w / 2, xy + (nq - dq) * w / 2, xy + (nq + dq) * w / 2, xy + (-nq + dq) * w / 2]
+                    for r_ in range(4):
+                        a0, a1 = cs[r_], cs[(r_ + 1) % 4]
+                        bse = len(bp)
+                        bp += [[*a0, zt], [*a1, zt], [*a1, zt + rail_h], [*a0, zt + rail_h]]
+                        bt += [[bse, bse + 1, bse + 2], [bse, bse + 2, bse + 3]]
+            if bp:
+                mesh.add("rail", np.asarray(bp), np.asarray(bt), uv0=np.zeros((len(bp), 2)), uv1=uv1(len(bp), rnd),
+                         colour=np.tile(paint, (len(bp), 1)))
+            strip("rail", mid - nrm * 0.02, t0 + rail_h, t0 + rail_h + 0.04, True, s_al, np.zeros_like(t0),
+                  np.full_like(t0, 0.04), paint)
+            strip("rail", mid + nrm * 0.02, t0 + rail_h, t0 + rail_h + 0.04, False, s_al, np.zeros_like(t0),
+                  np.full_like(t0, 0.04), paint)
+    return mesh, np.asarray(extra, np.float64).reshape(-1, 6)
+
+
 def water(sector: Path) -> gltf.Mesh:
     g = json.loads((sector / "water.geojson").read_text(encoding="utf-8"))
     mesh = gltf.Mesh()
@@ -348,6 +537,7 @@ def main() -> None:
     rng = np.random.default_rng(11)
     lanes, controls = [], None
     summary = {}
+    walls_total = [0, 0]           # garden wall triangles, garden hedge plants
     if args.all:
         todo = sorted(tuple(s) for s in man["sectors"])
     else:
@@ -358,7 +548,16 @@ def main() -> None:
             dst = args.out / "sectors" / f"{si}_{sj}"
             dst.mkdir(parents=True, exist_ok=True)
             pl = plants(src, rng)
+            gw, gwh = garden_walls(src, np.random.default_rng(si * 1000 + sj))
+            if len(gwh):
+                gwh[:, 0], gwh[:, 1], gwh[:, 2], gwh[:, 3] = gwh[:, 0] * 100, -gwh[:, 1] * 100, gwh[:, 2] * 100, gwh[:, 3] * 100
+                pl = np.concatenate([pl, gwh])
             write_instances(dst / "plants.bin", pl, True)
+            if len(gw):
+                gltf.write_glb(dst / "walls.glb", gw, (size * si - 16000, size * sj - 16000),
+                               {m: {"colour": (0.7, 0.7, 0.7)} for m in gw.parts}, f"walls_{si}_{sj}")
+            walls_total[0] += len(gw)
+            walls_total[1] += len(gwh)
             lp = lamps(src)
             write_instances(dst / "lamps.bin", lp, False)
             corner = (size * si - 16000, size * sj - 16000)
@@ -387,6 +586,7 @@ def main() -> None:
         (args.out / "lanes.json").write_text(json.dumps({"controls": controls, "kinds": KINDS, "elements": lanes}))
     (args.out / "objects.json").write_text(json.dumps({"kinds": KINDS, "sectors": summary,
                                                        "seconds": round(time.time() - t0, 1)}, indent=1))
+    print(f"garden walls: {walls_total[0]} triangles, {walls_total[1]} hedge plants")
     tot = np.sum([s["by_kind"] for s in summary.values()], axis=0)
     print(f"{len(lanes)} lanes, {sum(s['lamps'] for s in summary.values())} lamps, "
           f"{sum(s['water_tris'] for s in summary.values())} water triangles, plants:",

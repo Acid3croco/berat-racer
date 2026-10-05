@@ -1277,3 +1277,36 @@ def apply_surfaces():
         eal.save_loaded_asset(m)
     log["surfaces"] = {"layers": n, "roads": len(ROAD_SURFACE)}
     return n
+
+
+# ----------------------------------------------------------------------------------------------------------- garden walls
+
+def import_walls(sectors=None):
+    """Garden walls (prep_objects.garden_walls): the building finishes by slot name, coping in the concrete finish,
+    railings in vertex-coloured paint. Nanite with the full-detail fallback; collision (cars hit them)."""
+    mats = {name: unreal.load_asset(f"{ROOT}/Materials/Buildings/M_{name}") for name in FINISHES}
+    mats["coping"] = mats["wall_concrete"]
+    mats["rail"] = simple_material(f"{ROOT}/Materials/M_Railing", vertex_colour=True, roughness=0.45, specular=0.5,
+                                   metallic=0.6)
+    block = json.load(open(os.path.join(CACHE, "block.json")))
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    done = 0
+    for si, sj in sectors or block["sectors"]:
+        key = f"{si}_{sj}"
+        path = os.path.join(CACHE, "sectors", key, "walls.glb")
+        for a in eas.get_all_level_actors():
+            if a.get_actor_label() == f"walls_{key}":
+                eas.destroy_actor(a)
+        if not os.path.exists(path):
+            continue
+        for mesh in import_glb(path, f"{ROOT}/Sectors/{key}", f"SM_walls_{key}"):
+            for i, slot in enumerate(mesh.static_materials):
+                m = mats.get(str(slot.material_slot_name))
+                if m:
+                    mesh.set_material(i, m)
+            setup_mesh(mesh, {}, True, nanite=True)
+            place(mesh, f"walls_{key}", si, sj, True)
+            done += 1
+    save()
+    log["walls"] = done
+    return done
