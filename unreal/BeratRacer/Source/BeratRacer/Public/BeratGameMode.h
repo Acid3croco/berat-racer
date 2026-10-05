@@ -61,6 +61,12 @@ private:
 	bool bDecalTested = false;
 	bool bMoved = false;
 	void Pilot(class ABeratCar* Car, float Dt);
+	// -BeratHandling: manoeuvres on a flat asphalt slab (launch, braking, steady circle, lane change), logged; then quit.
+	void Handling(class ABeratCar* Car, float Dt);
+	int32 HStep = -1;
+	float HClock = 0.f, HMaxSlip = 0.f, HSum[6] = {};
+	int32 HCount = 0;
+	FVector HStartPos = FVector::ZeroVector;
 	void TestReport(const TCHAR* Phase);
 	void NextCar();
 	void TimeForward();

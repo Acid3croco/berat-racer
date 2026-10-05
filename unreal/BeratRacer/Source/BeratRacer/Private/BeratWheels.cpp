@@ -30,7 +30,11 @@ UBeratWheelRear::UBeratWheelRear()
 	MaxSteerAngle = 0.f;
 	bAffectedByHandbrake = true;
 	bAffectedByEngine = true;
-	FrictionForceMultiplier = 3.f;
+	// more grip at the rear than the front, high slip / skid thresholds and a handbrake that slides rather than locks: the
+	// template sports car's balance (equal grip and a locking handbrake spun the car and stopped it dead from 70 km/h)
+	FrictionForceMultiplier = 3.6f;
+	SlipThreshold = 100.f;
+	SkidThreshold = 100.f;
 	CorneringStiffness = 1000.f;
 	SuspensionMaxRaise = 10.f;
 	SuspensionMaxDrop = 10.f;
@@ -38,7 +42,7 @@ UBeratWheelRear::UBeratWheelRear()
 	SpringPreload = 50.f;
 	SuspensionDampingRatio = 0.5f;
 	MaxBrakeTorque = 2000.f;
-	MaxHandBrakeTorque = 4000.f;
+	MaxHandBrakeTorque = 2500.f;
 }
 
 void UBeratWheelAnimInstance::NativeUpdateAnimation(float DeltaSeconds)

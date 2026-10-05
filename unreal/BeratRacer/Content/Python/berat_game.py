@@ -82,13 +82,17 @@ def make_blueprint(name, parent):
     return assets.create_asset(name, ROOT, unreal.Blueprint, f)
 
 
-def wheel_class(name, parent, radius, width, engine):
+def wheel_class(name, parent, radius, width, engine, mass=0):
     bp = make_blueprint(name, parent)
     unreal.BlueprintEditorLibrary.compile_blueprint(bp)
     cdo = unreal.get_default_object(unreal.EditorAssetLibrary.load_blueprint_class(f"{ROOT}/{name}"))
     cdo.set_editor_property("wheel_radius", float(radius))
     cdo.set_editor_property("wheel_width", float(width))
     cdo.set_editor_property("affected_by_engine", engine)
+    if mass:
+        # springs and damping for the car's mass (the defaults suit the 1500 kg template sports car)
+        cdo.set_editor_property("spring_rate", 250.0 * mass / 1500.0)
+        cdo.set_editor_property("suspension_damping_ratio", 0.55)
     bp.modify()
     eal.save_loaded_asset(bp)
     return unreal.EditorAssetLibrary.load_blueprint_class(f"{ROOT}/{name}")
@@ -99,8 +103,8 @@ def make_car_from_mesh(name, spec):
         if eal.does_asset_exist(f"{ROOT}/{n}"):
             eal.delete_asset(f"{ROOT}/{n}")
     drive = spec["drive"]
-    front = wheel_class(f"{name}_WheelF", unreal.BeratWheelFront, spec["radius"], spec["width"], drive != "REAR_WHEEL_DRIVE")
-    rear = wheel_class(f"{name}_WheelR", unreal.BeratWheelRear, spec["radius"], spec["width"], drive != "FRONT_WHEEL_DRIVE")
+    front = wheel_class(f"{name}_WheelF", unreal.BeratWheelFront, spec["radius"], spec["width"], drive != "REAR_WHEEL_DRIVE", spec["mass"])
+    rear = wheel_class(f"{name}_WheelR", unreal.BeratWheelRear, spec["radius"], spec["width"], drive != "FRONT_WHEEL_DRIVE", spec["mass"])
     bp = make_blueprint(name, unreal.BeratCar)
     unreal.BlueprintEditorLibrary.compile_blueprint(bp)
     cdo = unreal.get_default_object(unreal.EditorAssetLibrary.load_blueprint_class(f"{ROOT}/{name}"))

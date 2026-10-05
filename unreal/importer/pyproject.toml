@@ -6,6 +6,7 @@ dependencies = [
     "imagecodecs>=2026.8.16",
     "numpy>=2.5.3",
     "pillow>=12.3.0",
+    "scipy>=1.18.1",
     "shapely>=2.1.2",
     "tifffile>=2026.9.20",
 ]

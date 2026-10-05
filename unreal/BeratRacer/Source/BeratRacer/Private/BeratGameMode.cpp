@@ -6,6 +6,7 @@
 #include "BeratTraffic.h"
 #include "ChaosVehicleMovementComponent.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
+#include "ChaosVehicleWheel.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -320,6 +321,11 @@ void ABeratPlayerController::Tick(float Dt)
 		FrameMs.Add(Dt * 1000.f);
 	}
 	ABeratCar* Car = Cast<ABeratCar>(GetPawn());
+	if (FParse::Param(FCommandLine::Get(), TEXT("BeratHandling")))
+	{
+		Handling(Car, Dt);
+		return;
+	}
 	// -BeratStart=x,y (package metres): put the car on the nearest lane there, along it, once.
 	// -BeratOffroad=x,y,heading (degrees from east, counter-clockwise): exactly there on the ground, then straight ahead on
 	// part throttle instead of the autopilot (grip and drag per surface).
@@ -524,4 +530,151 @@ void ABeratHUD::DrawHUD()
 	DrawText(FString::Printf(TEXT("%.0f fps"), FpsSmooth), FLinearColor(0.6f, 1.f, 0.6f), 20.f, 20.f, Small, 1.2f);
 	DrawText(TEXT("Tab / D-pad right: next car   T / Y: time +-1 h   L: lights   C: camera   R: reset"),
 		FLinearColor(1.f, 1.f, 1.f, 0.6f), 20.f, Canvas->ClipY - 30.f, Small, 1.f);
+}
+
+
+void ABeratPlayerController::Handling(ABeratCar* Car, float Dt)
+{
+	if (!Car)
+	{
+		return;
+	}
+	UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(Car->GetVehicleMovementComponent());
+	USkeletalMeshComponent* M = Car->GetMesh();
+	const FVector Pad(0.0, 0.0, 300000.0);                 // the slab's top, 3 km up (out of the map)
+	const float Kmh = Car->GetSpeedKmh();
+	const FTransform T = M->GetComponentTransform();
+	const FVector Fwd = T.GetUnitAxis(EAxis::X), Right = T.GetUnitAxis(EAxis::Y), Up = T.GetUnitAxis(EAxis::Z);
+	const FVector V = M->GetPhysicsLinearVelocity();
+	const float YawRate = M->GetPhysicsAngularVelocityInDegrees().Z;                          // deg/s
+	const float Slip = FMath::RadiansToDegrees(FMath::Atan2(FVector::DotProduct(V, Right), FMath::Max(FVector::DotProduct(V, Fwd), 1.f)));
+	const float LatG = FVector::DotProduct(V, Right) * 0.f + FMath::Abs(FMath::DegreesToRadians(YawRate) * V.Size() / 100.f) / 9.81f;
+	const float Roll = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(Right.Z, -1.f, 1.f)));
+	HClock += Dt;
+	auto Next = [this]() { ++HStep; HClock = 0.f; HMaxSlip = 0.f; HCount = 0; for (float& x : HSum) { x = 0.f; } };
+	const FString NameS = Car->DisplayName.ToString();
+	const TCHAR* Name = *NameS;
+	switch (HStep)
+	{
+	case -1:   // the slab, the car on it
+	{
+		AStaticMeshActor* Slab = GetWorld()->SpawnActor<AStaticMeshActor>(Pad - FVector(0, 0, 50.f), FRotator::ZeroRotator);
+		Slab->SetMobility(EComponentMobility::Movable);
+		UStaticMeshComponent* C = Slab->GetStaticMeshComponent();
+		C->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+		C->SetWorldScale3D(FVector(2000.f, 2000.f, 1.f));
+		C->SetCollisionProfileName(TEXT("BlockAll"));
+		C->SetPhysMaterialOverride(LoadObject<UPhysicalMaterial>(nullptr, TEXT("/Game/Berat/Physics/PM_Asphalt.PM_Asphalt")));
+		M->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		M->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+		Car->SetActorLocationAndRotation(Pad + FVector(-80000.f, 0, 60.f), FRotator::ZeroRotator, false, nullptr, ETeleportType::TeleportPhysics);
+		Car->AutoThrottle = 0.f; Car->AutoBrake = 0.f; Car->AutoSteer = 0.f;
+		UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s: mass %.0f kg, CoM override %d %s, inertia scale %s, drag %.2f, downforce %.2f"),
+			Name, W->Mass, W->bEnableCenterOfMassOverride, *W->CenterOfMassOverride.ToString(), *W->InertiaTensorScale.ToString(),
+			W->DragCoefficient, W->DownforceCoefficient);
+		for (int32 i = 0; i < W->Wheels.Num(); ++i)
+		{
+			const UChaosVehicleWheel* Wh = W->Wheels[i];
+			UE_LOG(LogTemp, Display, TEXT("[berat-handling]   wheel %d %s: r %.0f, friction x%.2f, cornering %.0f, long stiff %.0f, slip thr %.0f, skid thr %.0f, spring %.0f preload %.0f damping %.2f travel +%.0f/-%.0f, brake %.0f, handbrake %.0f (%d), steer %.0f"),
+				i, *GetNameSafe(Wh->GetClass()), Wh->WheelRadius, Wh->FrictionForceMultiplier, Wh->CorneringStiffness,
+				Wh->SideSlipModifier * 0.f + Wh->SlipThreshold * 0.f, Wh->SlipThreshold, Wh->SkidThreshold, Wh->SpringRate, Wh->SpringPreload,
+				Wh->SuspensionDampingRatio, Wh->SuspensionMaxRaise, Wh->SuspensionMaxDrop, Wh->MaxBrakeTorque, Wh->MaxHandBrakeTorque,
+				Wh->bAffectedByHandbrake, Wh->MaxSteerAngle);
+		}
+		Next();
+		break;
+	}
+	case 0:    // settle 3 s
+		if (HClock > 3.f) { HStartPos = Car->GetActorLocation(); Next(); }
+		break;
+	case 1:    // launch: full throttle 15 s
+		Car->AutoThrottle = 1.f;
+		if (HSum[0] == 0.f && Kmh >= 50.f) HSum[0] = HClock;
+		if (HSum[1] == 0.f && Kmh >= 100.f) HSum[1] = HClock;
+		HMaxSlip = FMath::Max(HMaxSlip, FMath::Abs(Slip));
+		if (HClock > 15.f)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s launch: 0-50 %.2f s, 0-100 %.2f s, 15 s %.0f km/h gear %d rpm %.0f, max slip %.1f deg, heading drift %.1f m"),
+				Name, HSum[0], HSum[1], Kmh, Car->GetGear(), Car->GetRpm(), HMaxSlip, FMath::Abs(Car->GetActorLocation().Y - HStartPos.Y) / 100.f);
+			HStartPos = Car->GetActorLocation();
+			const float From = Kmh;
+			Next();
+			HSum[2] = From;
+		}
+		break;
+	case 2:    // brake to rest
+		Car->AutoThrottle = 0.f; Car->AutoBrake = Kmh > 2.f ? 1.f : 0.f;
+		HMaxSlip = FMath::Max(HMaxSlip, FMath::Abs(Slip));
+		if (Kmh <= 2.f || HClock > 15.f)
+		{
+			const float D = FVector::Dist2D(Car->GetActorLocation(), HStartPos) / 100.f;
+			UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s braking from %.0f km/h: %.1f m in %.2f s (%.2f g mean), max slip %.1f deg"),
+				Name, HSum[2], D, HClock, (HSum[2] / 3.6f) / FMath::Max(HClock, 0.01f) / 9.81f, HMaxSlip);
+			Next();
+		}
+		break;
+	case 3:    // steady circle: 60 km/h held, steering 0.5 after 3 s, measured 6..12 s
+	{
+		const float Want = 60.f;
+		Car->AutoBrake = 0.f;
+		Car->AutoThrottle = FMath::Clamp((Want - Kmh) / 10.f + 0.25f, 0.f, 1.f);
+		Car->AutoSteer = HClock > 4.f ? 0.5f : 0.f;
+		if (HClock > 8.f)
+		{
+			HSum[0] += LatG; HSum[1] += FMath::Abs(YawRate); HSum[2] += Slip; HSum[3] += Roll; HSum[4] += Kmh; ++HCount;
+		}
+		if (HClock > 14.f)
+		{
+			const float N = FMath::Max(HCount, 1);
+			UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s circle, steer 0.5: %.0f km/h, lateral %.2f g, yaw %.1f deg/s (radius %.1f m), body slip %.1f deg, roll %.1f deg"),
+				Name, HSum[4] / N, HSum[0] / N, HSum[1] / N, (HSum[4] / N / 3.6f) / FMath::Max(FMath::DegreesToRadians(HSum[1] / N), 0.01f), HSum[2] / N, HSum[3] / N);
+			Next();
+		}
+		break;
+	}
+	case 4:    // straighten, run up to 100 km/h
+		Car->AutoSteer = 0.f; Car->AutoBrake = 0.f;
+		Car->AutoThrottle = Kmh < 100.f ? 1.f : 0.3f;
+		if (Kmh >= 100.f || HClock > 20.f) { Next(); }
+		break;
+	case 5:    // lane change: steer +0.35 for 0.6 s, -0.35 for 0.6 s, centre; watch 4 s
+	{
+		Car->AutoThrottle = 0.35f;
+		Car->AutoSteer = HClock < 0.6f ? 0.35f : HClock < 1.2f ? -0.35f : 0.f;
+		HMaxSlip = FMath::Max(HMaxSlip, FMath::Abs(Slip));
+		HSum[0] = FMath::Max(HSum[0], FMath::Abs(YawRate));
+		HSum[1] = FMath::Max(HSum[1], FMath::Abs(Roll));
+		if (HClock > 5.f)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s lane change at 100: max slip %.1f deg, max yaw %.0f deg/s, max roll %.1f deg, end slip %.1f deg yaw %.1f deg/s (%s), %.0f km/h"),
+				Name, HMaxSlip, HSum[0], HSum[1], Slip, YawRate, FMath::Abs(YawRate) > 15.f || HMaxSlip > 25.f ? TEXT("UNSTABLE") : TEXT("settled"), Kmh);
+			Next();
+		}
+		break;
+	}
+	case 6:    // straighten, settle at 70 km/h
+		Car->AutoSteer = 0.f; Car->AutoBrake = 0.f;
+		Car->AutoThrottle = FMath::Clamp((70.f - Kmh) / 10.f + 0.3f, 0.f, 1.f);
+		if (HClock > 6.f) { HSum[5] = Car->GetActorRotation().Yaw; Next(); }
+		break;
+	case 7:    // handbrake turn: handbrake + steer 0.8 for 1.5 s, then release; heading change and slip
+	{
+		const bool bHold = HClock < 1.5f;
+		Car->GetVehicleMovementComponent()->SetHandbrakeInput(bHold);
+		Car->AutoThrottle = bHold ? 0.f : 0.4f;
+		Car->AutoSteer = bHold ? 0.8f : 0.f;
+		HMaxSlip = FMath::Max(HMaxSlip, FMath::Abs(Slip));
+		if (HClock > 4.f)
+		{
+			const float Turned = FMath::Abs(FRotator::NormalizeAxis(Car->GetActorRotation().Yaw - HSum[5]));
+			UE_LOG(LogTemp, Display, TEXT("[berat-handling] %s handbrake turn from 70: turned %.0f deg, max slip %.0f deg, end %.0f km/h, end yaw %.1f deg/s"),
+				Name, Turned, HMaxSlip, Kmh, YawRate);
+			Next();
+		}
+		break;
+	}
+	default:
+		FGenericPlatformMisc::RequestExit(false);
+		break;
+	}
 }

@@ -11,6 +11,7 @@
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "Camera/CameraComponent.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
+#include "ChaosVehicleWheel.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -272,7 +273,8 @@ void ABeratCar::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 
 void ABeratCar::OnHandbrake(const FInputActionValue& V)
 {
-	GetVehicleMovementComponent()->SetHandbrakeInput(V.Get<bool>());
+	bHandbrake = V.Get<bool>();
+	GetVehicleMovementComponent()->SetHandbrakeInput(bHandbrake);
 }
 
 void ABeratCar::OnCamera(const FInputActionValue&)
@@ -392,7 +394,7 @@ void ABeratCar::UpdateGearbox(float Dt)
 	const float T = FMath::Clamp(W->GetThrottleInput(), 0.f, 1.f);
 	const float Up = Max * FMath::Lerp(Assists.ShiftUp.X, Assists.ShiftUp.Y, T);
 	const float Down = Max * FMath::Lerp(Assists.ShiftDown.X, Assists.ShiftDown.Y, T);
-	if (Gear < R.Num() && Rpm > Up && Rpm * R[Gear] / R[Gear - 1] > Down * 1.1f)
+	if (Gear < R.Num() && Rpm > Up && (Rpm * R[Gear] / R[Gear - 1] > Down * 1.05f || Rpm > Max * 0.97f))   // on the limiter: always up
 	{
 		W->SetTargetGear(Gear + 1, false);
 		ShiftHold = 0.6f;
@@ -526,6 +528,31 @@ void ABeratCar::ConfigureChaos()
 	W->SteeringInputRate.RiseRate = Assists.SteerRise;
 	W->SteeringInputRate.FallRate = Assists.SteerFall;
 
+	// Brakes: torque per wheel for Assists.BrakeG at full brake, split 65 / 35 front / rear (T = m a r per axle share)
+	if (Assists.BrakeG > 0.f && W->Wheels.Num() >= 4)
+	{
+		const float Force = W->Mass * 9.81f * Assists.BrakeG;                  // N
+		const int32 N = W->Wheels.Num(), Front = N / 2;
+		for (int32 i = 0; i < N; ++i)
+		{
+			const UChaosVehicleWheel* Wh = W->Wheels[i];
+			const float Share = (i < Front ? 0.65f : 0.35f) / Front;
+			const float Torque = Force * Share * (Wh ? Wh->WheelRadius : 33.f) / 100.f;
+			W->SetWheelMaxBrakeTorque(i, Torque);
+		}
+		// handbrake: light, on the rear only (the grip loss does the turning)
+		const float HbForce = W->Mass * 9.81f * Assists.HandbrakeG / FMath::Max(N - Front, 1);
+		for (int32 i = 0; i < N; ++i)
+		{
+			const UChaosVehicleWheel* Wh = W->Wheels[i];
+			BaseFriction[FMath::Min(i, 7)] = Wh ? Wh->FrictionForceMultiplier : 3.f;
+			if (Wh && Wh->bAffectedByHandbrake)
+			{
+				W->SetWheelHandbrakeTorque(i, HbForce * Wh->WheelRadius / 100.f);
+			}
+		}
+	}
+
 	// Arcade controls of Chaos: level in the air, no roll-overs from a kerb, a little turn-in from steering.
 	// Behind berat.ArcadeControls until tuned (their first settings threw the car into the sky).
 	if (CVarArcadeControls.GetValueOnGameThread() == 0)
@@ -583,6 +610,20 @@ void ABeratCar::ShapeInput(float Dt)
 		M->WakeAllRigidBodies();
 	}
 	Move->SetBrakeInput(AutoThrottle >= 0.f ? AutoBrake : BrakeIn);
+	// handbrake: the rear tyres lose grip while it is held (Chaos's per-wheel friction multiplier)
+	const bool bHb = bHandbrake || Move->GetHandbrakeInput();
+	UChaosWheeledVehicleMovementComponent* WM = Cast<UChaosWheeledVehicleMovementComponent>(Move);
+	if (WM && bHb != bHandbrakeApplied && Assists.HandbrakeGrip > 0.f)
+	{
+		bHandbrakeApplied = bHb;
+		for (int32 i = 0; i < FMath::Min(WM->Wheels.Num(), 8); ++i)
+		{
+			if (WM->Wheels[i] && WM->Wheels[i]->bAffectedByHandbrake && BaseFriction[i] > 0.f)
+			{
+				WM->SetWheelFrictionMultiplier(i, BaseFriction[i] * (bHb ? Assists.HandbrakeGrip : 1.f));
+			}
+		}
+	}
 }
 
 void ABeratCar::UpdateCamera(float Dt)

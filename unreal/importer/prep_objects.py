@@ -549,6 +549,35 @@ def civic_benches(sector: Path, rng) -> np.ndarray:
     return np.asarray(out, np.float64).reshape(-1, 6)
 
 
+ROAD_CLEAR = {6: 1.0, 8: 0.2, 9: 0.2}     # m kept clear of the road surface per kind; others 0.6 m (trunks, shrubs)
+
+
+def clear_roads(sector: Path, a: np.ndarray) -> tuple[np.ndarray, int]:
+    """Drop instances (Unreal cm rows: x, y, z, h, yaw, kind) standing on a road surface (roads.glb asphalt / dirt / deck,
+    rasterized at 0.5 m) or within their kind's clearance of it."""
+    from PIL import Image as _Image, ImageDraw
+    from scipy import ndimage
+    si, sj = (int(v) for v in sector.name.split("_"))
+    x0, y0, R = 3200 * si - 16000, 3200 * sj - 16000, 0.5
+    n = int(3200 / R)
+    im = _Image.new("L", (n, n), 0)
+    dr = ImageDraw.Draw(im)
+    for material, pos, tri in read_glb_mesh(sector / "roads.glb"):
+        if material not in ("asphalt", "dirt", "deck"):
+            continue
+        for t in tri:
+            q = pos[t]
+            dr.polygon([((v[0] - x0) / R, (y0 + 3200 - v[1]) / R) for v in q], fill=255)
+    road = np.asarray(im) > 0
+    dist = ndimage.distance_transform_edt(~road) * R          # m from the nearest road cell
+    x, y = a[:, 0] / 100.0, -a[:, 1] / 100.0
+    c = np.clip(((x - x0) / R).astype(int), 0, n - 1)
+    r = np.clip(((y0 + 3200 - y) / R).astype(int), 0, n - 1)
+    need = np.asarray([ROAD_CLEAR.get(int(k), 0.6) for k in a[:, 5]])
+    keep = dist[r, c] > need
+    return a[keep], int((~keep).sum())
+
+
 def water(sector: Path) -> gltf.Mesh:
     import tifffile
     g = json.loads((sector / "water.geojson").read_text(encoding="utf-8"))
@@ -622,6 +651,7 @@ def main() -> None:
     lanes, controls = [], None
     summary = {}
     walls_total = [0, 0]           # garden wall triangles, garden hedge plants
+    road_cleared = [0]             # instances dropped off the road surfaces
     if args.all:
         todo = sorted(tuple(s) for s in man["sectors"])
     else:
@@ -639,6 +669,8 @@ def main() -> None:
             if len(gwh):
                 gwh[:, 0], gwh[:, 1], gwh[:, 2], gwh[:, 3] = gwh[:, 0] * 100, -gwh[:, 1] * 100, gwh[:, 2] * 100, gwh[:, 3] * 100
                 pl = np.concatenate([pl, gwh])
+            pl, dropped = clear_roads(src, pl)
+            road_cleared[0] += dropped
             write_instances(dst / "plants.bin", pl, True)
             if len(gw):
                 gltf.write_glb(dst / "walls.glb", gw, (size * si - 16000, size * sj - 16000),
@@ -673,7 +705,7 @@ def main() -> None:
         (args.out / "lanes.json").write_text(json.dumps({"controls": controls, "kinds": KINDS, "elements": lanes}))
     (args.out / "objects.json").write_text(json.dumps({"kinds": KINDS, "sectors": summary,
                                                        "seconds": round(time.time() - t0, 1)}, indent=1))
-    print(f"garden walls: {walls_total[0]} triangles, {walls_total[1]} hedge plants")
+    print(f"garden walls: {walls_total[0]} triangles, {walls_total[1]} hedge plants; {road_cleared[0]} instances cleared off roads")
     tot = np.sum([s["by_kind"] for s in summary.values()], axis=0)
     print(f"{len(lanes)} lanes, {sum(s['lamps'] for s in summary.values())} lamps, "
           f"{sum(s['water_tris'] for s in summary.values())} water triangles, plants:",

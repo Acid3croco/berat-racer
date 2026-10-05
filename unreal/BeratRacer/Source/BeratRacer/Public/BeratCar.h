@@ -37,10 +37,17 @@ struct FBeratDriveAssists
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float YawFromSteering = 0.15f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float RotationDamping = 0.3f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") bool bApplyToVehicle = true;
+	// Full-brake deceleration (g) the brake torques are set for, from the car's mass and wheel radii, 65 % front (the
+	// blueprints' own torques stopped at 1.3-1.8 g). 0 keeps them.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float BrakeG = 1.05f;
+	// Handbrake: the rear tyres' grip while it is held (share of their own) and its light braking (g); the rear slides and
+	// the car rotates without stopping (a locking handbrake brought it to rest from 70 km/h).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float HandbrakeGrip = 0.6f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float HandbrakeG = 0.3f;
 	// Automatic gearbox shift points as a share of max RPM, light throttle -> full throttle (Chaos's own automatic shifts
 	// at one fixed RPM: 1st held to 57 km/h when cruising). 0 keeps Chaos's automatic.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") FVector2D ShiftUp = FVector2D(0.5, 0.92);
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") FVector2D ShiftDown = FVector2D(0.25, 0.55);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") FVector2D ShiftDown = FVector2D(0.22, 0.42);
 };
 
 UCLASS(Abstract)
@@ -137,6 +144,8 @@ private:
 	// Wheel puffs per surface (berat_fx.py): dust, gravel dust / tyre smoke, grass bits, mud clods.
 	UPROPERTY(Transient) TArray<TObjectPtr<class UNiagaraSystem>> WheelFx;
 	float WheelFxClock[8] = {};
+	float BaseFriction[8] = {};
+	bool bHandbrake = false, bHandbrakeApplied = false;
 	// tyre tracks in soft ground: deferred decals from each rear wheel's last mark
 	UPROPERTY(Transient) TObjectPtr<class UMaterialInterface> TrackMaterial;
 	FVector TrackLast[8];
