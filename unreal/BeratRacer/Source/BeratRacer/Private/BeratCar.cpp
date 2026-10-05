@@ -177,6 +177,12 @@ void ABeratCar::BeginPlay()
 	Super::BeginPlay();
 	if (Sound)
 	{
+		// engine character from its torque: V8 for the big ones, six, four
+		if (const UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+		{
+			const float Nm = W->EngineSetup.MaxTorque;
+			Sound->Cylinders = Nm > 450.f ? 8.f : Nm > 350.f ? 6.f : 4.f;
+		}
 		Sound->Start();     // a synth component plays from Start() (auto-activation alone stays silent)
 	}
 
