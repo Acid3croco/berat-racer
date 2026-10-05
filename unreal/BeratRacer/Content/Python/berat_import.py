@@ -1171,6 +1171,8 @@ FINISHES = {
 
 # finishes whose texture colour pattern is too loud: share of its luminance contrast kept
 FLAT_PATTERN = {"wall_render": 0.35}
+# tint per finish: Toulouse brick ("brique foraine") is red-orange, the texture reads dark brown
+FINISH_TINT = {"wall_brick": (1.3, 0.97, 0.8)}
 
 
 def building_material(name, role, metres, colour_weight, weathering):
@@ -1208,6 +1210,12 @@ def building_material(name, role, metres, colour_weight, weathering):
     base = g.node(unreal.MaterialExpressionMultiply, 1)
     g.link(mix, "", base, "A")
     g.link(shade, "", base, "B")
+    if name in FINISH_TINT:
+        tn = g.node(unreal.MaterialExpressionConstant3Vector, 2, constant=unreal.LinearColor(*FINISH_TINT[name], 1.0))
+        tb = g.node(unreal.MaterialExpressionMultiply, 1)
+        g.link(base, "", tb, "A")
+        g.link(tn, "", tb, "B")
+        base = tb
     # weathering at large scale (world space, texture-based noise): patches 0.84..1.06 over a few metres, and on walls
     # vertical rain streaks 0.86..1 (noise stretched along Z)
     wp = g.node(unreal.MaterialExpressionWorldPosition, 4)
@@ -1273,6 +1281,7 @@ def restyle_buildings(sectors=None):
     mats = building_materials()
     mats["gutter"] = simple_material(f"{ROOT}/Materials/M_Gutter", vertex_colour=True, roughness=0.4, specular=0.5,
                                      metallic=0.5)
+    mats["belfry"] = simple_material(f"{ROOT}/Materials/M_Belfry", colour=(0.02, 0.02, 0.025), roughness=0.9)
     block = json.load(open(os.path.join(CACHE, "block.json")))
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     done = 0

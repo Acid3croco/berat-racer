@@ -213,6 +213,81 @@ def finish(p: dict, area: float, rnd: float) -> tuple[str, str]:
     return wall, r
 
 
+def prism(cx, cy, r, z0, z1, n=8, rot=np.pi / 8):
+    """Side faces of a regular n-gon prism (counter-clockwise from outside), UV0 = (metres around, metres up)."""
+    ang = rot + np.arange(n) * 2 * np.pi / n
+    xs, ys = cx + r * np.cos(ang), cy + r * np.sin(ang)
+    side = 2 * r * np.sin(np.pi / n)
+    pos, tri, uv = [], [], []
+    for k in range(n):
+        a, b = k, (k + 1) % n
+        base = len(pos)
+        pos += [[xs[a], ys[a], z0], [xs[b], ys[b], z0], [xs[b], ys[b], z1], [xs[a], ys[a], z1]]
+        uv += [[k * side, 0], [(k + 1) * side, 0], [(k + 1) * side, z1 - z0], [k * side, z1 - z0]]
+        tri += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
+    return np.asarray(pos, float), np.asarray(tri), np.asarray(uv, float)
+
+
+def cap(cx, cy, r, z, n=8, rot=np.pi / 8, apex=None):
+    """A flat octagon at z (apex None) or a pyramid to apex height; faces up / out."""
+    ang = rot + np.arange(n) * 2 * np.pi / n
+    ring = [[cx + r * np.cos(t), cy + r * np.sin(t), z] for t in ang]
+    top = [cx, cy, z if apex is None else apex]
+    pos = np.asarray(ring + [top], float)
+    tri = np.asarray([[k, (k + 1) % n, n] for k in range(n)])
+    return pos, tri, pos[:, :2].copy()
+
+
+def bell_tower(mesh, t, ground, rnd, white):
+    """A Toulousain octagonal bell tower at the data's tower point and height: three tiers stepping in, brick bands
+    between them, belfry openings on the top tier; white render with a flat balustraded top (Bérat's Saint-Pierre) or
+    brick with a slate spire."""
+    cx, cy, h = float(t["x"]), float(t["y"]), float(t["height"])
+    body = h * (0.78 if white else 0.68)                 # the spire takes the rest
+    r0 = float(np.clip(h * 0.12, 2.4, 3.6))
+    wall = "wall_render" if white else "wall_brick"
+    wcol = np.asarray((0.93, 0.9, 0.84) if white else (0.75, 0.42, 0.3))
+    uv1 = lambda n: np.column_stack([np.full(n, rnd), np.zeros(n)])
+    z = ground - 0.5
+    for tier in range(3):
+        r = r0 * (1.0 - 0.07 * tier)
+        z1 = ground + body * (tier + 1) / 3.0
+        p, tr, uv = prism(cx, cy, r, z, z1)
+        uv[:, 1] += z - ground
+        mesh.add(wall, p, tr, uv0=uv, uv1=uv1(len(p)), colour=np.tile(wcol, (len(p), 1)))
+        # brick band at the top of the tier, a little proud
+        p, tr, uv = prism(cx, cy, r + 0.12, z1 - 0.45, z1 + 0.05)
+        mesh.add("wall_brick", p, tr, uv0=uv, uv1=uv1(len(p)), colour=np.tile((0.78, 0.42, 0.28), (len(p), 1)))
+        p, tr, _ = cap(cx, cy, r + 0.12, z1 + 0.05)
+        mesh.add("wall_brick", p, tr, uv0=p[:, :2], uv1=uv1(len(p)), colour=np.tile((0.78, 0.42, 0.28), (len(p), 1)))
+        if tier == 2:
+            # belfry openings: a dark arch-tall panel on every face, set just proud
+            ang = np.pi / 8 + np.arange(8) * 2 * np.pi / 8
+            mid = ang + np.pi / 8
+            zo0, zo1 = z + (z1 - z) * 0.35, z1 - 0.8
+            for m in mid:
+                nx, ny = np.cos(m), np.sin(m)
+                apo = r * np.cos(np.pi / 8) + 0.02
+                c0 = np.asarray([cx + nx * apo, cy + ny * apo])
+                tx, ty = -ny, nx
+                w = 0.55
+                q = np.asarray([[c0[0] - tx * w, c0[1] - ty * w, zo0], [c0[0] + tx * w, c0[1] + ty * w, zo0],
+                                [c0[0] + tx * w, c0[1] + ty * w, zo1], [c0[0] - tx * w, c0[1] - ty * w, zo1]])
+                mesh.add("belfry", q, np.asarray([[0, 1, 2], [0, 2, 3]]), uv0=np.zeros((4, 2)), uv1=uv1(4),
+                         colour=np.tile((0.05, 0.05, 0.06), (4, 1)))
+        z = z1
+    rt = r0 * (1.0 - 0.07 * 2)
+    if white:
+        # flat top with a balustrade (a low ring wall)
+        p, tr, _ = cap(cx, cy, rt, z + 0.06)
+        mesh.add("wall_concrete", p, tr, uv0=p[:, :2], uv1=uv1(len(p)), colour=np.tile((0.8, 0.78, 0.74), (len(p), 1)))
+        p, tr, uv = prism(cx, cy, rt, z, z + 1.1)
+        mesh.add(wall, p, tr, uv0=uv, uv1=uv1(len(p)), colour=np.tile(wcol, (len(p), 1)))
+    else:
+        p, tr, _ = cap(cx, cy, rt + 0.2, z, apex=ground + h)
+        mesh.add("roof_slate", p, tr, uv0=p[:, :2], uv1=uv1(len(p)), colour=np.tile((0.45, 0.47, 0.5), (len(p), 1)))
+
+
 def style_sector(src: Path, dst: Path, corner) -> Counter:
     g = json.loads((src / "buildings.geojson").read_text(encoding="utf-8"))
     polys, props = [], []
@@ -303,6 +378,15 @@ def style_sector(src: Path, dst: Path, corner) -> Counter:
             ct += [[k + 4, (k + 1) % 4 + 4, (k + 1) % 4], [k + 4, (k + 1) % 4, k]]
         mesh.add("wall_concrete", cp, np.asarray(ct), uv0=cp[:, :2], colour=np.full((8, 3), 0.7))
         counts["chimneys"] += 1
+    # bell towers: the data gives their point and height; the package's building stops at its roof
+    for p, (looks_, rnd) in zip(props, looks):
+        t = p.get("tower")
+        if t and t.get("height") and float(t["height"]) > 8.0:
+            white = (p.get("name") or "").endswith("Saint-Pierre") or any(
+                (q.get("name") or "").endswith("Saint-Pierre") and abs(float(t["x"]) - np.mean(np.asarray(f["geometry"]["coordinates"][0])[:, 0])) < 40
+                for q, f in zip(props, g["features"]))
+            bell_tower(mesh, t, float(p.get("ground") or 0.0), rnd, white)
+            counts["bell_towers"] += 1
     mats = {m: {"colour": (0.7, 0.7, 0.7)} for m in mesh.parts}
     gltf.write_glb(dst / "buildings_styled.glb", mesh, corner, mats, f"buildings_{dst.name}")
     return counts
