@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.7",
+	"Category": "",
+	"Description": "berat-racer: driving on a 1:1 map of Haute-Garonne",
+	"Modules": [
+		{ "Name": "BeratRacer", "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "BeratRacerEditor", "Type": "Editor", "LoadingPhase": "PostEngineInit" }
+	],
+	"Plugins": [
+		{ "Name": "ChaosVehiclesPlugin", "Enabled": true },
+		{ "Name": "EnhancedInput", "Enabled": true },
+		{ "Name": "PythonScriptPlugin", "Enabled": true },
+		{ "Name": "EditorScriptingUtilities", "Enabled": true },
+		{ "Name": "Interchange", "Enabled": true },
+		{ "Name": "GLTFImporter", "Enabled": true },
+		{ "Name": "PCG", "Enabled": true },
+		{ "Name": "Water", "Enabled": true },
+		{ "Name": "ModelingToolsEditorMode", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "GeometryScripting", "Enabled": true }
+	],
+	"TargetPlatforms": [ "Windows" ]
+}

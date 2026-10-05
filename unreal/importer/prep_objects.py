@@ -120,6 +120,77 @@ def lamps(sector: Path) -> np.ndarray:
     return np.asarray(out, np.float64).reshape(-1, 4)
 
 
+# Shutter colours of the Toulouse countryside (sRGB 0..1): grey-blue, sage, oxblood, white, brown, pastel blue.
+SHUTTERS = [(0.42, 0.5, 0.56), (0.5, 0.58, 0.5), (0.45, 0.16, 0.13), (0.88, 0.87, 0.82), (0.36, 0.25, 0.18), (0.55, 0.66, 0.74)]
+PROUD = 0.04          # m: openings stand this far out of the wall (the wall is not cut)
+
+
+def openings(sector: Path) -> gltf.Mesh:
+    """Windows, doors, garages, shopfronts and shutters from the facade layout of buildings.geojson: one quad per opening
+    (UV 0..1 over the opening), on the wall at its place, sill and size. Vertex colour: R a random per opening (which windows
+    light up at night), G 1 on apartment-like buildings, B unused; shutters carry their colour."""
+    g = json.loads((sector / "buildings.geojson").read_text(encoding="utf-8"))
+    mesh = gltf.Mesh()
+    quads = {}
+
+    def quad(material, a, b, z0, z1, n, colour):
+        # a, b: bottom corners (x, y) along the wall; n: outward normal; counter-clockwise seen from outside
+        a = np.asarray(a) + n * PROUD
+        b = np.asarray(b) + n * PROUD
+        pos = np.array([[a[0], a[1], z0], [b[0], b[1], z0], [b[0], b[1], z1], [a[0], a[1], z1]])
+        q = quads.setdefault(material, dict(p=[], c=[]))
+        q["p"].append(pos)
+        q["c"].append(colour)
+
+    for feat in g["features"]:
+        p = feat["properties"]
+        if not p.get("walls"):
+            continue
+        ring = np.asarray(feat["geometry"]["coordinates"][0], np.float64)[:, :2]
+        if np.allclose(ring[0], ring[-1]):
+            ring = ring[:-1]
+        n_pts = len(ring)
+        rng = np.random.default_rng(p["seed"] & 0xFFFFFFFF)
+        shutter = SHUTTERS[p["seed"] % len(SHUTTERS)]
+        old = p["era"] in ("before_1950", "1950_1970", "unknown") and p["use"] in ("house", "barn", "townhall", "school")
+        has_shutters = old and rng.random() < 0.85 or (p["use"] == "house" and rng.random() < 0.45)
+        flats = 1.0 if (p.get("floors") or 1) >= 3 else 0.0
+        for w in p["walls"]:
+            pts = ring[[(w["first"] + j) % n_pts for j in range(w["count"] + 1)]]
+            seg = np.diff(pts, axis=0)
+            ln = np.hypot(seg[:, 0], seg[:, 1])
+            cum = np.concatenate([[0], np.cumsum(ln)])
+            total = cum[-1]
+            if total < 0.5:
+                continue
+            g0, g1 = w["ground"]
+            for o in w["openings"]:
+                t, width, height, sill = o["at"], o["width"], o["height"], o["sill"]
+                i = int(min(np.searchsorted(cum, t, side="right") - 1, len(seg) - 1))
+                d = seg[i] / max(ln[i], 1e-9)
+                nrm = np.array([d[1], -d[0]])                         # outward for a counter-clockwise outline
+                c = pts[i] + d * (t - cum[i])
+                ground = g0 + (g1 - g0) * t / total
+                z0, z1 = ground + sill, ground + sill + height
+                a, b = c - d * width / 2, c + d * width / 2
+                kind = o["type"]
+                material = {"window": "window", "door": "door", "garage": "garage", "shopfront": "shopfront",
+                            "balcony": "window"}.get(kind, "window")
+                quad(material, a, b, z0, z1, nrm, (float(rng.random()), flats, 0.0))
+                if kind == "window" and has_shutters and height < 2.4:
+                    sw = width / 2
+                    quad("shutter", a - d * sw, a, z0, z1, nrm, shutter)
+                    quad("shutter", b, b + d * sw, z0, z1, nrm, shutter)
+
+    uv = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float64)
+    for material, q in quads.items():
+        pos = np.concatenate(q["p"])
+        k = len(q["p"])
+        tris = (np.array([[0, 1, 2], [0, 2, 3]])[None, :, :] + 4 * np.arange(k)[:, None, None]).reshape(-1, 3)
+        mesh.add(material, pos, tris, uv0=np.tile(uv, (k, 1)), colour=np.repeat(np.asarray(q["c"], np.float64), 4, axis=0))
+    return mesh
+
+
 def water(sector: Path) -> gltf.Mesh:
     g = json.loads((sector / "water.geojson").read_text(encoding="utf-8"))
     mesh = gltf.Mesh()
@@ -191,12 +262,17 @@ def main() -> None:
             if len(wm):
                 gltf.write_glb(dst / "water.glb", wm, corner, {"water": {"colour": (0.1, 0.2, 0.25), "roughness": 0.05}},
                                f"water_{si}_{sj}")
+            om = openings(src)
+            if len(om):
+                gltf.write_glb(dst / "openings.glb", om, corner,
+                               {m: {"colour": (0.5, 0.5, 0.5)} for m in ("window", "door", "garage", "shopfront", "shutter")},
+                               f"openings_{si}_{sj}")
             lg = json.load(gzip.open(src / "lanes.json.gz"))
             controls = controls or lg["controls"]
             for e in lg["elements"]:
                 e["points"] = [ue(*q) for q in e["points"]]
                 lanes.append(e)
-            summary[f"{si}_{sj}"] = {"plants": len(pl), "lamps": len(lp), "water_tris": len(wm),
+            summary[f"{si}_{sj}"] = {"plants": len(pl), "lamps": len(lp), "water_tris": len(wm), "opening_tris": len(om),
                                      "by_kind": np.bincount(pl[:, 5].astype(int), minlength=len(KINDS)).tolist()}
     (args.out / "lanes.json").write_text(json.dumps({"controls": controls, "kinds": KINDS, "elements": lanes}))
     (args.out / "objects.json").write_text(json.dumps({"kinds": KINDS, "sectors": summary,
