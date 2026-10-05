@@ -49,6 +49,42 @@ def read_glb(path: Path):
     return out
 
 
+OVERHANG = 0.35    # m: pitched roofs reach past the walls (the package's roofs stop at the wall line)
+
+
+def overhang(v: np.ndarray, poly, p: dict) -> np.ndarray:
+    """Roof vertices on the building's outline moved OVERHANG outward (along the outline's outward normal, bisected at
+    corners) and down the roof slope (pitch from the data)."""
+    ring = np.asarray(poly.exterior.coords)[:-1]
+    if len(ring) < 3:
+        return v
+    if shapely.Polygon(ring).exterior.is_ccw is False:
+        ring = ring[::-1]
+    a, b = ring, np.roll(ring, -1, axis=0)
+    seg = b - a
+    ln = np.maximum(np.linalg.norm(seg, axis=1), 1e-9)
+    nrm = np.column_stack([seg[:, 1], -seg[:, 0]]) / ln[:, None]          # outward (right) for counter-clockwise
+    pitch = float(p.get("pitch") or 0.4)
+    slope = np.tan(pitch if pitch < 1.3 else np.radians(pitch))
+    out = v.copy()
+    for k, q in enumerate(v[:, :2]):
+        ap = q - a
+        t = np.clip((ap * seg).sum(1) / ln**2, 0, 1)
+        dist = np.linalg.norm(ap - seg * t[:, None], axis=1)
+        near = np.where(dist < 0.08)[0]
+        if len(near) == 0:
+            continue
+        dirn = nrm[near].sum(0)
+        nd = np.linalg.norm(dirn)
+        if nd < 1e-6:
+            continue
+        dirn = dirn / nd
+        cosang = max(float((dirn * nrm[near[0]]).sum()), 0.5)
+        out[k, :2] = q + dirn * OVERHANG / cosang
+        out[k, 2] = v[k, 2] - OVERHANG * slope
+    return out
+
+
 def finish(p: dict, area: float, rnd: float) -> tuple[str, str]:
     """(wall material, roof material) of one building, from its data; rnd in 0..1, stable per building."""
     use, wm, era = p.get("use") or "house", p.get("wall_material"), p.get("era") or "unknown"
@@ -120,8 +156,11 @@ def style_sector(src: Path, dst: Path, corner) -> Counter:
             name = wall if material == "wall" else roof
             t = tri[idx == b]
             used, inv = np.unique(t, return_inverse=True)
+            vp = pos[used]
+            if material == "roof" and props[b].get("roof") in ("gabled", "hipped"):
+                vp = overhang(vp, polys[b], props[b])
             uv1 = np.column_stack([np.full(len(used), rnd), np.zeros(len(used))])
-            mesh.add(name, pos[used], inv.reshape(-1, 3), uv0=uv[used], uv1=uv1, colour=col[used])
+            mesh.add(name, vp, inv.reshape(-1, 3), uv0=uv[used], uv1=uv1, colour=col[used])
             counts[name] += len(t)
     # chimneys: on the ridge of pitched-roof houses (most) and old barns, in the building's wall finish, a concrete cap
     roof_pts = {}

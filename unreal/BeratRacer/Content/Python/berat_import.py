@@ -1050,7 +1050,7 @@ def building_material(name, role, metres, colour_weight, weathering):
     """A building finish: tiled PBR surface (UV0 in metres), tinted by the data's colour (vertex colour: wall palette or the
     orthophoto's roof colour), varied per building (UV1.x), with a plinth and grime near the ground on walls (UV0.y is
     metres up from the wall's base)."""
-    g = Graph(f"{ROOT}/Materials/Buildings/M_{name}")
+    g = Graph(f"{ROOT}/Materials/Buildings/M_{name}", two_sided=name.startswith("roof"))   # roofs: overhang seen from below
     tc = g.node(unreal.MaterialExpressionTextureCoordinate, 6, coordinate_index=0, u_tiling=1.0 / metres, v_tiling=1.0 / metres)
     c = g.texture(tex(role, "color"), tc)
     n = g.texture(tex(role, "normal"), tc, normal=True)
