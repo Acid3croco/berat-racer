@@ -993,9 +993,10 @@ MEGA = "/Game/Megaplant_Library"
 # plant kind (prep_objects.KINDS) -> Megaplants species (every A..D variant of each)
 SPECIES = {0: ("English_Oak", "European_Beech", "Hornbeam", "Black_Alder", "Silver_Birch"), 1: ("English_Oak", "European_Beech", "Hornbeam"),
            2: ("Norway_Spruce",), 3: ("Black_Poplar",), 4: ("Goat_Willow",), 5: ("Common_Hazel", "Elder"),
-           6: ("Common_Hazel", "Elder", "Goat_Willow"), 7: (), 8: ()}
+           6: ("Common_Hazel", "Elder", "Goat_Willow"), 7: (), 8: (), 9: ()}
 # kinds drawn with a street prop instead of a plant
-PROP_KIND_MESH = {8: "/Game/Mega_Street_Props_Pack/Street_Props_Pack_V1/Mesh/SM_Trash"}
+PROP_KIND_MESH = {8: "/Game/Mega_Street_Props_Pack/Street_Props_Pack_V1/Mesh/SM_Trash",
+                  9: "/Game/Mega_Street_Props_Pack/Street_Props_Pack_V1/Mesh/SM_Bench"}
 
 
 def species_meshes(name, baked=False):

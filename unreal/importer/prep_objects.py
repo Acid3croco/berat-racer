@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "package"
 import gltf  # noqa: E402  the package's own numpy glTF writer
 
 # Instance kinds: 0..4 the package's tree kinds, then:
-KINDS = ["tree_unknown", "tree_broadleaf", "tree_conifer", "tree_poplar", "tree_fruit", "shrub", "hedge", "vine", "bin"]
+KINDS = ["tree_unknown", "tree_broadleaf", "tree_conifer", "tree_poplar", "tree_fruit", "shrub", "hedge", "vine", "bin", "bench"]
 HEDGE_STEP = 1.6      # m between hedge plants
 VINE_STEP = 1.2       # m between vine stocks
 LAMP_STEP = 32.0      # m between lamps on one side
@@ -495,6 +495,60 @@ def garden_walls(sector: Path, rng):
     return mesh, np.asarray(extra, np.float64).reshape(-1, 6)
 
 
+CIVIC = ("church", "library", "restaurant", "shop")
+
+
+def civic_benches(sector: Path, rng) -> np.ndarray:
+    """Benches by the village's public buildings (church, library, restaurant, shop): on the verge of the nearest road,
+    on the building's side, facing the street; two by the church. Rows (x, y, z, height m, yaw, kind 9), package metres."""
+    import tifffile
+    si, sj = (int(v) for v in sector.name.split("_"))
+    x0, ytop = 3200 * si - 16000, 3200 * (sj + 1) - 16000
+    hgt = tifffile.imread(sector / "height.tif").astype(np.float64)
+    n = hgt.shape[0]
+    b = json.loads((sector / "buildings.geojson").read_text(encoding="utf-8"))
+    polys = [shapely.Polygon(np.asarray(f["geometry"]["coordinates"][0], np.float64)[:, :2]) for f in b["features"]]
+    btree = shapely.STRtree(polys) if polys else None
+    g = json.loads((sector / "roads.geojson").read_text(encoding="utf-8"))
+    edges = []                                  # (centre line, half width) of drawn roads
+    for feat in g["features"]:
+        p = feat["properties"]
+        a, bb = p["drawn_from"], p["drawn_to"]
+        if a is None or bb is None or p["class"] in ("track", "motorway", "ramp") or p["tunnel"] or p["bridge"]:
+            continue
+        xyz = np.asarray(feat["geometry"]["coordinates"], np.float64)[a:bb + 1]
+        if len(xyz) >= 2:
+            edges.append((shapely.LineString(xyz[:, :2]), float(np.mean(p["half_width"][a:bb + 1]))))
+    if not edges:
+        return np.zeros((0, 6))
+    etree = shapely.STRtree([e[0] for e in edges])
+    out = []
+    for f, poly in zip(b["features"], polys):
+        if f["properties"].get("use") not in CIVIC:
+            continue
+        c = poly.centroid
+        k = etree.query_nearest(c, max_distance=40.0, return_distance=False, all_matches=False)
+        if len(k) == 0:
+            continue
+        line, hw = edges[int(k[0])]
+        q = line.interpolate(line.project(c))
+        d = np.asarray([c.x - q.x, c.y - q.y])
+        L = np.hypot(*d)
+        if L < 1e-3:
+            continue
+        d /= L
+        along = np.asarray([-d[1], d[0]])
+        for j in range(2 if f["properties"].get("use") == "church" else 1):
+            pt = np.asarray([q.x, q.y]) + d * (hw + 1.4) + along * (j * 4.0 - (2.0 if j else 0.0))
+            if btree is not None and len(btree.query_nearest(shapely.Point(*pt), max_distance=1.2, return_distance=False,
+                                                              all_matches=False)):
+                continue
+            z = hgt[int(np.clip(round(ytop - pt[1]), 0, n - 1)), int(np.clip(round(pt[0] - x0), 0, n - 1))]
+            yaw = -np.degrees(np.arctan2(-d[1], -d[0])) + 90.0        # seat facing the street
+            out.append((pt[0], pt[1], z, 0.56, yaw, 9))
+    return np.asarray(out, np.float64).reshape(-1, 6)
+
+
 def water(sector: Path) -> gltf.Mesh:
     import tifffile
     g = json.loads((sector / "water.geojson").read_text(encoding="utf-8"))
@@ -579,6 +633,9 @@ def main() -> None:
             dst.mkdir(parents=True, exist_ok=True)
             pl = plants(src, rng)
             gw, gwh = garden_walls(src, np.random.default_rng(si * 1000 + sj))
+            cb = civic_benches(src, np.random.default_rng(si * 7 + sj))
+            if len(cb):
+                gwh = np.concatenate([gwh, cb]) if len(gwh) else cb
             if len(gwh):
                 gwh[:, 0], gwh[:, 1], gwh[:, 2], gwh[:, 3] = gwh[:, 0] * 100, -gwh[:, 1] * 100, gwh[:, 2] * 100, gwh[:, 3] * 100
                 pl = np.concatenate([pl, gwh])
