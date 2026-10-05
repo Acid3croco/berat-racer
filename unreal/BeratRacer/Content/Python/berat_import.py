@@ -227,7 +227,8 @@ def terrain_material(layer_names):
     rock_c = g.texture(tex("rock", "color"), rock_uv)
     rock_n = g.texture(tex("rock", "normal"), rock_uv, normal=True)
     lc = g.node(unreal.MaterialExpressionLinearInterpolate, 0)
-    g.link(blend_c, "", lc, "A")
+    rows_c = row_furrows(g, blend_c, [n for n in ("cereal", "row_crop") if n in layer_names])
+    g.link(rows_c, "", lc, "A")
     g.link(rock_c, "RGB", lc, "B")
     g.link(steep, "", lc, "Alpha")
     ln = g.node(unreal.MaterialExpressionLinearInterpolate, 0)
@@ -240,6 +241,116 @@ def terrain_material(layer_names):
     g.out(ln, "", unreal.MaterialProperty.MP_NORMAL)
     g.out(blend_r, "", unreal.MaterialProperty.MP_ROUGHNESS)
     return g.save()
+
+
+def import_rows():
+    """The block's crop-row directions (prep_rows.py) as a linear texture, not virtual."""
+    info = json.load(open(os.path.join(CACHE, "rows_dir.json")))
+    path = f"{ROOT}/Textures/T_RowsDir"
+    t = unreal.AssetImportTask()
+    t.filename = os.path.join(CACHE, "rows_dir.png")
+    t.destination_path = f"{ROOT}/Textures"
+    t.destination_name = "T_RowsDir"
+    t.automated = True
+    t.save = True
+    t.replace_existing = True
+    assets.import_asset_tasks([t])
+    tx = unreal.load_asset(path)
+    tx.set_editor_property("srgb", False)
+    tx.set_editor_property("virtual_texture_streaming", False)
+    tx.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_DEFAULT)
+    eal.save_loaded_asset(tx)
+    return tx, info
+
+
+ROWS_DEBUG = False      # strong furrows on every rowed cell (layer weights ignored): checks the chain
+
+
+def row_furrows(g, detail, row_layers=("cereal", "row_crop")):
+    """Furrows along each field's real row direction (rows texture): stripes 0.75 m apart darken the detail colour by up
+    to 18 %, weighted by the rowed layers and the texture's mask, faded out beyond ~50 m."""
+    tx, info = import_rows()
+    nx, ny = info["pixels"]
+    cell_cm = info["cell"] * 100.0
+    wp = g.node(unreal.MaterialExpressionWorldPosition, 9)
+    xy = g.node(unreal.MaterialExpressionComponentMask, 8, r=True, g=True, b=False, a=False)
+    g.link(wp, "", xy, "")
+    scale = g.node(unreal.MaterialExpressionConstant2Vector, 8, r=1.0 / cell_cm / nx, g=1.0 / cell_cm / ny)
+    off = g.node(unreal.MaterialExpressionConstant2Vector, 8, r=(-info["x0"] / info["cell"]) / nx, g=(info["ytop"] / info["cell"]) / ny)
+    mul = g.node(unreal.MaterialExpressionMultiply, 7)
+    g.link(xy, "", mul, "A")
+    g.link(scale, "", mul, "B")
+    uv = g.node(unreal.MaterialExpressionAdd, 7)
+    g.link(mul, "", uv, "A")
+    g.link(off, "", uv, "B")
+    s = g.node(unreal.MaterialExpressionTextureSample, 6, texture=tx)
+    s.set_editor_property("sampler_source", unreal.SamplerSourceMode.SSM_CLAMP_WORLD_GROUP_SETTINGS)
+    s.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    g.link(uv, "", s, "UVs")
+    # doubled angle back to the row direction: theta = atan2(2G - 1, 2R - 1) / 2
+    def unpack(ch):
+        m = g.node(unreal.MaterialExpressionMultiply, 5, const_b=2.0)
+        g.link(s, ch, m, "A")
+        sub = g.node(unreal.MaterialExpressionSubtract, 5, const_b=1.0)
+        g.link(m, "", sub, "A")
+        return sub
+    c2, s2 = unpack("R"), unpack("G")
+    at = g.node(unreal.MaterialExpressionArctangent2, 5)
+    g.link(s2, "", at, "Y")
+    g.link(c2, "", at, "X")
+    th = g.node(unreal.MaterialExpressionMultiply, 5, const_b=0.5)
+    g.link(at, "", th, "A")
+    sn = g.node(unreal.MaterialExpressionSine, 4, period=6.283185307)
+    cs = g.node(unreal.MaterialExpressionCosine, 4, period=6.283185307)
+    g.link(th, "", sn, "")
+    g.link(th, "", cs, "")
+    # across the rows (package axes: direction (cos, sin); Unreal Y = -north): s = (X sin + Y cos) / 100 m
+    wx = g.node(unreal.MaterialExpressionComponentMask, 5, r=True, g=False, b=False, a=False)
+    wy = g.node(unreal.MaterialExpressionComponentMask, 5, r=False, g=True, b=False, a=False)
+    g.link(wp, "", wx, "")
+    g.link(wp, "", wy, "")
+    a1 = g.node(unreal.MaterialExpressionMultiply, 4)
+    g.link(wx, "", a1, "A")
+    g.link(sn, "", a1, "B")
+    a2 = g.node(unreal.MaterialExpressionMultiply, 4)
+    g.link(wy, "", a2, "A")
+    g.link(cs, "", a2, "B")
+    acr = g.node(unreal.MaterialExpressionAdd, 4)
+    g.link(a1, "", acr, "A")
+    g.link(a2, "", acr, "B")
+    per = g.node(unreal.MaterialExpressionDivide, 3, const_b=75.0)        # 0.75 m between rows
+    g.link(acr, "", per, "A")
+    fr = g.node(unreal.MaterialExpressionFrac, 3)
+    g.link(per, "", fr, "")
+    half = g.node(unreal.MaterialExpressionSubtract, 3, const_b=0.5)
+    g.link(fr, "", half, "A")
+    ab = g.node(unreal.MaterialExpressionAbs, 3)
+    g.link(half, "", ab, "")
+    tri = g.node(unreal.MaterialExpressionMultiply, 3, const_b=2.0)      # 0 in the furrow, 1 on the ridge
+    g.link(ab, "", tri, "A")
+    shade = g.node(unreal.MaterialExpressionLinearInterpolate, 2, const_a=0.3 if ROWS_DEBUG else 0.66, const_b=1.06)
+    g.link(tri, "", shade, "Alpha")
+    # weight x near (fade 30-60 m)
+    wm = g.node(unreal.MaterialExpressionMultiply, 2)
+    # weight: the rows mask alone (set only on rowed parcels: crops, vines, orchards); the landscape layer-weight nodes
+    # read 0 in this material
+    g.link(g.const(1.0), "", wm, "A")
+    g.link(s, "B", wm, "B")
+    depth = g.node(unreal.MaterialExpressionPixelDepth, 3)
+    near = g.node(unreal.MaterialExpressionSmoothStep, 2, const_min=6000.0, const_max=3000.0)
+    g.link(depth, "", near, "Value")
+    wn = g.node(unreal.MaterialExpressionMultiply, 2)
+    g.link(wm, "", wn, "A")
+    g.link(near, "", wn, "B")
+    sat = g.node(unreal.MaterialExpressionSaturate, 2)
+    g.link(wn, "", sat, "")
+    fac = g.node(unreal.MaterialExpressionLinearInterpolate, 1, const_a=1.0)
+    g.link(shade, "", fac, "B")
+    g.link(sat, "", fac, "Alpha")
+    outm = g.node(unreal.MaterialExpressionMultiply, 1)
+    g.link(detail, "", outm, "A")
+    g.link(fac, "", outm, "B")
+    return outm
 
 
 def import_colour():
