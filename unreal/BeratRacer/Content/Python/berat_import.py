@@ -1032,3 +1032,105 @@ def prop_meshes(baked=False):
             km.set_editor_property("static", [mesh("shrub_b", "shrub_03_a")] if k == 7 else [mesh("broadleaf_small", "tree_small_02")])
         kinds.append(km)
     return kinds, mesh("lamp_a", "street_lamp_01")
+
+
+# finish -> (surface role, metres per tile, colour from the data (vertex colour) weight, plinth and grime)
+FINISHES = {
+    "wall_render": ("wall_plaster", 2.5, 0.7, True), "wall_brick": ("wall_brick", 1.2, 0.1, True),
+    "wall_stone": ("wall_stone", 2.0, 0.15, True), "wall_concrete": ("wall_concrete", 2.0, 0.3, True),
+    "wall_metal": ("wall_metal", 2.0, 0.35, False), "wall_wood": ("wall_wood", 2.0, 0.2, True),
+    "roof_canal": ("roof_canal", 2.0, 0.55, False), "roof_canal_b": ("roof_canal_b", 2.0, 0.55, False),
+    "roof_canal_c": ("roof_canal_c", 2.0, 0.55, False), "roof_slate": ("roof_slate", 2.0, 0.2, False),
+    "roof_metal": ("roof_metal", 2.0, 0.3, False), "roof_fibre": ("roof_fibre", 2.5, 0.25, False),
+    "roof_flat": ("roof_flat", 3.0, 0.3, False),
+}
+
+
+def building_material(name, role, metres, colour_weight, weathering):
+    """A building finish: tiled PBR surface (UV0 in metres), tinted by the data's colour (vertex colour: wall palette or the
+    orthophoto's roof colour), varied per building (UV1.x), with a plinth and grime near the ground on walls (UV0.y is
+    metres up from the wall's base)."""
+    g = Graph(f"{ROOT}/Materials/Buildings/M_{name}")
+    tc = g.node(unreal.MaterialExpressionTextureCoordinate, 6, coordinate_index=0, u_tiling=1.0 / metres, v_tiling=1.0 / metres)
+    c = g.texture(tex(role, "color"), tc)
+    n = g.texture(tex(role, "normal"), tc, normal=True)
+    a = g.texture(tex(role, "arm"), tc, linear=True)
+    # data colour: colour = lerp(texture, texture luminance x vertex colour x 2, weight)
+    vc = g.node(unreal.MaterialExpressionVertexColor, 4)
+    lum = g.node(unreal.MaterialExpressionDesaturation, 3)
+    g.link(c, "RGB", lum, "")
+    tinted = g.node(unreal.MaterialExpressionMultiply, 3)
+    g.link(lum, "", tinted, "A")
+    g.link(vc, "", tinted, "B")
+    t2 = g.node(unreal.MaterialExpressionMultiply, 2, const_b=2.0)
+    g.link(tinted, "", t2, "A")
+    mix = g.node(unreal.MaterialExpressionLinearInterpolate, 2, const_alpha=colour_weight)
+    g.link(c, "RGB", mix, "A")
+    g.link(t2, "", mix, "B")
+    # per-building shade: x (0.85 .. 1.12) from UV1.x
+    tc1 = g.node(unreal.MaterialExpressionTextureCoordinate, 4, coordinate_index=1)
+    r = g.node(unreal.MaterialExpressionComponentMask, 3, r=True, g=False, b=False, a=False)
+    g.link(tc1, "", r, "")
+    shade = g.node(unreal.MaterialExpressionLinearInterpolate, 2, const_a=0.85, const_b=1.12)
+    g.link(r, "", shade, "Alpha")
+    base = g.node(unreal.MaterialExpressionMultiply, 1)
+    g.link(mix, "", base, "A")
+    g.link(shade, "", base, "B")
+    if weathering:
+        # metres up the wall (UV0.y), unscaled
+        tc0 = g.node(unreal.MaterialExpressionTextureCoordinate, 4, coordinate_index=0)
+        up = g.node(unreal.MaterialExpressionComponentMask, 3, r=False, g=True, b=False, a=False)
+        g.link(tc0, "", up, "")
+        # grime: 0.72 at the foot, 1 from 1.6 m up
+        grime = g.node(unreal.MaterialExpressionSmoothStep, 2, const_min=0.0, const_max=1.6)
+        g.link(up, "", grime, "Value")
+        gl = g.node(unreal.MaterialExpressionLinearInterpolate, 1, const_a=0.72, const_b=1.0)
+        g.link(grime, "", gl, "Alpha")
+        g1 = g.node(unreal.MaterialExpressionMultiply, 1)
+        g.link(base, "", g1, "A")
+        g.link(gl, "", g1, "B")
+        # plinth: below 0.5 m a grey stone band
+        plinth = g.node(unreal.MaterialExpressionStep, 1, const_x=0.5)
+        g.link(up, "", plinth, "Y")                     # Step returns 1 when X >= Y: 1 when up <= 0.5 m
+        pc = g.node(unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(0.32, 0.31, 0.29, 1))
+        out = g.node(unreal.MaterialExpressionLinearInterpolate, 0)
+        g.link(g1, "", out, "A")
+        g.link(pc, "", out, "B")
+        g.link(plinth, "", out, "Alpha")
+        base = out
+    g.out(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    g.out(n, "RGB", unreal.MaterialProperty.MP_NORMAL)
+    g.out(a, "G", unreal.MaterialProperty.MP_ROUGHNESS)
+    g.out(a, "R", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    if name.startswith("roof_metal") or name.startswith("wall_metal"):
+        g.out(a, "B", unreal.MaterialProperty.MP_METALLIC)
+    return g.save()
+
+
+def building_materials():
+    return {name: building_material(name, *spec) for name, spec in FINISHES.items()}
+
+
+def restyle_buildings(sectors=None):
+    """Replace each sector's buildings mesh by buildings_styled.glb (prep_buildings.py) with the finish materials."""
+    import_textures()
+    mats = building_materials()
+    block = json.load(open(os.path.join(CACHE, "block.json")))
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    done = 0
+    for si, sj in sectors or block["sectors"]:
+        key = f"{si}_{sj}"
+        path = os.path.join(CACHE, "sectors", key, "buildings_styled.glb")
+        for a in eas.get_all_level_actors():
+            if a.get_actor_label() == f"buildings_{key}":
+                eas.destroy_actor(a)
+        for mesh in import_glb(path, f"{ROOT}/Sectors/{key}", f"SM_buildings_styled_{key}"):
+            for i, slot in enumerate(mesh.static_materials):
+                m = mats.get(str(slot.material_slot_name))
+                if m:
+                    mesh.set_material(i, m)
+            setup_mesh(mesh, {}, True, nanite=True)
+            place(mesh, f"buildings_{key}", si, sj, True)
+            done += 1
+    save()
+    return done

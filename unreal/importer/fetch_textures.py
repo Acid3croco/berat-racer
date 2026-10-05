@@ -46,6 +46,15 @@ SURFACES = {
     "roof_canal_b": "clay_roof_tiles_02",
     "roof_slate": "grey_roof_tiles",
     "roof_sheet": "roof_07",
+    # industrial and farm buildings: metal cladding, corrugated iron, fibre-cement sheets (the grey wavy barn roofs of the
+    # French countryside), timber siding; flat roofs
+    "wall_metal": "box_profile_metal_sheet",
+    "wall_wood": "weathered_plank_siding",
+    "roof_metal": "corrugated_iron_02",
+    "roof_fibre": "asbestos_sheet",
+    "roof_flat": "tarred_gravel",
+    "roof_canal_c": "clay_roof_tiles_03",
+    "wall_stone_b": "stone_wall",
 }
 MAPS = {"Diffuse": "color", "nor_dx": "normal", "arm": "arm"}
 RES = "2k"
