@@ -77,6 +77,7 @@ ABeratCar::ABeratCar()
 void ABeratCar::BeginPlay()
 {
 	Super::BeginPlay();
+	ConfigureChaos();
 	PlaceLights();
 	HeadL->SetIntensity(HeadlightCandela);
 	HeadR->SetIntensity(HeadlightCandela);
@@ -233,92 +234,78 @@ void ABeratCar::Tick(float Dt)
 	{
 		return;
 	}
-	ApplyAssists(Dt);
+	ShapeInput(Dt);
 	UpdateCamera(Dt);
 	UpdateLights();
 }
 
-void ABeratCar::ApplyAssists(float Dt)
+void ABeratCar::ConfigureChaos()
 {
-	UChaosVehicleMovementComponent* Move = GetVehicleMovementComponent();
-	USkeletalMeshComponent* M = GetMesh();
-	if (!M->IsSimulatingPhysics())
+	UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+	if (!W || !Assists.bApplyToVehicle)
 	{
 		return;
 	}
-	const FTransform& T = M->GetComponentTransform();
-	const FVector Fwd = T.GetUnitAxis(EAxis::X), Right = T.GetUnitAxis(EAxis::Y), Up = T.GetUnitAxis(EAxis::Z);
-	const FVector Vel = M->GetPhysicsLinearVelocity();                  // cm/s
-	const FVector Omega = M->GetPhysicsAngularVelocityInRadians();     // rad/s
-	const float Speed = Vel.Size() / 100.f;                            // m/s
-	const float Forward = FVector::DotProduct(Vel, Fwd) / 100.f;
-	const float Mass = M->GetMass();
+	// Aerodynamics: Chaos applies drag and downforce from these with the speed squared.
+	W->DownforceCoefficient = Assists.DownforceCoefficient;
+	W->DragCoefficient = Assists.DragCoefficient;
 
-	// Wheels on the ground?
-	int32 Contacts = 0, Wheels = 0;
-	if (UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(Move))
-	{
-		Wheels = W->GetNumWheels();
-		for (int32 i = 0; i < Wheels; ++i)
-		{
-			Contacts += W->GetWheelState(i).bInContact ? 1 : 0;
-		}
-	}
-	const bool bGrounded = Wheels == 0 || Contacts >= 2;
+	// Steering lock against speed (km/h): full lock parked, SteerAtSpeed at 160 km/h.
+	FRichCurve* Curve = W->SteeringSetup.SteeringCurve.GetRichCurve();
+	Curve->Reset();
+	Curve->AddKey(0.f, 1.f);
+	Curve->AddKey(40.f, FMath::Lerp(1.f, Assists.SteerAtSpeed, 0.35f));
+	Curve->AddKey(100.f, FMath::Lerp(1.f, Assists.SteerAtSpeed, 0.8f));
+	Curve->AddKey(160.f, Assists.SteerAtSpeed);
+	W->SteeringInputRate.RiseRate = Assists.SteerRise;
+	W->SteeringInputRate.FallRate = Assists.SteerFall;
 
-	// Slip angle: between the heading and the ground velocity, signed (+ the car slides to its right).
+	// Arcade controls of Chaos: level in the air, no roll-overs from a kerb, a little turn-in from steering.
+	W->TargetRotationControl.bEnabled = Assists.AirLevelling > 0.f;
+	W->TargetRotationControl.bRollVsSpeedEnabled = false;
+	W->TargetRotationControl.RollControlScaling = Assists.AirLevelling;
+	W->TargetRotationControl.PitchControlScaling = Assists.AirLevelling;
+	W->TargetRotationControl.RollMaxAngle = 30.f;
+	W->TargetRotationControl.PitchMaxAngle = 45.f;
+	W->TargetRotationControl.RotationStiffness = 5.f;
+	W->TargetRotationControl.RotationDamping = 0.6f;
+	W->TargetRotationControl.MaxAccel = 4.f;
+	W->TargetRotationControl.AutoCentreRollStrength = Assists.AirLevelling;
+	W->TargetRotationControl.AutoCentrePitchStrength = Assists.AirLevelling * 0.5f;
+	W->TargetRotationControl.AutoCentreYawStrength = 0.f;
+	W->TorqueControl.bEnabled = Assists.YawFromSteering > 0.f;
+	W->TorqueControl.YawFromSteering = Assists.YawFromSteering;
+	W->TorqueControl.YawTorqueScaling = 1.f;
+	W->TorqueControl.RotationDamping = Assists.RotationDamping;
+	W->RecreatePhysicsState();
+}
+
+void ABeratCar::ShapeInput(float Dt)
+{
+	// Input only: the counter-steer hint a gamepad assist gives, from the slip angle; Chaos does the rest.
+	UChaosVehicleMovementComponent* Move = GetVehicleMovementComponent();
+	USkeletalMeshComponent* M = GetMesh();
 	float Slip = 0.f;
-	if (Speed > 3.f)
+	if (M->IsSimulatingPhysics())
 	{
-		const FVector Flat = FVector::VectorPlaneProject(Vel, Up).GetSafeNormal();
-		Slip = FMath::Atan2(FVector::DotProduct(Flat, Right), FVector::DotProduct(Flat, Fwd));
-		if (Forward < 0.f)
+		const FTransform& T = M->GetComponentTransform();
+		const FVector Fwd = T.GetUnitAxis(EAxis::X), Right = T.GetUnitAxis(EAxis::Y), Up = T.GetUnitAxis(EAxis::Z);
+		const FVector Flat = FVector::VectorPlaneProject(M->GetPhysicsLinearVelocity(), Up);
+		if (Flat.Size() > 300.f && FVector::DotProduct(Flat, Fwd) > 0.f)
 		{
-			Slip = 0.f;   // reversing: no assist
+			Slip = FMath::Atan2(FVector::DotProduct(Flat, Right), FVector::DotProduct(Flat, Fwd));
+		}
+		// Stuck on the roof or the side: right it after 2 s.
+		UpsideDownTime = (Up.Z < 0.3f && Flat.Size() < 300.f) ? UpsideDownTime + Dt : 0.f;
+		if (UpsideDownTime > 2.f)
+		{
+			ResetOnRoad();
 		}
 	}
-
-	// Steering: the lock shrinks with speed, the wheel moves at a limited rate, counter-steer follows the slide.
-	const float Lock = FMath::Lerp(1.f, Assists.SteerAtSpeed, FMath::Clamp(Speed / 45.f, 0.f, 1.f));
-	float Target = SteerIn * Lock + Assists.Countersteer * Slip / FMath::DegreesToRadians(35.f);
-	Target = FMath::Clamp(Target, -1.f, 1.f);
-	const float Rate = (FMath::Abs(Target) < FMath::Abs(Steer) || Target * Steer < 0.f) ? Assists.SteerReturnRate : Assists.SteerRate;
-	Steer = FMath::FInterpConstantTo(Steer, Target, Dt, Rate);
+	const float Steer = FMath::Clamp(SteerIn + Assists.Countersteer * Slip / FMath::DegreesToRadians(35.f), -1.f, 1.f);
 	Move->SetSteeringInput(Steer);
 	Move->SetThrottleInput(ThrottleIn);
 	Move->SetBrakeInput(BrakeIn);
-
-	if (bGrounded)
-	{
-		// Downforce, growing with the square of speed.
-		const float G = Assists.DownforceG * FMath::Square(Speed / 50.f);
-		M->AddForce(-Up * G * 980.f * Mass);
-		// Yaw stability: past the slip threshold, damp the yaw rate the driver is not asking for.
-		const float Excess = FMath::Max(FMath::Abs(Slip) - FMath::DegreesToRadians(Assists.SlipThresholdDeg), 0.f);
-		if (Excess > 0.f && Speed > 5.f)
-		{
-			const float YawRate = FVector::DotProduct(Omega, Up);
-			const float Wanted = SteerIn * 0.9f;                         // rad/s the driver asks for, roughly
-			const float Damp = Assists.YawStability * FMath::Min(Excess / 0.35f, 1.f);
-			const FVector Inertia = M->GetInertiaTensor();
-			M->AddTorqueInRadians(-Up * (YawRate - Wanted) * Damp * Inertia.Z);
-		}
-	}
-	else
-	{
-		// Air: damp the tumble and pull back towards level, so jumps land on the wheels.
-		const FVector Inertia = M->GetInertiaTensor();
-		const FVector Level = FVector::CrossProduct(Up, FVector::UpVector);  // axis that rotates Up to world up
-		const FVector Torque = (-Omega * Assists.AirDamping + Level * Assists.AirLevelling * 4.f) * Inertia;
-		M->AddTorqueInRadians(Torque);
-	}
-
-	// Stuck on the roof or the side: right it after 2 s.
-	UpsideDownTime = (Up.Z < 0.3f && Speed < 3.f) ? UpsideDownTime + Dt : 0.f;
-	if (UpsideDownTime > 2.f)
-	{
-		ResetOnRoad();
-	}
 }
 
 void ABeratCar::UpdateCamera(float Dt)

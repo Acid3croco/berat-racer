@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "SunPosition.h"
 
 ABeratTimeOfDay::ABeratTimeOfDay()
 {
@@ -59,21 +60,17 @@ void ABeratTimeOfDay::Tick(float Dt)
 
 FVector ABeratTimeOfDay::SunDirection() const
 {
-	// NOAA's low-precision solar position (good to a fraction of a degree).
-	const double Gamma = 2.0 * PI / 365.0 * (DayOfYear - 1 + (Hours - UtcOffsetHours - 12.0) / 24.0);
-	const double EqTime = 229.18 * (0.000075 + 0.001868 * FMath::Cos(Gamma) - 0.032077 * FMath::Sin(Gamma)
-		- 0.014615 * FMath::Cos(2 * Gamma) - 0.040849 * FMath::Sin(2 * Gamma));
-	const double Decl = 0.006918 - 0.399912 * FMath::Cos(Gamma) + 0.070257 * FMath::Sin(Gamma) - 0.006758 * FMath::Cos(2 * Gamma)
-		+ 0.000907 * FMath::Sin(2 * Gamma) - 0.002697 * FMath::Cos(3 * Gamma) + 0.00148 * FMath::Sin(3 * Gamma);
-	const double TrueSolarMin = (Hours - UtcOffsetHours) * 60.0 + EqTime + 4.0 * LongitudeDeg;
-	const double HourAngle = FMath::DegreesToRadians(TrueSolarMin / 4.0 - 180.0);
-	const double Lat = FMath::DegreesToRadians(LatitudeDeg);
-	// East-north-up vector of the sun.
-	const double CosD = FMath::Cos(Decl);
-	const double E = -CosD * FMath::Sin(HourAngle);
-	const double N = FMath::Cos(Lat) * FMath::Sin(Decl) - FMath::Sin(Lat) * CosD * FMath::Cos(HourAngle);
-	const double U = FMath::Sin(Lat) * FMath::Sin(Decl) + FMath::Cos(Lat) * CosD * FMath::Cos(HourAngle);
-	return FVector(E, N, U).GetSafeNormal();
+	// Epic's Sun Position plugin: elevation and azimuth (degrees clockwise from north) for the place, date and clock.
+	const FDateTime Date = FDateTime(2026, 1, 1) + FTimespan::FromDays(DayOfYear - 1);
+	const int32 H = FMath::FloorToInt(Hours);
+	const int32 Min = FMath::FloorToInt((Hours - H) * 60.f);
+	const int32 Sec = FMath::FloorToInt(((Hours - H) * 60.f - Min) * 60.f);
+	FSunPositionData Data;
+	USunPositionFunctionLibrary::GetSunPosition(LatitudeDeg, LongitudeDeg, UtcOffsetHours, false, Date.GetYear(), Date.GetMonth(),
+		Date.GetDay(), H, Min, Sec, Data);
+	const double El = FMath::DegreesToRadians(Data.CorrectedElevation), Az = FMath::DegreesToRadians(Data.Azimuth);
+	// East-north-up.
+	return FVector(FMath::Sin(Az) * FMath::Cos(El), FMath::Cos(Az) * FMath::Cos(El), FMath::Sin(El));
 }
 
 void ABeratTimeOfDay::Apply(bool bForceCapture)

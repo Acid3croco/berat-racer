@@ -12,29 +12,31 @@ class UPointLightComponent;
 class UInputAction;
 class UInputMappingContext;
 
-// The arcade-sim layer on top of Chaos: the vehicle blueprint sets engine, gears, wheels and suspension; this adds what makes
-// it drive like Forza Horizon rather than a raw rigid body: speed-sensitive steering, counter-steer and yaw stability, downforce,
-// air control, auto-righting, a chase camera, lights that follow the time of day.
+// Driving is Chaos Vehicles throughout: engine, gearbox, tyres and suspension come from the vehicle blueprint, and the
+// arcade-sim feel comes from Chaos's own settings (aerodynamics, steering curve, input rates, the arcade torque / target
+// rotation controls), applied from these presets at BeginPlay. The only thing added on top is input shaping: a
+// counter-steer hint mixed into the steering input, as a gamepad assist would.
 USTRUCT(BlueprintType)
 struct FBeratDriveAssists
 {
 	GENERATED_BODY()
 
-	// Steering lock kept at high speed (fraction of full lock at 45 m/s).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SteerAtSpeed = 0.32f;
-	// Steering rates (input units per second), towards a turn and back to centre.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SteerRate = 3.5f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SteerReturnRate = 6.f;
-	// Counter-steer added per radian of slip angle (0 off, 1 full).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float Countersteer = 0.6f;
-	// Yaw damping beyond the slip threshold (1/s): how hard a slide is caught.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float YawStability = 1.6f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SlipThresholdDeg = 7.f;
-	// Downforce in g at 50 m/s (grows with the square of speed).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float DownforceG = 0.35f;
-	// Angular damping in the air (1/s) and the pull back to level.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float AirDamping = 2.5f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float AirLevelling = 1.2f;
+	// Steering kept at high speed (fraction of full lock at 160 km/h): Chaos SteeringSetup.SteeringCurve.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SteerAtSpeed = 0.35f;
+	// Chaos SteeringInputRate (input units per second): towards a turn, back to centre.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SteerRise = 3.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float SteerFall = 6.f;
+	// Counter-steer mixed into the input per radian of slip angle (0 off).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float Countersteer = 0.5f;
+	// Chaos aerodynamics.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float DownforceCoefficient = 0.6f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float DragCoefficient = 0.32f;
+	// Chaos TargetRotationControl: keeps the car level in the air and stops it rolling over (0 off).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float AirLevelling = 0.6f;
+	// Chaos TorqueControl: yaw rate added from steering (an arcade turn-in), and its damping.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float YawFromSteering = 0.15f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") float RotationDamping = 0.3f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assists") bool bApplyToVehicle = true;
 };
 
 UCLASS(Abstract)
@@ -77,7 +79,8 @@ protected:
 
 private:
 	void PlaceLights();
-	void ApplyAssists(float Dt);
+	void ConfigureChaos();
+	void ShapeInput(float Dt);
 	void UpdateCamera(float Dt);
 	void UpdateLights();
 
@@ -100,7 +103,7 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UInputAction> LightsAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ResetAction;
 
-	float ThrottleIn = 0.f, BrakeIn = 0.f, SteerIn = 0.f, Steer = 0.f;
+	float ThrottleIn = 0.f, BrakeIn = 0.f, SteerIn = 0.f;
 	FVector2D LookIn = FVector2D::ZeroVector;
 	float LookYaw = 0.f, LookPitch = 0.f;
 	int32 CameraMode = 0;            // 0 chase, 1 far chase, 2 bonnet
