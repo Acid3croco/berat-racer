@@ -34,3 +34,12 @@ unreal/BeratRacer/Content/Berat/
 unreal/BeratRacer/Content/__ExternalActors__/
 unreal/BeratRacer/Content/__ExternalObjects__/
 unreal/**/__pycache__/
+
+# Fab / Epic asset packs: added from the Fab library or engine templates on each machine, never committed
+/unreal/BeratRacer/Content/CitySampleVehicles/
+/unreal/BeratRacer/Content/Megaplant_Library/
+/unreal/BeratRacer/Content/PN_GrassLibrary/
+/unreal/BeratRacer/Content/Mega_Street_Props_Pack/
+/unreal/BeratRacer/Content/VehicleVarietyPack/
+/unreal/BeratRacer/Content/Vehicles/
+/unreal/BeratRacer/Content/VehicleTemplate/
