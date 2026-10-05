@@ -18,9 +18,9 @@ FX = f"{ROOT}/FX"
 # name: colour (linear), alpha, count per puff, lifetime s, size cm (min, max), growth over life, up speed cm/s,
 # cone angle, gravity cm/s2, drag, curl noise
 PUFFS = {
-    "Dust":   dict(colour=(0.36, 0.29, 0.20), alpha=0.7, count=5, life=(1.8, 3.0), size=(80, 160), grow=3.5,
+    "Dust":   dict(colour=(0.36, 0.29, 0.20), alpha=0.6, count=3, life=(1.6, 2.6), size=(70, 140), grow=2.8,
                    speed=(80, 220), cone=70, gravity=-30, drag=1.6, noise=40),
-    "Gravel": dict(colour=(0.42, 0.40, 0.37), alpha=0.6, count=4, life=(1.4, 2.4), size=(70, 130), grow=3.0,
+    "Gravel": dict(colour=(0.42, 0.40, 0.37), alpha=0.5, count=3, life=(1.2, 2.0), size=(60, 120), grow=2.6,
                    speed=(80, 200), cone=70, gravity=-40, drag=1.8, noise=30),
     "Grass":  dict(colour=(0.06, 0.10, 0.025), alpha=0.9, count=8, life=(0.5, 0.9), size=(2.5, 6), grow=1.0,
                    speed=(250, 500), cone=40, gravity=-980, drag=0.6, noise=0),
@@ -84,8 +84,15 @@ def puff_material():
     alpha = g.node(unreal.MaterialExpressionMultiply, 1)
     g.link(shape, "", alpha, "A")
     g.link(pc, "A", alpha, "B")
+    # fade within 6 m of the camera
+    cd = g.node(unreal.MaterialExpressionPixelDepth, 2)
+    near = g.node(unreal.MaterialExpressionSmoothStep, 1, const_min=150.0, const_max=600.0)
+    g.link(cd, "", near, "Value")
+    an = g.node(unreal.MaterialExpressionMultiply, 1)
+    g.link(alpha, "", an, "A")
+    g.link(near, "", an, "B")
     fade = g.node(unreal.MaterialExpressionDepthFade, 1, fade_distance_default=40.0)
-    g.link(alpha, "", fade, "Opacity")
+    g.link(an, "", fade, "Opacity")
     g.out(pc, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
     g.out(fade, "", unreal.MaterialProperty.MP_OPACITY)
     g.out(g.const(1.0), "", unreal.MaterialProperty.MP_ROUGHNESS)
@@ -166,6 +173,9 @@ def puff_system(name, p, material):
     ren = module(objs, "NiagaraSpriteRendererProperties")
     B.set_property_text(ren, "Material", material.get_path_name())
     B.set_property_text(ren, "SortMode", "ViewDistance" if p["noise"] else "None")
+    # no particles within 2 m of the camera (a cloud around the camera is all overdraw)
+    setp(ren, "bEnableCameraDistanceCulling", "True")
+    setp(ren, "MinCameraDistance", "200")
     B.notify_changed(objs + [s])
     eal.save_loaded_asset(s)
     return s
@@ -177,5 +187,59 @@ def build():
     out = {}
     for name, p in PUFFS.items():
         out[name] = puff_system(name, p, chunk if p["grow"] == 1.0 else puff)
+    track_material()
     unreal.log(f"[berat] wheel fx: {list(out)}")
     return out
+
+
+def track_material():
+    """Tyre track in soft ground: deferred decal that darkens and roughens the ground (wet, packed earth), with tread
+    bands across (UV.x along the track) and soft edges; the car fades it (DecalFadeOut)."""
+    g = Graph(f"{FX}/M_TyreTrack", material_domain=unreal.MaterialDomain.MD_DEFERRED_DECAL,
+              blend_mode=unreal.BlendMode.BLEND_TRANSLUCENT)
+    tc = g.node(unreal.MaterialExpressionTextureCoordinate, 4)
+    # decal UVs: U across the strip (the decal's Z), V along it (its Y): u = along, v = across here
+    u = g.node(unreal.MaterialExpressionComponentMask, 3, r=False, g=True, b=False, a=False)
+    v = g.node(unreal.MaterialExpressionComponentMask, 3, r=True, g=False, b=False, a=False)
+    g.link(tc, "", u, "")
+    g.link(tc, "", v, "")
+    # soft across the track: 1 in the middle, 0 at the edges (v 0..1)
+    dv = g.node(unreal.MaterialExpressionSubtract, 2, const_b=0.5)
+    g.link(v, "", dv, "A")
+    av = g.node(unreal.MaterialExpressionAbs, 2)
+    g.link(dv, "", av, "")
+    edge = g.node(unreal.MaterialExpressionSmoothStep, 1, const_min=0.5, const_max=0.3)
+    g.link(av, "", edge, "Value")
+    # tread: bands across every 1/14 of the length
+    tu = g.node(unreal.MaterialExpressionMultiply, 2, const_b=20.0)
+    g.link(u, "", tu, "A")
+    fr = g.node(unreal.MaterialExpressionFrac, 2)
+    g.link(tu, "", fr, "")
+    band = g.node(unreal.MaterialExpressionLinearInterpolate, 1, const_a=0.65, const_b=1.0)
+    st = g.node(unreal.MaterialExpressionStep, 2, const_x=0.5)
+    g.link(fr, "", st, "Y")
+    g.link(st, "", band, "Alpha")
+    # fade along the ends (u 0..1)
+    du = g.node(unreal.MaterialExpressionSubtract, 2, const_b=0.5)
+    g.link(u, "", du, "A")
+    au = g.node(unreal.MaterialExpressionAbs, 2)
+    g.link(du, "", au, "")
+    ends = g.node(unreal.MaterialExpressionSmoothStep, 1, const_min=0.5, const_max=0.42)
+    g.link(au, "", ends, "Value")
+    m1 = g.node(unreal.MaterialExpressionMultiply, 0)
+    g.link(edge, "", m1, "A")
+    g.link(ends, "", m1, "B")
+    m2 = g.node(unreal.MaterialExpressionMultiply, 0)
+    g.link(m1, "", m2, "A")
+    g.link(band, "", m2, "B")
+    fade = g.node(unreal.MaterialExpressionDecalLifetimeOpacity, 1)
+    m3 = g.node(unreal.MaterialExpressionMultiply, 0)
+    g.link(m2, "", m3, "A")
+    g.link(fade, "", m3, "B")
+    m4 = g.node(unreal.MaterialExpressionMultiply, 0, const_b=0.9)
+    g.link(m3, "", m4, "A")
+    g.out(g.node(unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(0.035, 0.028, 0.02, 1)), "",
+          unreal.MaterialProperty.MP_BASE_COLOR)
+    g.out(g.const(0.55), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    g.out(m4, "", unreal.MaterialProperty.MP_OPACITY)
+    return g.save()

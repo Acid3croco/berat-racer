@@ -2,6 +2,8 @@
 
 #include "BeratTimeOfDay.h"
 #include "NiagaraFunctionLibrary.h"
+#include "Kismet/GameplayStatics.h"
+#include "Components/DecalComponent.h"
 #include "NiagaraSystem.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "Camera/CameraComponent.h"
@@ -379,6 +381,10 @@ void ABeratCar::UpdateWheelFx(float Dt)
 			WheelFx.Add(LoadObject<UNiagaraSystem>(nullptr, *FString::Printf(TEXT("/Game/Berat/FX/NS_Wheel%s.NS_Wheel%s"), N, N)));
 		}
 	}
+	if (!TrackMaterial)
+	{
+		TrackMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Berat/FX/M_TyreTrack.M_TyreTrack"));
+	}
 	UChaosWheeledVehicleMovementComponent* W = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
 	if (!W)
 	{
@@ -393,11 +399,47 @@ void ABeratCar::UpdateWheelFx(float Dt)
 		if (!S.bInContact || !S.PhysMaterial.IsValid())
 		{
 			WheelFxClock[i] = 0.f;
+			bTrackHave[i] = false;
 			continue;
+		}
+		// tracks: rear wheels (Chaos order FL, FR, RL, RR) on soft ground, a strip from the last mark every 1.5 m
+		const EPhysicalSurface Soft = S.PhysMaterial->SurfaceType;
+		if (i >= 2 && TrackMaterial && Soft >= SurfaceType3 && Soft <= SurfaceType8)
+		{
+			const FVector P = S.ContactPoint;
+			if (!bTrackHave[i])
+			{
+				TrackLast[i] = P;
+				bTrackHave[i] = true;
+			}
+			const FVector D = P - TrackLast[i];
+			const float L = D.Size2D();
+			if (L > 300.f)
+			{
+				TrackLast[i] = P;                                   // a jump (teleport, air): restart
+			}
+			else if (L >= 150.f)
+			{
+				const FRotator R = FRotationMatrix::MakeFromXY(FVector(0, 0, -1), D.GetSafeNormal2D()).Rotator();
+				if (UDecalComponent* Dc = UGameplayStatics::SpawnDecalAtLocation(this, TrackMaterial,
+					FVector(40.f, L * 0.5f + 8.f, 12.f), (P + TrackLast[i]) * 0.5f, R, 22.f))
+				{
+					Dc->SetFadeOut(12.f, 10.f, false);
+					++WheelTracksSpawned;
+					Dc->SetFadeScreenSize(0.002f);
+				}
+				TrackLast[i] = P;
+			}
+		}
+		else
+		{
+			bTrackHave[i] = false;
 		}
 		// slip: wheel spin or slide (cm/s); intensity grows with speed and slip
 		const float Slip = FMath::Max(FMath::Abs(S.SlipMagnitude), FMath::Abs(S.SkidMagnitude));
-		float Intensity = FMath::Clamp(Kmh / 60.f, 0.f, 1.f) + FMath::Clamp(Slip / 500.f, 0.f, 1.5f);
+		// wheels spinning on the spot dig, they do not raise a cloud: slip counts less below 15 km/h
+		float Intensity = FMath::Clamp(Kmh / 60.f, 0.f, 1.f)
+			+ FMath::Clamp(Slip / 500.f, 0.f, 1.f) * FMath::GetMappedRangeValueClamped(FVector2f(3.f, 15.f), FVector2f(0.25f, 1.f), Kmh);
 		// surface types: DefaultEngine.ini PhysicsSettings (berat_import.SURFACES)
 		int32 Fx = INDEX_NONE;
 		switch (S.PhysMaterial->SurfaceType)
@@ -418,7 +460,7 @@ void ABeratCar::UpdateWheelFx(float Dt)
 			continue;
 		}
 		WheelFxClock[i] += Dt;
-		if (WheelFxClock[i] < FMath::Clamp(0.12f / Intensity, 0.03f, 0.4f))
+		if (WheelFxClock[i] < FMath::Clamp(0.12f / Intensity, 0.07f, 0.4f))
 		{
 			continue;
 		}

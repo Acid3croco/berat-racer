@@ -13,6 +13,8 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
 #include "HighResScreenshot.h"
+#include "Components/DecalComponent.h"
+#include "Kismet/GameplayStatics.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMeshActor.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -141,7 +143,7 @@ void ABeratPlayerController::TestReport(const TCHAR* Phase)
 				i, WS.bInContact, *GetNameSafe(WS.PhysMaterial.Get()), WS.NormalizedSuspensionLength, WS.DriveTorque, WS.BrakeTorque,
 				WS.SlipMagnitude, WS.bIsSkidding);
 		}
-		UE_LOG(LogTemp, Display, TEXT("[berat-test]   wheel puffs %d"), Car->WheelFxSpawned);
+		UE_LOG(LogTemp, Display, TEXT("[berat-test]   wheel puffs %d, track decals %d"), Car->WheelFxSpawned, Car->WheelTracksSpawned);
 		UE_LOG(LogTemp, Display, TEXT("[berat-test]   handbrake %.2f, brake %.2f, steering %.2f, parked %d"),
 			W ? W->GetHandbrakeInput() : -1.f, W ? W->GetBrakeInput() : -1.f, W ? W->GetSteeringInput() : -1.f, W ? W->IsParked() : -1);
 	}
@@ -344,11 +346,36 @@ void ABeratPlayerController::Tick(float Dt)
 			}
 		}
 	}
+	// -BeratDecalTest: one large track decal 6 m ahead of the car (decal rendering check in the start shot)
+	if (Car && (bMoved || TestClock > 2.5f) && !bDecalTested && TestClock > 2.0f && FParse::Param(FCommandLine::Get(), TEXT("BeratDecalTest")))
+	{
+		bDecalTested = true;
+		const FVector F = Car->GetActorForwardVector().GetSafeNormal2D();
+		const FVector At = Car->GetActorLocation();
+		UE_LOG(LogTemp, Display, TEXT("[berat-test] car forward %s, velocity dir n/a, camera at %s"), *F.ToString(), *PlayerCameraManager->GetCameraLocation().ToString());
+		FString Which;
+		FParse::Value(FCommandLine::Get(), TEXT("BeratDecalMat="), Which, false);
+		UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, Which.IsEmpty() ? TEXT("/Game/Berat/FX/M_TyreTrack.M_TyreTrack") : *Which);
+		UDecalComponent* D = UGameplayStatics::SpawnDecalAtLocation(this, M, FVector(200.f, 400.f, 400.f), At,
+			FRotationMatrix::MakeFromXY(FVector(0, 0, -1), F).Rotator(), 60.f);
+		UE_LOG(LogTemp, Display, TEXT("[berat-test] decal test %s at %s, material [%s] -> %s"), D ? TEXT("spawned") : TEXT("FAILED"), *At.ToString(), *Which, *GetNameSafe(M));
+	}
 	if (TestStep >= 2 && Car)
 	{
 		if (bOffroad)
 		{
-			Car->AutoThrottle = 0.6f; Car->AutoSteer = 0.f; Car->AutoBrake = 0.f;
+			// straight on part throttle, then a stop and a still shot of what the wheels left (tracks, settling dust)
+			const bool bStop = TestClock > 42.f;
+			Car->AutoThrottle = bStop ? 0.f : 0.6f; Car->AutoSteer = 0.f; Car->AutoBrake = bStop && Car->GetSpeedKmh() > 3.f ? 1.f : 0.f;   // released near 0: brake held there selects reverse
+			if (TestClock > 44.5f)
+			{
+				Car->SetTestLook(FVector2D(1.0, 0.9));        // look back down the trail
+			}
+			if (TestClock > 47.f && !bOffroadShot)
+			{
+				bOffroadShot = true;
+				TestShot(TEXT("offroad_stopped"));
+			}
 		}
 		else
 		{

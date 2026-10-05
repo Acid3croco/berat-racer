@@ -91,6 +91,9 @@ public:
 	float AutoBrake = 0.f;
 	// Wheel puffs spawned so far (test report).
 	int32 WheelFxSpawned = 0;
+	int32 WheelTracksSpawned = 0;
+	// Test hook: hold the free-look stick (x: yaw, y: pitch, -1..1).
+	void SetTestLook(FVector2D V) { LookIn = V; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -134,5 +137,9 @@ private:
 	// Wheel puffs per surface (berat_fx.py): dust, gravel dust / tyre smoke, grass bits, mud clods.
 	UPROPERTY(Transient) TArray<TObjectPtr<class UNiagaraSystem>> WheelFx;
 	float WheelFxClock[8] = {};
+	// tyre tracks in soft ground: deferred decals from each rear wheel's last mark
+	UPROPERTY(Transient) TObjectPtr<class UMaterialInterface> TrackMaterial;
+	FVector TrackLast[8];
+	bool bTrackHave[8] = {};
 	float ShiftHold = 0.f;
 };

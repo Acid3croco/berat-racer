@@ -57,6 +57,8 @@ private:
 	int32 PilotLane = INDEX_NONE;
 	float PilotS = 0.f;
 	float PilotKmh = 70.f;
+	bool bOffroadShot = false;
+	bool bDecalTested = false;
 	bool bMoved = false;
 	void Pilot(class ABeratCar* Car, float Dt);
 	void TestReport(const TCHAR* Phase);
