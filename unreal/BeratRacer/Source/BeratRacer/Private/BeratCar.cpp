@@ -454,9 +454,9 @@ void ABeratCar::UpdateWheelFx(float Dt)
 			{
 				const FRotator R = FRotationMatrix::MakeFromXY(FVector(0, 0, -1), D.GetSafeNormal2D()).Rotator();
 				if (UDecalComponent* Dc = UGameplayStatics::SpawnDecalAtLocation(this, TrackMaterial,
-					FVector(40.f, L * 0.5f + 8.f, 12.f), (P + TrackLast[i]) * 0.5f, R, 22.f))
+					FVector(40.f, L * 0.5f + 8.f, 12.f), (P + TrackLast[i]) * 0.5f, R, 60.f))
 				{
-					Dc->SetFadeOut(12.f, 10.f, false);
+					Dc->SetFadeOut(45.f, 15.f, false);
 					++WheelTracksSpawned;
 					Dc->SetFadeScreenSize(0.002f);
 				}

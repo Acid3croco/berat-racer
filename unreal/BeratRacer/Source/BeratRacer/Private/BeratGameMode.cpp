@@ -398,13 +398,13 @@ void ABeratPlayerController::Tick(float Dt)
 		if (bOffroad)
 		{
 			// straight on part throttle, then a stop and a still shot of what the wheels left (tracks, settling dust)
-			const bool bStop = TestClock > 42.f;
+			const bool bStop = TestClock > 26.f;
 			Car->AutoThrottle = bStop ? 0.f : 0.6f; Car->AutoSteer = 0.f; Car->AutoBrake = bStop && Car->GetSpeedKmh() > 3.f ? 1.f : 0.f;   // released near 0: brake held there selects reverse
-			if (TestClock > 44.5f)
+			if (TestClock > 28.5f)
 			{
 				Car->SetTestLook(FVector2D(1.0, 0.9));        // look back down the trail
 			}
-			if (TestClock > 47.f && !bOffroadShot)
+			if (TestClock > 31.f && !bOffroadShot)
 			{
 				bOffroadShot = true;
 				TestShot(TEXT("offroad_stopped"));
