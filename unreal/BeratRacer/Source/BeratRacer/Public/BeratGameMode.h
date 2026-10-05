@@ -22,6 +22,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") TArray<TSubclassOf<ABeratCar>> Cars;
 
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
+	// The engine only spawns a pawn when this returns a class: the current car of the garage.
+	virtual UClass* GetDefaultPawnClassForController_Implementation(AController* InController) override;
 
 	// Replace the player's car by the next one in the garage, at the same place and speed.
 	void NextCar(APlayerController* PC);
@@ -38,10 +40,26 @@ class BERATRACER_API ABeratPlayerController : public APlayerController
 public:
 	ABeratPlayerController();
 
+	virtual void Tick(float DeltaSeconds) override;
+
 protected:
 	virtual void SetupInputComponent() override;
+	virtual void BeginPlay() override;
 
 private:
+	// -BeratTest: drive, measure frame times, take screenshots, quit (see Tick).
+	bool bTest = false;
+	float TestClock = 0.f;
+	int32 TestStep = 0;
+	TArray<float> FrameMs;
+	void TestShot(const FString& Name);
+	// Autopilot on the lane graph (pure pursuit): the lane followed, distance along it, target speed (km/h).
+	int32 PilotLane = INDEX_NONE;
+	float PilotS = 0.f;
+	float PilotKmh = 70.f;
+	bool bMoved = false;
+	void Pilot(class ABeratCar* Car, float Dt);
+	void TestReport(const TCHAR* Phase);
 	void NextCar();
 	void TimeForward();
 	void TimeBack();

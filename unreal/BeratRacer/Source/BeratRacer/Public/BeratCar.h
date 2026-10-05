@@ -49,6 +49,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") FBeratDriveAssists Assists;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") FText DisplayName;
+	// A Chaos vehicle blueprint (an engine template car, a Fab car...) whose body, animation, materials and whole Chaos setup
+	// (wheels, engine, gearbox, differential, steering, mass) this car takes when it starts.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Berat") TSoftClassPtr<AWheeledVehiclePawn> Template;
 	// Headlight intensity (candela, per lamp) and reach.
 	UPROPERTY(EditAnywhere, Category = "Berat|Lights") float HeadlightCandela = 30000.f;
 	UPROPERTY(EditAnywhere, Category = "Berat|Lights") float HeadlightReach = 9000.f;
@@ -74,11 +77,21 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
+	virtual void PostInitializeComponents() override;
+	virtual void NotifyHit(UPrimitiveComponent* MyComp, AActor* Other, UPrimitiveComponent* OtherComp, bool bSelfMoved,
+		FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit) override;
+
+	// Test hook (ABeratPlayerController -BeratTest): when >= 0 these replace the player's throttle and steering.
+	float AutoThrottle = -1.f;
+	float AutoSteer = 0.f;
+	float AutoBrake = 0.f;
+
 protected:
 	virtual void BeginPlay() override;
 
 private:
 	void PlaceLights();
+	void ApplyTemplate();
 	void ConfigureChaos();
 	void ShapeInput(float Dt);
 	void UpdateCamera(float Dt);

@@ -595,15 +595,20 @@ def import_sector_meshes(materials):
         key = f"{si}_{sj}"
         src = os.path.join(PACKAGE, "sectors", key)
         cache = os.path.join(CACHE, "sectors", key)
-        for kind, folder, collision in (("roads", src, True), ("buildings", src, True), ("openings", cache, False), ("water", cache, False)):
+        # roads: drawn without collision (their skirts made walls at every edge); roads_collision: the drivable surfaces only
+        # (prep_objects.py), invisible. Roads, openings, water without Nanite (thin strips and quads Nanite simplifies badly).
+        for kind, folder, collision in (("roads", src, False), ("roads_collision", cache, True), ("buildings", src, True),
+                                        ("openings", cache, False), ("water", cache, False)):
             path = os.path.join(folder, f"{kind}.glb")
             if not os.path.exists(path):
                 continue
             for mesh in import_glb(path, f"{ROOT}/Sectors/{key}", f"SM_{kind}_{key}"):
-                # openings and water: small quads Nanite simplifies badly (half quads), cheap without it
-                setup_mesh(mesh, materials, collision, nanite=kind in ("roads", "buildings"))
+                setup_mesh(mesh, materials, collision, nanite=kind == "buildings")
                 actor = place(mesh, f"{kind}_{key}", si, sj, collision)
-                n[kind] += 1
+                if kind == "roads_collision":
+                    actor.set_actor_hidden_in_game(True)
+                    actor.static_mesh_component.set_visibility(False)
+                n[kind] = n.get(kind, 0) + 1
     log["meshes"] = n
 
 

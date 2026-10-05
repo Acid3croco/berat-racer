@@ -36,8 +36,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (ClampMin = 0, ClampMax = 24)) float Hours = 17.5f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (ClampMin = 1, ClampMax = 365)) int32 DayOfYear = 172;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time") float UtcOffsetHours = 2.f;
-	// Game minutes per real second (0 stops the clock). 1440 / Rate = real minutes per day: 24 -> one hour a day.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time") float Rate = 24.f;
+	// Game minutes per real second (0 stops the clock). 1440 / Rate = real minutes per day: 1 -> a 24 min day.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time") float Rate = 1.f;
 	UPROPERTY(EditAnywhere, Category = "Time") double LatitudeDeg = 43.38;
 	UPROPERTY(EditAnywhere, Category = "Time") double LongitudeDeg = 1.17;
 

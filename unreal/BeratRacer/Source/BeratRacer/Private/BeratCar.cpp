@@ -5,6 +5,7 @@
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/CollisionProfile.h"
 #include "Components/SpotLightComponent.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -15,10 +16,13 @@
 #include "InputMappingContext.h"
 #include "InputModifiers.h"
 
+static TAutoConsoleVariable<int32> CVarArcadeControls(TEXT("berat.ArcadeControls"), 0,
+	TEXT("1: Chaos TorqueControl / TargetRotationControl presets on the player's car"));
+
 namespace
 {
 	const float CameraArm[] = {620.f, 900.f, 0.f};
-	const float CameraHeight[] = {170.f, 260.f, 0.f};
+	const float CameraHeight[] = {60.f, 140.f, 0.f};
 }
 
 ABeratCar::ABeratCar()
@@ -26,8 +30,19 @@ ABeratCar::ABeratCar()
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.TickGroup = TG_PrePhysics;
 
+	// What Epic's vehicle template base sets: a simulated rigid body with the Vehicle collision profile under Chaos.
+	GetMesh()->SetCollisionProfileName(UCollisionProfile::Vehicle_ProfileName);
+	GetMesh()->BodyInstance.bSimulatePhysics = true;
+	GetMesh()->BodyInstance.bNotifyRigidBodyCollision = true;
+	GetMesh()->BodyInstance.bUseCCD = true;
+	GetMesh()->bBlendPhysics = true;
+	GetMesh()->SetGenerateOverlapEvents(true);
+	GetMesh()->SetCanEverAffectNavigation(false);
+
 	Arm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Arm"));
 	Arm->SetupAttachment(GetMesh());
+	// the mesh origin sits at road level: start the arm 1.2 m up, or its collision probe touches the road and collapses it
+	Arm->SetRelativeLocation(FVector(0, 0, 120.f));
 	Arm->TargetArmLength = CameraArm[0];
 	Arm->SocketOffset = FVector(0, 0, CameraHeight[0]);
 	Arm->bUsePawnControlRotation = false;
@@ -74,9 +89,79 @@ ABeratCar::ABeratCar()
 	TailR = MakeTail(TEXT("TailR"));
 }
 
+void ABeratCar::PostInitializeComponents()
+{
+	ApplyTemplate();
+	Super::PostInitializeComponents();
+}
+
+void ABeratCar::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other, UPrimitiveComponent* OtherComp, bool bSelfMoved,
+	FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit)
+{
+	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
+	static double Last = 0.0;
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (NormalImpulse.Size() > 2000.f && Now - Last > 0.25)
+	{
+		Last = Now;
+		UE_LOG(LogTemp, Display, TEXT("[berat-hit] t %.2f s: %s / %s (my body %s) at (%.2f, %.2f, %.2f) m, normal (%.2f, %.2f, %.2f), impulse %.0f, %.1f km/h"),
+			Now, *GetNameSafe(Other), *GetNameSafe(OtherComp), *Hit.MyBoneName.ToString(), HitLocation.X / 100.0, -HitLocation.Y / 100.0,
+			HitLocation.Z / 100.0, HitNormal.X, -HitNormal.Y, HitNormal.Z, NormalImpulse.Size(), GetSpeedKmh());
+	}
+}
+
+void ABeratCar::ApplyTemplate()
+{
+	UClass* C = Template.LoadSynchronous();
+	if (!C)
+	{
+		return;
+	}
+	const AWheeledVehiclePawn* T = C->GetDefaultObject<AWheeledVehiclePawn>();
+	// Body: skeletal mesh (its physics asset comes with it), animation (wheel spin and suspension), materials, collision.
+	USkeletalMeshComponent* Src = T->GetMesh();
+	USkeletalMeshComponent* Dst = GetMesh();
+	Dst->SetSkeletalMeshAsset(Src->GetSkeletalMeshAsset());
+	Dst->SetAnimInstanceClass(Src->GetAnimClass());
+	for (int32 i = 0; i < Src->GetNumMaterials(); ++i)
+	{
+		Dst->SetMaterial(i, Src->GetMaterial(i));
+	}
+	Dst->SetCollisionProfileName(Src->GetCollisionProfileName());
+	Dst->SetSimulatePhysics(true);
+	// Chaos setup, copied field by field (the template's own pointers, to its mesh, stay behind).
+	const UChaosWheeledVehicleMovementComponent* MS = Cast<UChaosWheeledVehicleMovementComponent>(T->GetVehicleMovementComponent());
+	UChaosWheeledVehicleMovementComponent* MD = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+	if (MS && MD)
+	{
+		MD->WheelSetups = MS->WheelSetups;
+		MD->EngineSetup = MS->EngineSetup;
+		MD->TransmissionSetup = MS->TransmissionSetup;
+		MD->DifferentialSetup = MS->DifferentialSetup;
+		MD->SteeringSetup = MS->SteeringSetup;
+		MD->Mass = MS->Mass;
+		MD->ChassisWidth = MS->ChassisWidth;
+		MD->ChassisHeight = MS->ChassisHeight;
+		MD->DragCoefficient = MS->DragCoefficient;
+		MD->DownforceCoefficient = MS->DownforceCoefficient;
+		MD->bEnableCenterOfMassOverride = MS->bEnableCenterOfMassOverride;
+		MD->CenterOfMassOverride = MS->CenterOfMassOverride;
+		MD->InertiaTensorScale = MS->InertiaTensorScale;
+		MD->SleepThreshold = MS->SleepThreshold;
+		MD->SleepSlopeLimit = MS->SleepSlopeLimit;
+		MD->bLegacyWheelFrictionPosition = MS->bLegacyWheelFrictionPosition;
+		MD->WheelTraceCollisionResponses = MS->WheelTraceCollisionResponses;
+		MD->bReverseAsBrake = MS->bReverseAsBrake;
+	}
+	UE_LOG(LogTemp, Display, TEXT("[berat] %s takes %s: mesh %s, anim %s, %d wheels, max torque %.0f"), *GetName(), *C->GetName(),
+		*GetNameSafe(Src->GetSkeletalMeshAsset()), *GetNameSafe(Src->GetAnimClass()), MS ? MS->WheelSetups.Num() : -1,
+		MS ? MS->EngineSetup.MaxTorque : 0.f);
+}
+
 void ABeratCar::BeginPlay()
 {
 	Super::BeginPlay();
+
 	ConfigureChaos();
 	PlaceLights();
 	HeadL->SetIntensity(HeadlightCandela);
@@ -108,14 +193,14 @@ void ABeratCar::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 		A->ValueType = Type;
 		return A;
 	};
-	ThrottleAction = Make(TEXT("Throttle"), EInputActionValueType::Axis1D);
-	BrakeAction = Make(TEXT("Brake"), EInputActionValueType::Axis1D);
-	SteerAction = Make(TEXT("Steer"), EInputActionValueType::Axis1D);
-	HandbrakeAction = Make(TEXT("Handbrake"), EInputActionValueType::Boolean);
-	LookAction = Make(TEXT("Look"), EInputActionValueType::Axis2D);
-	CameraAction = Make(TEXT("Camera"), EInputActionValueType::Boolean);
-	LightsAction = Make(TEXT("Lights"), EInputActionValueType::Boolean);
-	ResetAction = Make(TEXT("Reset"), EInputActionValueType::Boolean);
+	ThrottleAction = Make(TEXT("IA_Throttle"), EInputActionValueType::Axis1D);
+	BrakeAction = Make(TEXT("IA_Brake"), EInputActionValueType::Axis1D);
+	SteerAction = Make(TEXT("IA_Steer"), EInputActionValueType::Axis1D);
+	HandbrakeAction = Make(TEXT("IA_Handbrake"), EInputActionValueType::Boolean);
+	LookAction = Make(TEXT("IA_Look"), EInputActionValueType::Axis2D);
+	CameraAction = Make(TEXT("IA_Camera"), EInputActionValueType::Boolean);
+	LightsAction = Make(TEXT("IA_Lights"), EInputActionValueType::Boolean);
+	ResetAction = Make(TEXT("IA_Reset"), EInputActionValueType::Boolean);
 
 	Mapping = NewObject<UInputMappingContext>(this, TEXT("DrivingMapping"));
 	Mapping->MapKey(ThrottleAction, EKeys::Gamepad_RightTriggerAxis);
@@ -191,7 +276,7 @@ void ABeratCar::OnCamera(const FInputActionValue&)
 	}
 	else
 	{
-		Arm->SetRelativeLocation(FVector::ZeroVector);
+		Arm->SetRelativeLocation(FVector(0, 0, 120.f));
 	}
 }
 
@@ -248,8 +333,9 @@ void ABeratCar::ConfigureChaos()
 		return;
 	}
 	// Aerodynamics: Chaos applies drag and downforce from these with the speed squared.
-	W->DownforceCoefficient = Assists.DownforceCoefficient;
-	W->DragCoefficient = Assists.DragCoefficient;
+	// set through Chaos's runtime setters: the vehicle is already simulating (rebuilding its physics state threw it into the sky)
+	W->SetDownforceCoefficient(Assists.DownforceCoefficient);
+	W->SetDragCoefficient(Assists.DragCoefficient);
 
 	// Steering lock against speed (km/h): full lock parked, SteerAtSpeed at 160 km/h.
 	FRichCurve* Curve = W->SteeringSetup.SteeringCurve.GetRichCurve();
@@ -262,6 +348,11 @@ void ABeratCar::ConfigureChaos()
 	W->SteeringInputRate.FallRate = Assists.SteerFall;
 
 	// Arcade controls of Chaos: level in the air, no roll-overs from a kerb, a little turn-in from steering.
+	// Behind berat.ArcadeControls until tuned (their first settings threw the car into the sky).
+	if (CVarArcadeControls.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
 	W->TargetRotationControl.Enabled = Assists.AirLevelling > 0.f;
 	W->TargetRotationControl.bRollVsSpeedEnabled = false;
 	W->TargetRotationControl.RollControlScaling = Assists.AirLevelling;
@@ -278,7 +369,6 @@ void ABeratCar::ConfigureChaos()
 	W->TorqueControl.YawFromSteering = Assists.YawFromSteering;
 	W->TorqueControl.YawTorqueScaling = 1.f;
 	W->TorqueControl.RotationDamping = Assists.RotationDamping;
-	W->RecreatePhysicsState();
 }
 
 void ABeratCar::ShapeInput(float Dt)
@@ -303,10 +393,17 @@ void ABeratCar::ShapeInput(float Dt)
 			ResetOnRoad();
 		}
 	}
-	const float Steer = FMath::Clamp(SteerIn + Assists.Countersteer * Slip / FMath::DegreesToRadians(35.f), -1.f, 1.f);
+	const float SteerSrc = AutoThrottle >= 0.f ? AutoSteer : SteerIn;
+	const float Steer = FMath::Clamp(SteerSrc + Assists.Countersteer * Slip / FMath::DegreesToRadians(35.f), -1.f, 1.f);
 	Move->SetSteeringInput(Steer);
-	Move->SetThrottleInput(ThrottleIn);
-	Move->SetBrakeInput(BrakeIn);
+	Move->SetThrottleInput(AutoThrottle >= 0.f ? AutoThrottle : ThrottleIn);
+	// experiment: keep the body awake while there is input (a sleeping Chaos body ignores the drive torque)
+	if ((AutoThrottle >= 0.f ? AutoThrottle : ThrottleIn) > 0.01f && !M->IsAnyRigidBodyAwake())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[berat] car body asleep under throttle: waking it"));
+		M->WakeAllRigidBodies();
+	}
+	Move->SetBrakeInput(AutoThrottle >= 0.f ? AutoBrake : BrakeIn);
 }
 
 void ABeratCar::UpdateCamera(float Dt)

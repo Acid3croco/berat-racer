@@ -68,7 +68,8 @@ FVector ABeratTimeOfDay::SunDirection() const
 	FSunPositionData Data;
 	USunPositionFunctionLibrary::GetSunPosition(LatitudeDeg, LongitudeDeg, UtcOffsetHours, false, Date.GetYear(), Date.GetMonth(),
 		Date.GetDay(), H, Min, Sec, Data);
-	const double El = FMath::DegreesToRadians(Data.CorrectedElevation), Az = FMath::DegreesToRadians(Data.Azimuth);
+	// the plugin returns the elevation plus 180 degrees (its own convention for aiming a directional light)
+	const double El = FMath::DegreesToRadians(Data.CorrectedElevation - 180.0), Az = FMath::DegreesToRadians(Data.Azimuth);
 	// East-north-up.
 	return FVector(FMath::Sin(Az) * FMath::Cos(El), FMath::Cos(Az) * FMath::Cos(El), FMath::Sin(El));
 }
@@ -79,6 +80,11 @@ void ABeratTimeOfDay::Apply(bool bForceCapture)
 	const FVector SunUE(S.X, -S.Y, S.Z);                    // Unreal axes, towards the sun
 	const float Elev = FMath::RadiansToDegrees(FMath::Asin(S.Z));
 	const float Night = 1.f - FMath::SmoothStep(-6.f, 4.f, Elev);
+	if (bForceCapture)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[berat] time %.2f h, day %d: sun elevation %.1f deg, azimuth dir (%.2f, %.2f), night %.2f"),
+			Hours, DayOfYear, Elev, S.X, S.Y, Night);
+	}
 
 	if (UWorld* W = GetWorld())
 	{

@@ -191,6 +191,44 @@ def openings(sector: Path) -> gltf.Mesh:
     return mesh
 
 
+def read_glb_mesh(path: Path):
+    """[(material, positions in package axes (absolute), triangles)] of a package glb."""
+    d = path.read_bytes()
+    n = struct.unpack("<I", d[12:16])[0]
+    doc = json.loads(d[20:20 + n])
+    blob = d[20 + n + 8:]
+    tx, ty, tz = doc["nodes"][0].get("translation", [0.0, 0.0, 0.0])
+    out = []
+    for p in doc["meshes"][0]["primitives"]:
+        a = doc["accessors"][p["attributes"]["POSITION"]]
+        v = doc["bufferViews"][a["bufferView"]]
+        g = np.frombuffer(blob, "<f4", a["count"] * 3, v["byteOffset"] + a.get("byteOffset", 0)).reshape(-1, 3).astype(np.float64)
+        pos = np.column_stack([g[:, 0] + tx, -(g[:, 2] + tz), g[:, 1] + ty])
+        ia = doc["accessors"][p["indices"]]
+        iv = doc["bufferViews"][ia["bufferView"]]
+        tri = np.frombuffer(blob, "<u4", ia["count"], iv["byteOffset"] + ia.get("byteOffset", 0)).reshape(-1, 3)
+        out.append((doc["materials"][p["material"]]["name"], pos, tri))
+    return out
+
+
+def road_collision(sector: Path) -> gltf.Mesh:
+    """The drivable surfaces of roads.glb: carriageways, junctions, car parks and bridge decks, without the skirts and deck
+    sides (vertical) nor the paint (2 cm over the surface). The skirts hide gaps where the terrain dips under a road edge; as
+    collision they made a 5-10 cm wall at every road edge that stopped a wheel dead. Normal z > 0.5: up to 60 degrees."""
+    mesh = gltf.Mesh()
+    for material, pos, tri in read_glb_mesh(sector / "roads.glb"):
+        if material == "paint":
+            continue
+        a, b, c = pos[tri[:, 0]], pos[tri[:, 1]], pos[tri[:, 2]]
+        nrm = np.cross(b - a, c - a)
+        nz = nrm[:, 2] / np.maximum(np.linalg.norm(nrm, axis=1), 1e-12)
+        keep = tri[nz > 0.5]
+        if len(keep):
+            used, inv = np.unique(keep, return_inverse=True)
+            mesh.add("collision", pos[used], inv.reshape(-1, 3))
+    return mesh
+
+
 def water(sector: Path) -> gltf.Mesh:
     g = json.loads((sector / "water.geojson").read_text(encoding="utf-8"))
     mesh = gltf.Mesh()
@@ -262,6 +300,9 @@ def main() -> None:
             if len(wm):
                 gltf.write_glb(dst / "water.glb", wm, corner, {"water": {"colour": (0.1, 0.2, 0.25), "roughness": 0.05}},
                                f"water_{si}_{sj}")
+            rc = road_collision(src)
+            gltf.write_glb(dst / "roads_collision.glb", rc, corner, {"collision": {"colour": (1.0, 0.0, 1.0)}},
+                           f"roads_collision_{si}_{sj}")
             om = openings(src)
             if len(om):
                 gltf.write_glb(dst / "openings.glb", om, corner,
