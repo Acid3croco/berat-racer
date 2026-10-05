@@ -231,6 +231,8 @@ def terrain_material(layer_names):
     g.link(rock_n, "RGB", ln, "B")
     g.link(steep, "", ln, "Alpha")
     base = macro_colour(g, lc)
+    # add_grass_output(g, layer_names): off. The Poly Haven grass came out metres tall, grey and on the roads too (106 fps);
+    # landscape grass waits for the Megascans grass assets.
     g.out(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
     g.out(ln, "", unreal.MaterialProperty.MP_NORMAL)
     g.out(blend_r, "", unreal.MaterialProperty.MP_ROUGHNESS)
@@ -802,3 +804,70 @@ def fix_model_foliage(model_root=f"{ROOT}/Models"):
         eal.save_loaded_asset(mic)
         fixed += 1
     return fixed
+
+
+GRASS_LAYERS = {"meadow": 1.0, "fallow": 0.8, "garden": 0.9, "orchard": 0.9, "pitch": 0.6, "scrub": 0.6, "cemetery": 0.3}
+
+
+def grass_type():
+    """Native landscape grass: Poly Haven grass clumps scattered by the GPU near the camera on the grassy classes."""
+    path = f"{ROOT}/Landscape/LGT_Meadow"
+    gt = unreal.load_asset(path) if eal.does_asset_exist(path) else assets.create_asset(
+        "LGT_Meadow", f"{ROOT}/Landscape", unreal.LandscapeGrassType, unreal.LandscapeGrassTypeFactory())
+    varieties = []
+    # densities per 10 x 10 m (about 9 per m2 in all) and a 30-60 m fade: a first try at ~50 per m2 out to 90 m, Nanite on, hung the GPU
+    sme = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
+    for d, names, density in (("grass_a", ("grass_medium_01_large_a_LOD0", "grass_medium_01_mid_a_LOD0"), 300.0),
+                              ("grass_b", ("grass_medium_02_c", "grass_medium_02_e"), 150.0)):
+        for n in names:
+            for p in eal.list_assets(f"{ROOT}/Models/{d}", recursive=True):
+                m = unreal.load_asset(p)
+                if isinstance(m, unreal.StaticMesh) and m.get_name() == n:
+                    ns = m.get_editor_property("nanite_settings")
+                    if ns.enabled:
+                        ns.enabled = False
+                        sme.set_nanite_settings(m, ns, apply_changes=True)
+                        eal.save_loaded_asset(m)
+                    v = unreal.GrassVariety()
+                    v.set_editor_property("grass_mesh", m)
+                    v.set_editor_property("grass_density", unreal.PerPlatformFloat(default=density))
+                    v.set_editor_property("start_cull_distance", unreal.PerPlatformInt(default=3000))
+                    v.set_editor_property("end_cull_distance", unreal.PerPlatformInt(default=6000))
+                    v.set_editor_property("random_rotation", True)
+                    v.set_editor_property("align_to_surface", True)
+                    v.set_editor_property("scaling", unreal.GrassScaling.UNIFORM)
+                    v.set_editor_property("scale_x", unreal.FloatInterval(1.6, 2.8))
+                    v.set_editor_property("cast_dynamic_shadow", False)
+                    varieties.append(v)
+    gt.set_editor_property("grass_varieties", varieties)
+    eal.save_loaded_asset(gt)
+    return gt, len(varieties)
+
+
+def add_grass_output(g, layer_names):
+    """LandscapeGrassOutput fed by the sum of the grassy layers' weights."""
+    gt, _ = grass_type()
+    total = None
+    for name, k in GRASS_LAYERS.items():
+        if name not in layer_names:
+            continue
+        s = g.node(unreal.MaterialExpressionLandscapeLayerSample, 3, parameter_name=name)
+        if k != 1.0:
+            m = g.node(unreal.MaterialExpressionMultiply, 2, const_b=k)
+            g.link(s, "", m, "A")
+            s = m
+        if total is None:
+            total = s
+        else:
+            a = g.node(unreal.MaterialExpressionAdd, 2)
+            g.link(total, "", a, "A")
+            g.link(s, "", a, "B")
+            total = a
+    if total is None:
+        return
+    out = g.node(unreal.MaterialExpressionLandscapeGrassOutput, 1)
+    gi = unreal.GrassInput()
+    gi.set_editor_property("name", "Meadow")
+    gi.set_editor_property("grass_type", gt)
+    out.set_editor_property("grass_types", [gi])
+    g.link(total, "", out, "Meadow")
