@@ -65,7 +65,7 @@ public:
 	ABeratLampLights();
 
 	UPROPERTY(EditAnywhere, Category = "Berat") int32 PoolSize = 64;
-	UPROPERTY(EditAnywhere, Category = "Berat") float Candela = 2500.f;
+	UPROPERTY(EditAnywhere, Category = "Berat") float Candela = 900.f;      // ~25 lux under a 6 m lamp, a village LED street light
 	UPROPERTY(EditAnywhere, Category = "Berat") float Radius = 2600.f;
 	UPROPERTY(EditAnywhere, Category = "Berat") float ShadowedNearest = 4;     // the nearest lamps cast shadows
 	UPROPERTY(EditAnywhere, Category = "Berat") FLinearColor Colour = FLinearColor(1.f, 0.78f, 0.5f);   // sodium-ish LED
